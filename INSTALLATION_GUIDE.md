@@ -18,21 +18,27 @@ cd /opt/servicepro
 
 ### Step 2: Configure Environment Variables
 
-Copy the provided production template:
+Generate cryptographically secure production secrets using the bundled utility:
+
+```bash
+node scripts/generate_secrets.cjs
+```
+
+Copy the provided production template and populate your generated keys:
 
 ```bash
 cp .env.example .env
-```
-
-Edit `.env` using your preferred editor:
-```bash
 nano .env
 ```
-Ensure you change:
-- `POSTGRES_PASSWORD`: A strong random string for database access.
-- `JWT_SECRET`: A random 32+ character key for signing access tokens.
-- `JWT_REFRESH_SECRET`: A random 32+ character key for refresh tokens.
-- `BOOTSTRAP_TOKEN`: A one-time secret key used during the web installer wizard.
+
+Ensure the following variables are configured with your generated production secrets:
+- `POSTGRES_PASSWORD`: Strong random string for database access.
+- `JWT_SECRET`: Random 32+ character hex string for signing access tokens.
+- `JWT_REFRESH_SECRET`: Random 32+ character hex string for refresh tokens.
+- `BOOTSTRAP_TOKEN`: One-time setup secret key used during the initial web installer wizard.
+- `APP_ENCRYPTION_KEY`: 32-byte (64 hex characters) AES-256-GCM data encryption key.
+
+> **Security Note**: In production, PostgreSQL and Redis host ports (5432, 6379) are kept closed by default to prevent external exposure; services communicate exclusively over the private `servicepro_network` bridge. For local database GUI debugging, launch with the development override: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`.
 
 ### Step 3: Launch Containers
 

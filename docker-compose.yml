@@ -16,8 +16,8 @@ services:
       POSTGRES_DB: "${POSTGRES_DB:-servicepro}"
       POSTGRES_USER: "${POSTGRES_USER:-servicepro_admin}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Error: POSTGRES_PASSWORD must be configured in environment}"
-    ports:
-      - "${POSTGRES_BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    # In production, database is strictly accessible via isolated internal network (servicepro_network)
+    # To map to host for local dev debugging, use docker-compose.dev.yml
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -34,8 +34,7 @@ services:
     container_name: servicepro_redis
     restart: always
     command: redis-server --appendonly yes
-    ports:
-      - "${REDIS_BIND_IP:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
+    # In production, cache is strictly accessible via isolated internal network (servicepro_network)
     volumes:
       - redis_data:/data
     healthcheck:

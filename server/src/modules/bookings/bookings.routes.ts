@@ -755,7 +755,19 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         );
       }
 
-      // State check: Must be in ON_SITE status to complete work order
+      // State check: Must be in ON_SITE status to complete work order (or idempotent return if already completed)
+      if (booking.status === 'COMPLETED') {
+        await client.query('COMMIT');
+        return reply.status(200).send(
+          successResponse({
+            completed: true,
+            bookingId: id,
+            status: 'COMPLETED',
+            idempotent: true
+          }, requestId)
+        );
+      }
+
       if (booking.status !== 'ON_SITE') {
         await client.query('ROLLBACK');
         return reply.status(400).send(
@@ -782,45 +794,61 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         [id]
       );
 
-      // C. Capture Invoice Payment & Release Escrow Hold
+      // C. Capture Invoice Payment & Release Escrow Hold Idempotently
       if (booking.invoice_id) {
-        if (env.STRIPE_SECRET_KEY) {
-          const txRes = await client.query(
-            `SELECT stripe_payment_intent_id FROM payment_transactions WHERE invoice_id = $1 AND status = 'REQUIRES_CAPTURE'`,
-            [booking.invoice_id]
-          );
-          if (txRes.rows.length > 0 && txRes.rows[0].stripe_payment_intent_id.startsWith('pi_')) {
+        let txId: string | null = null;
+        const txRes = await client.query(
+          `SELECT id, stripe_payment_intent_id, status FROM payment_transactions WHERE invoice_id = $1`,
+          [booking.invoice_id]
+        );
+        if (txRes.rows.length > 0) {
+          const tx = txRes.rows[0];
+          txId = tx.id;
+          if (env.STRIPE_SECRET_KEY && tx.status !== 'SUCCEEDED' && tx.stripe_payment_intent_id?.startsWith('pi_')) {
             try {
               const stripe = new Stripe(env.STRIPE_SECRET_KEY);
               await stripe.paymentIntents.capture(
-                txRes.rows[0].stripe_payment_intent_id,
+                tx.stripe_payment_intent_id,
                 {},
                 { idempotencyKey: `capture_tx_${booking.invoice_id}` }
               );
             } catch (stripeErr: any) {
-              await client.query('ROLLBACK');
-              return reply.status(502).send(
-                errorResponse('STRIPE_CAPTURE_FAILED', `Failed capturing escrow funds with Stripe: ${stripeErr.message}`, requestId)
-              );
+              const isAlreadyCaptured =
+                stripeErr.code === 'payment_intent_unexpected_state' ||
+                stripeErr.message?.toLowerCase().includes('already been captured');
+              if (isAlreadyCaptured) {
+                const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+                const pi = await stripe.paymentIntents.retrieve(tx.stripe_payment_intent_id);
+                if (pi.status !== 'succeeded') {
+                  await client.query('ROLLBACK');
+                  return reply.status(502).send(
+                    errorResponse('STRIPE_CAPTURE_FAILED', `Stripe PaymentIntent is in unexpected state: ${pi.status}`, requestId)
+                  );
+                }
+              } else {
+                await client.query('ROLLBACK');
+                return reply.status(502).send(
+                  errorResponse('STRIPE_CAPTURE_FAILED', `Failed capturing escrow funds with Stripe: ${stripeErr.message}`, requestId)
+                );
+              }
             }
           }
         }
 
         await client.query(
-          `UPDATE invoices SET status = 'PAID', paid_at = NOW() WHERE id = $1`,
+          `UPDATE invoices SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()) WHERE id = $1`,
           [booking.invoice_id]
         );
 
-        // Update Payment Transaction
+        // Update Payment Transaction (conditional on non-succeeded status)
         await client.query(
           `UPDATE payment_transactions 
            SET captured_amount_cents = authorized_amount_cents, status = 'SUCCEEDED'
-           WHERE invoice_id = $1`,
+           WHERE invoice_id = $1 AND status != 'SUCCEEDED'`,
           [booking.invoice_id]
         );
 
-        // D. Post Double-Entry Ledger Entries
-        // 1. Find Operating Cash and Escrow Accounts
+        // D. Post Double-Entry Ledger Entries Idempotently
         const accRes = await client.query(
           `SELECT id, account_number FROM ledger_accounts WHERE tenant_id = $1`,
           [tenantId]
@@ -836,15 +864,21 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         const platformFeeCents = Math.round(totalCents * (commissionBps / 10000));
         const netTechPayoutCents = totalCents - platformFeeCents;
 
-        if (cashAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && totalCents > 0) {
+        // Check if ledger entries already exist for this transaction
+        const existingLedger = txId
+          ? await client.query(`SELECT id FROM ledger_entries WHERE transaction_id = $1 LIMIT 1`, [txId])
+          : { rows: [] };
+
+        if (existingLedger.rows.length === 0 && cashAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && totalCents > 0) {
           // Debit Customer Escrow Liability, Credit Platform Revenue & Technician Payable
           await client.query(
-            `INSERT INTO ledger_entries (tenant_id, debit_account_id, credit_account_id, amount_cents, description)
+            `INSERT INTO ledger_entries (tenant_id, transaction_id, debit_account_id, credit_account_id, amount_cents, description)
              VALUES 
-              ($1, $2, $3, $4, $5),
-              ($1, $2, $6, $7, $8)`,
+              ($1, $2, $3, $4, $5, $6),
+              ($1, $2, $3, $7, $8, $9)`,
             [
               tenantId,
+              txId,
               escrowLiabilityAcc,
               platformRevAcc,
               platformFeeCents,

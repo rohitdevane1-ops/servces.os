@@ -1,6 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { pool } from '../database/pool.js';
 import { errorResponse } from '../types/envelope.js';
+import { AuthService } from '../modules/auth/auth.service.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -39,8 +40,35 @@ export async function tenantResolver(request: FastifyRequest, reply: FastifyRepl
   
   // 1. Resolve candidate tenant identifier from header, token, or host
   const headerTenantId = request.headers['x-tenant-id'] as string | undefined;
-  const tokenTenantId = (request.user as any)?.tenantId;
-  const candidate = (headerTenantId?.trim() || tokenTenantId?.trim());
+  let tokenTenantId: string | undefined = (request.user as any)?.tenantId;
+
+  // Extract from Authorization header if present and request.user is not yet populated (onRequest hook)
+  if (!tokenTenantId && request.headers.authorization?.startsWith('Bearer ')) {
+    const rawToken = request.headers.authorization.slice(7).trim();
+    try {
+      const decoded = AuthService.verifyAccessToken(rawToken);
+      if (decoded?.tenantId) {
+        tokenTenantId = decoded.tenantId;
+        request.user = {
+          id: decoded.sub,
+          role: decoded.role,
+          tenantId: decoded.tenantId,
+          email: decoded.email,
+        };
+      }
+    } catch {
+      // Invalid/expired token will be handled by subsequent auth middleware
+    }
+  }
+
+  // Cross-tenant verification: If BOTH header and token are provided, they MUST match
+  if (headerTenantId && tokenTenantId && headerTenantId.trim().toLowerCase() !== tokenTenantId.trim().toLowerCase()) {
+    return reply.status(403).send(
+      errorResponse('TENANT_MISMATCH', 'Supplied x-tenant-id header does not match authenticated user tenant claim.', requestId)
+    );
+  }
+
+  const candidate = (tokenTenantId?.trim() || headerTenantId?.trim());
 
   try {
     if (candidate) {

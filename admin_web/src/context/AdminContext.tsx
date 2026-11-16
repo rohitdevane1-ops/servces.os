@@ -307,7 +307,17 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [session, setSession] = useState<AuthSession | null>(() => {
     const saved = localStorage.getItem('servicepro_auth_session');
     if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
+      try {
+        const s = JSON.parse(saved);
+        if (s && s.token && typeof s.token === 'string') {
+          // In production, reject synthetic client tokens and purge invalid session
+          if (import.meta.env.PROD && s.token.startsWith('tok_')) {
+            localStorage.removeItem('servicepro_auth_session');
+            return null;
+          }
+          return s;
+        }
+      } catch (e) {}
     }
     return null;
   });
@@ -330,21 +340,21 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (saved) {
       try { return JSON.parse(saved); } catch (e) {}
     }
-    return INITIAL_BOOKINGS;
+    return import.meta.env.PROD ? [] : INITIAL_BOOKINGS;
   });
   const [technicians, setTechnicians] = useState<Technician[]>(() => {
     const saved = localStorage.getItem('servicepro_technicians');
     if (saved) {
       try { return JSON.parse(saved); } catch (e) {}
     }
-    return INITIAL_TECHNICIANS;
+    return import.meta.env.PROD ? [] : INITIAL_TECHNICIANS;
   });
   const [customers, setCustomers] = useState<Customer[]>(() => {
     const saved = localStorage.getItem('servicepro_customers');
     if (saved) {
       try { return JSON.parse(saved); } catch (e) {}
     }
-    return INITIAL_CUSTOMERS;
+    return import.meta.env.PROD ? [] : INITIAL_CUSTOMERS;
   });
   const [services, setServices] = useState<ServiceItem[]>(() => {
     const saved = localStorage.getItem('servicepro_services');
@@ -1064,6 +1074,12 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       _password: string,
       verifiedCloudSession?: { token: string; role: 'ADMIN' | 'STAFF'; fullName?: string }
     ): boolean => {
+      // Fail closed in production: authoritative server session token is strictly required
+      if (import.meta.env.PROD && (!verifiedCloudSession || !verifiedCloudSession.token)) {
+        addToast('Production authentication failed: verified server session token is required.', 'error');
+        return false;
+      }
+
       // Never permit local-only session creation when Cloud Supabase is configured
       if (supabaseService.isConfigured() && (!verifiedCloudSession || !verifiedCloudSession.token)) {
         addToast('Cloud authentication required: session token missing.', 'error');
@@ -1136,6 +1152,12 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       companyName?: string,
       verifiedToken?: string
     ): boolean => {
+      // Fail closed in production: authoritative server bootstrap token is strictly required
+      if (import.meta.env.PROD && !verifiedToken) {
+        addToast('Production setup requires server-side administrator provisioning.', 'error');
+        return false;
+      }
+
       // Never permit browser-only Admin bootstrap when Cloud Supabase is configured without server provisioning token verification
       if (supabaseService.isConfigured() && !verifiedToken) {
         addToast('Server-controlled first-Admin provisioning token verification is required.', 'error');
@@ -1598,9 +1620,9 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         supabaseService.fetchServices(),
         supabaseService.fetchBookings(),
       ]).then(([remCats, remSvcs, remBkgs]) => {
-        if (remCats && remCats.length > 0) setCategories(remCats);
-        if (remSvcs && remSvcs.length > 0) setServices(remSvcs);
-        if (remBkgs && remBkgs.length > 0) setBookings(remBkgs);
+        if (remCats !== null) setCategories(remCats);
+        if (remSvcs !== null) setServices(remSvcs);
+        if (remBkgs !== null) setBookings(remBkgs);
       }).catch(err => {
         console.warn('[AdminContext] Supabase initial synchronization skipped:', err);
       });

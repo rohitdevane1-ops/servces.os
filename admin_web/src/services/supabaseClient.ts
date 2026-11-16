@@ -391,16 +391,44 @@ class SupabaseService {
 
       const tenantId = await this.getTenantId();
       if (data.user?.id && tenantId) {
-        await this.client.from('users').insert({
+        const { error: userInsertError } = await this.client.from('users').insert({
           id: data.user.id,
           tenant_id: tenantId,
           email: email.trim().toLowerCase(),
           phone: `+1800${String(Date.now()).slice(-7)}`,
-          first_name: firstName,
-          last_name: lastName,
+          password_hash: 'SUPABASE_MANAGED_AUTH',
           role: safeRole,
           is_active: true,
+          is_verified: true,
         });
+
+        if (userInsertError) {
+          throw new Error(`User record provisioning failed: ${userInsertError.message}`);
+        }
+
+        if (safeRole === 'CUSTOMER') {
+          const { error: profError } = await this.client.from('customer_profiles').insert({
+            user_id: data.user.id,
+            tenant_id: tenantId,
+            full_name: `${firstName} ${lastName}`.trim(),
+            default_address_text: null,
+            courtesy_credit_cents: 0,
+          });
+          if (profError) {
+            console.warn('[SupabaseService] customer_profile creation note:', profError.message);
+          }
+        } else {
+          const { error: profError } = await this.client.from('provider_profiles').insert({
+            user_id: data.user.id,
+            tenant_id: tenantId,
+            full_name: `${firstName} ${lastName}`.trim(),
+            trade_category: 'General Maintenance',
+            license_number: null,
+          });
+          if (profError) {
+            console.warn('[SupabaseService] provider_profile creation note:', profError.message);
+          }
+        }
       }
 
       return { success: true, token: data.session?.access_token };
@@ -460,15 +488,36 @@ class SupabaseService {
   public async fetchCategories(): Promise<ServiceCategory[] | null> {
     if (!this.client) return null;
     try {
+      // 1. Primary: Query canonical service_categories table
       const { data, error } = await this.client
+        .from('service_categories')
+        .select('*')
+        .order('display_order', { ascending: true });
+
+      if (!error && data) {
+        return data.map(c => ({
+          id: c.id,
+          name: c.name || c.title || 'Category',
+          iconName: c.icon_name || 'Wrench',
+          serviceCount: 20,
+          color: '#6366F1'
+        }));
+      }
+
+      // 2. Fallback: Query legacy categories table if present
+      const { data: legacyData, error: legacyErr } = await this.client
         .from('categories')
         .select('*')
         .order('priority_rank', { ascending: true });
-      if (error) throw error;
-      if (!data || data.length === 0) return null;
-      return data.map(c => ({
+
+      if (legacyErr) {
+        if (error) throw error;
+        throw legacyErr;
+      }
+
+      return (legacyData || []).map(c => ({
         id: c.id,
-        name: c.title,
+        name: c.title || c.name || 'Category',
         iconName: c.icon_name || 'Wrench',
         serviceCount: 20,
         color: '#6366F1'
@@ -482,16 +531,40 @@ class SupabaseService {
   public async fetchServices(): Promise<ServiceItem[] | null> {
     if (!this.client) return null;
     try {
+      // 1. Primary: Query canonical services with service_categories relation
       const { data, error } = await this.client
+        .from('services')
+        .select('*, service_categories(name)')
+        .eq('is_active', true);
+
+      if (!error && data) {
+        return data.map(s => ({
+          id: s.id,
+          name: s.name,
+          category: s.service_categories?.name || 'General Service',
+          basePrice: Number(s.base_price_cents) / 100,
+          durationMinutes: s.estimated_duration_minutes || 60,
+          isPopular: s.is_popular || false,
+          status: s.is_active ? 'Active' : 'Draft',
+          description: s.description || ''
+        }));
+      }
+
+      // 2. Fallback: Query services with legacy categories relation
+      const { data: legacyData, error: legacyErr } = await this.client
         .from('services')
         .select('*, categories(title)')
         .eq('is_active', true);
-      if (error) throw error;
-      if (!data || data.length === 0) return null;
-      return data.map(s => ({
+
+      if (legacyErr) {
+        if (error) throw error;
+        throw legacyErr;
+      }
+
+      return (legacyData || []).map(s => ({
         id: s.id,
         name: s.name,
-        category: s.categories?.title || 'General HVAC',
+        category: s.categories?.title || 'General Service',
         basePrice: Number(s.base_price_cents) / 100,
         durationMinutes: s.estimated_duration_minutes || 60,
         isPopular: s.is_popular || false,
@@ -509,28 +582,56 @@ class SupabaseService {
     try {
       const { data, error } = await this.client
         .from('bookings')
-        .select('*, services(name, categories(title)), users!bookings_customer_id_fkey(first_name, last_name, phone)')
+        .select('*, services(name, service_categories(name)), users(email, phone)')
         .order('created_at', { ascending: false });
-      if (error) throw error;
-      if (!data || data.length === 0) return null;
-      return data.map(b => ({
+
+      if (error) {
+        // Fallback to legacy relation format
+        const { data: legData, error: legErr } = await this.client
+          .from('bookings')
+          .select('*, services(name, categories(title)), users(email, phone)')
+          .order('created_at', { ascending: false });
+        if (legErr) throw error;
+        return (legData || []).map(b => ({
+          id: b.id,
+          jobNo: b.booking_reference || `JOB-${b.id.substring(0, 6)}`,
+          customerName: b.users?.email ? b.users.email.split('@')[0] : 'Customer',
+          customerPhone: b.users?.phone || '',
+          customerAddress: b.address_text || 'Main Service Area',
+          serviceName: b.services?.name || 'General HVAC Service',
+          category: b.services?.categories?.title || 'HVAC',
+          technicianName: 'Field Pro',
+          technicianId: b.provider_id || b.assigned_provider_id || '',
+          scheduleDate: b.scheduled_start ? new Date(b.scheduled_start).toLocaleDateString() : 'Today',
+          scheduleTime: b.scheduled_start ? new Date(b.scheduled_start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '09:00 AM',
+          estimate: Number(b.total_authorized_cents || 0) / 100,
+          paymentStatus: b.escrow_status === 'RELEASED_TO_PROVIDER' ? 'Paid' : b.escrow_status === 'REFUNDED_TO_CUSTOMER' ? 'Unpaid' : 'Pending',
+          status: b.status === 'COMPLETED' ? 'Completed' : b.status === 'IN_PROGRESS' || b.status === 'ON_SITE' ? 'In Progress' : b.status === 'CANCELLED' ? 'Cancelled' : 'Scheduled',
+          priority: b.is_emergency ? 'Critical' : 'Medium',
+          lat: b.latitude || 25.7617,
+          lng: b.longitude || -80.1918,
+          notes: b.problem_description || ''
+        }));
+      }
+
+      return (data || []).map(b => ({
         id: b.id,
         jobNo: b.booking_reference || `JOB-${b.id.substring(0, 6)}`,
-        customerName: b.users ? `${b.users.first_name || ''} ${b.users.last_name || ''}`.trim() : 'Customer',
+        customerName: b.users?.email ? b.users.email.split('@')[0] : 'Customer',
         customerPhone: b.users?.phone || '',
         customerAddress: b.address_text || 'Main Service Area',
         serviceName: b.services?.name || 'General HVAC Service',
-        category: b.services?.categories?.title || 'HVAC',
+        category: b.services?.service_categories?.name || 'HVAC',
         technicianName: 'Field Pro',
-        technicianId: b.provider_id || '',
+        technicianId: b.provider_id || b.assigned_provider_id || '',
         scheduleDate: b.scheduled_start ? new Date(b.scheduled_start).toLocaleDateString() : 'Today',
         scheduleTime: b.scheduled_start ? new Date(b.scheduled_start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '09:00 AM',
         estimate: Number(b.total_authorized_cents || 0) / 100,
         paymentStatus: b.escrow_status === 'RELEASED_TO_PROVIDER' ? 'Paid' : b.escrow_status === 'REFUNDED_TO_CUSTOMER' ? 'Unpaid' : 'Pending',
-        status: b.status === 'COMPLETED' ? 'Completed' : b.status === 'IN_PROGRESS' ? 'In Progress' : b.status === 'CANCELLED' ? 'Cancelled' : 'Scheduled',
+        status: b.status === 'COMPLETED' ? 'Completed' : b.status === 'IN_PROGRESS' || b.status === 'ON_SITE' ? 'In Progress' : b.status === 'CANCELLED' ? 'Cancelled' : 'Scheduled',
         priority: b.is_emergency ? 'Critical' : 'Medium',
-        lat: 25.7617,
-        lng: -80.1918,
+        lat: b.latitude || 25.7617,
+        lng: b.longitude || -80.1918,
         notes: b.problem_description || ''
       }));
     } catch (e) {
@@ -792,23 +893,46 @@ class SupabaseService {
       if (!tenantId) return false;
       const slug = (category.name || 'category').toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-      // Aligned with 01_initial_schema.sql categories table (includes NOT NULL image_url & priority_rank)
-      const payload: Record<string, any> = {
+      // 1. Primary: Aligned with 003_services_and_catalog.sql service_categories table
+      const canonicalPayload: Record<string, any> = {
         tenant_id: tenantId,
         slug: `${slug}-${Date.now().toString().slice(-4)}`,
+        name: category.name || 'New Category',
+        icon_name: category.iconName || 'wrench',
+        display_order: (category as any).displayOrder || (category as any).priorityRank || 1,
+        is_active: true
+      };
+
+      if (this.isValidUuid(category.id)) {
+        canonicalPayload.id = category.id;
+      } else if (category.id) {
+        canonicalPayload.id = this.toDeterministicUuid(`category:${tenantId}:${category.id}`);
+      }
+
+      const { data: canonData, error: canonError } = await this.client
+        .from('service_categories')
+        .upsert(canonicalPayload)
+        .select('id')
+        .maybeSingle();
+
+      if (!canonError && canonData?.id) {
+        return true;
+      }
+
+      // 2. Fallback: Aligned with legacy categories table if present
+      const legacyPayload: Record<string, any> = {
+        tenant_id: tenantId,
+        slug: canonicalPayload.slug,
         title: category.name || 'New Category',
         short_title: (category.name || 'Category').slice(0, 64),
-        priority_rank: (category as any).priorityRank || 1,
+        priority_rank: canonicalPayload.display_order,
         icon_name: category.iconName || 'Wrench',
         image_url: (category as any).imageUrl || '/assets/categories/default.jpg',
         is_active: true
       };
-      if (this.isValidUuid(category.id)) {
-        payload.id = category.id;
-      } else if (category.id) {
-        payload.id = this.toDeterministicUuid(`category:${tenantId}:${category.id}`);
-      }
-      const { data, error } = await this.client.from('categories').upsert(payload).select('id').maybeSingle();
+      if (canonicalPayload.id) legacyPayload.id = canonicalPayload.id;
+
+      const { data, error } = await this.client.from('categories').upsert(legacyPayload).select('id').maybeSingle();
       if (error || !data?.id) {
         if (error) throw error;
         return false;
@@ -823,31 +947,57 @@ class SupabaseService {
   public async saveService(service: Partial<ServiceItem>): Promise<boolean> {
     if (!this.client) return false;
     try {
+      const tenantId = await this.getTenantId();
+      if (!tenantId) return false;
+
       let categoryId: string | null = null;
       if (service.category) {
-        const { data: matchedCat } = await this.client
-          .from('categories')
+        // Try service_categories first, then legacy categories
+        const { data: canonCat } = await this.client
+          .from('service_categories')
           .select('id')
-          .ilike('title', service.category)
+          .ilike('name', service.category)
           .limit(1)
           .maybeSingle();
-        if (matchedCat?.id) categoryId = matchedCat.id;
+        if (canonCat?.id) {
+          categoryId = canonCat.id;
+        } else {
+          const { data: matchedCat } = await this.client
+            .from('categories')
+            .select('id')
+            .ilike('title', service.category)
+            .limit(1)
+            .maybeSingle();
+          if (matchedCat?.id) categoryId = matchedCat.id;
+        }
       }
 
       if (!categoryId) {
-        const { data: fallbackCat } = await this.client
-          .from('categories')
+        const { data: fallbackCanon } = await this.client
+          .from('service_categories')
           .select('id')
           .limit(1)
           .maybeSingle();
-        if (fallbackCat?.id) categoryId = fallbackCat.id;
+        if (fallbackCanon?.id) {
+          categoryId = fallbackCanon.id;
+        } else {
+          const { data: fallbackCat } = await this.client
+            .from('categories')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (fallbackCat?.id) categoryId = fallbackCat.id;
+        }
       }
       if (!categoryId) return false;
 
-      // Aligned with 01_initial_schema.sql services table (no tenant_id column on services; links via category_id)
+      // Aligned with 003_services_and_catalog.sql services table (includes tenant_id NOT NULL & category_id)
+      const slug = `${(service.name || 'service').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
       const payload: Record<string, any> = {
+        tenant_id: tenantId,
         category_id: categoryId,
         name: service.name || 'New Service',
+        slug: slug,
         description: service.description || 'Standard service package',
         base_price_cents: Math.round((service.basePrice || 100) * 100),
         estimated_duration_minutes: service.durationMinutes || 60,

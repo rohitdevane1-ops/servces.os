@@ -1,0 +1,15 @@
+# ==============================================================================
+# ServicePro OS — Local Development Docker Compose Override
+# Use: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  postgres:
+    ports:
+      - "${POSTGRES_BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_BIND_IP:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
