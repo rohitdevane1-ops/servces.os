@@ -185,7 +185,7 @@ flowchart TD
 | **Broadcast Dispatch Offers** | Automated broadcast to nearby techs | Complete | `tech_broadcast_screen.dart`, `TechBroadcastScreen.kt` | `dispatch.routes.ts` (`POST /broadcasts`) | `dispatch_broadcasts` | Fully Verified | 5-minute expiration window enforced |
 | **Safety Arrival PIN** | Deterministic 4-digit arrival handshake | Complete | `tech_job_execution_screen.dart`, `Page08BookingDetails.tsx` | `bookings.routes.ts` (`POST /:id/verify-arrival`) | `bookings.customer_safety_pin` | Partial / Risk | In-memory lockout store lost on restart |
 | **Work Order Proof Capture** | Before/after photos & digital signature | Complete | `work_order_completion_screen.dart` | `bookings.routes.ts` (`POST /:id/complete`) | `work_order_proofs`, `invoices` | Fully Verified | Stripe capture correctly executed outside SQL |
-| **Stripe Webhook Settlement** | Inbound webhook settlement & ledger | Degraded | N/A (Server-to-Server) | `finances.routes.ts` (`POST /stripe-webhook`) | `webhook_events`, `payment_transactions`, `ledger_entries` | Severe Defect | Webhook rejected in multi-tenant mode |
+| **Stripe Webhook Settlement** | Inbound webhook settlement & ledger | Degraded | N/A (Server-to-Server) | `finances.routes.ts` (`POST /webhooks/stripe`) | `webhook_events`, `payment_transactions`, `ledger_entries` | Severe Defect | Webhook rejected in multi-tenant mode |
 | **Technician Payouts Engine** | Stripe Connect automated transfers | Degraded | `tech_wallet_screen.dart`, `Page17PayoutsBatchProcessing.tsx` | `finances.routes.ts` (`POST /payouts`) | `provider_payouts`, `ledger_entries` | Severe Defect | Payout retry invokes Stripe inside SQL block |
 | **Double-Entry General Ledger** | Exact-cent balanced accounting entries | Complete | `Page18PlatformFinancialLedger.tsx` | Database schema constraints & `finances.routes.ts` | `ledger_accounts`, `ledger_entries` | Fully Verified | Migration 009 adds payout composite keys |
 | **CRM Customer Timeline** | History, spend metrics, and notes | Complete | `Page05CRMDirectory.tsx`, `Page06CustomerProfileDetail.tsx` | `crm.routes.ts` | `customer_profiles`, `booking_timeline_events` | Fully Verified | Clean tenant scoping |
@@ -362,7 +362,7 @@ Every project-owned file in the repository has been fully inspected in strict re
 - **Affected Files:**
   - `server/src/middleware/tenant.ts` (Lines 20–30 & Lines 100–120)
 - **Root Cause:**
-  `tenantResolver` runs globally on all requests via Fastify's `onRequest` hook. It exempts `/health`, `/docs`, and `/api/v1/installer`, but fails to exempt `/api/v1/finances/stripe-webhook`.
+  `tenantResolver` runs globally on all requests via Fastify's `onRequest` hook. It exempts `/health`, `/docs`, and `/api/v1/installer`, but fails to exempt `/api/v1/finances/webhooks/stripe`.
 - **Concrete Code Evidence:**
   ```typescript
   // server/src/middleware/tenant.ts:20-27
@@ -506,7 +506,7 @@ Every project-owned file in the repository has been fully inspected in strict re
 - **Affected Files:**
   - `server/src/config/env.ts` (Lines 9–16 & Lines 90–96)
 - **Root Cause:**
-  The default key `0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef` is not included in the `INSECURE_DEFAULTS` array.
+  In `server/src/config/env.ts`, `APP_ENCRYPTION_KEY` is checked in production with a strict 64-character hex regex (`/^[0-9a-f]{64}$/i`). However, the publicly known default key `0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef` is exactly 64 hex characters, so it passes regex validation while being omitted from `INSECURE_DEFAULTS`. It must be explicitly blocklisted.
 - **Impact:**
   Production containers can boot with a publicly known default encryption key without triggering the fail-closed guard.
 - **Confidence Level:** 100%.
@@ -711,16 +711,17 @@ Execution command: `npm test` inside `server/`
 1. `Booking Security, Safety PIN & Schema Integrity Suite` (5 tests)
 2. `Anti-Bot CAPTCHA & Tiered Rate Limiting Suite` (3 tests)
 3. `Envelope & Auth Service Unit Tests` (5 tests)
-4. `Fastify Route Injection & Contract Integration Suite` (7 tests)
-5. `Hardening & Security Remediation Suite` (4 tests)
+4. `Fastify Route Injection & End-to-End Contract Integration Suite (TEST-01)` (13 tests)
+5. `Hardening & Security Remediation Suite` (6 tests)
 6. `Double-Entry Ledger & Financial Engine Suite` (3 tests)
 7. `MFA Lifecycle & Emergency Recovery Codes Suite` (4 tests)
 8. `Database Migrations Validation Suite` (8 tests)
-9. `Mobile Client Auth & Cryptographic Storage Suite` (3 tests)
+9. `Mobile Client Authentication & Cryptographic Storage Security Suite (MOB-01, MOB-02)` (3 tests)
 10. `Financial Safety, Payout Invariants & Webhook Security Suite` (10 tests)
 11. `Fastify Route Rate Limiting Injection Suite` (1 test)
-12. `Financial Integrity Reproduction Suite (BACK-01 to BACK-04)` (4 tests)
+12. `Financial Integrity Reproduction & Verification Suite (BACK-01 through BACK-04)` (4 tests)
 13. `Spatial Radar & Booking Dispatch State Machine Suite` (3 tests)
+**Total: Exactly 68 passing tests across 13 suites.**
 
 ### Testing Limitations & Missing Coverage
 - **Zero Real Database Integration Tests:** All 68 tests run with database and Stripe mocks or static SQL AST parsing. None execute against a live PostgreSQL 16 container in CI.
@@ -875,7 +876,7 @@ $ cd server && npm test
    - Refactor `POST /bookings`, `POST /bookings/:id/confirm-payment`, `POST /bookings/:id/cancel`, and payout retries.
    - Enforce two-phase commit: persist durable state in PostgreSQL -> execute Stripe HTTP call -> reconcile outcome.
 2. **TASK-02 (Fix CRIT-02): Exempt Stripe Webhook Route in `tenantResolver`**
-   - Add `request.url.startsWith('/api/v1/finances/stripe-webhook')` to the exempt list in `server/src/middleware/tenant.ts`.
+   - Add `request.url.startsWith('/api/v1/finances/webhooks/stripe')` to the exempt list in `server/src/middleware/tenant.ts`.
    - Resolve tenant context dynamically from the payment transaction or Stripe event metadata.
 3. **TASK-03 (Fix CRIT-03): Prevent Premature Webhook Claim Commits**
    - If `txRes.rows.length === 0` in `payment_intent.succeeded`, abort transaction without claiming event and return HTTP 422 to trigger Stripe retry.
