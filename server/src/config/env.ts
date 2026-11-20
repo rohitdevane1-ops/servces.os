@@ -6,13 +6,15 @@ import path from 'path';
 dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
 dotenv.config();
 
-const INSECURE_DEFAULTS = [
+export const INSECURE_DEFAULTS = [
   'servicepro_os_super_secure_jwt_access_secret_key_minimum_32_characters_long_for_entropy',
   'servicepro_os_super_secure_jwt_refresh_secret_key_minimum_32_characters_long_for_entropy',
   'turnkey_bootstrap_setup_token_enterprise',
   'ChangeMe_ProductionJwtSecretKey_Min32Chars!',
   'ChangeMe_ProductionRefreshSecretKey_Min32Chars!',
-  'ServiceProBootstrapToken2026!'
+  'ServiceProBootstrapToken2026!',
+  // Publicly known default APP_ENCRYPTION_KEY (valid 64-hex, so the format check alone is not enough)
+  '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 ];
 
 const envSchema = z.object({
@@ -56,12 +58,44 @@ const envSchema = z.object({
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
   SES_FROM_EMAIL: z.string().default('support@serviceproos.com'),
+
+  // Reverse-proxy trust: 'false' (default) | 'true' | hop count (e.g. '1') | comma list of IPs/CIDRs
+  TRUST_PROXY: z.string().default('false'),
+  // Payment outbox worker lifecycle
+  OUTBOX_WORKER_ENABLED: z.string().default('true'),
 });
 
+export type TrustProxySetting = boolean | string | string[] | ((address: string, hop: number) => boolean);
+
+/** Validate and normalise TRUST_PROXY. Anything unrecognised fails closed (throws). */
+export function parseTrustProxy(raw: string | undefined): TrustProxySetting {
+  const v = (raw ?? 'false').trim();
+  if (v === '' || v.toLowerCase() === 'false' || v === '0') return false;
+  if (v.toLowerCase() === 'true') return true;
+  if (/^\d+$/.test(v)) {
+    const hops = parseInt(v, 10);
+    if (hops < 1 || hops > 10) throw new Error('[Configuration Error] TRUST_PROXY hop count must be between 1 and 10');
+    const fn = (_address: string, hop: number) => hop <= hops;
+    (fn as any).hops = hops;
+    return fn;
+  }
+  const entries = v.split(',').map(x => x.trim()).filter(Boolean);
+  const ipv4 = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/;
+  const ipv6 = /^[0-9a-fA-F:]+(\/\d{1,3})?$/;
+  for (const e of entries) {
+    if (!(ipv4.test(e) || (e.includes(':') && ipv6.test(e)))) {
+      throw new Error(`[Configuration Error] TRUST_PROXY entry '${e}' is not a valid IP/CIDR, hop count, or boolean`);
+    }
+  }
+  if (entries.length === 0) return false;
+  return entries;
+}
+
+export function validateEnv(source: Record<string, string | undefined>) {
 const rawEnv = {
-  ...process.env,
-  JWT_SECRET: process.env.JWT_SECRET || process.env.JWT_ACCESS_SECRET,
-  BOOTSTRAP_TOKEN: process.env.BOOTSTRAP_TOKEN || process.env.INITIAL_ADMIN_BOOTSTRAP_SECRET,
+  ...source,
+  JWT_SECRET: source.JWT_SECRET || source.JWT_ACCESS_SECRET,
+  BOOTSTRAP_TOKEN: source.BOOTSTRAP_TOKEN || source.INITIAL_ADMIN_BOOTSTRAP_SECRET,
 };
 
 const parsed = envSchema.safeParse(rawEnv);
@@ -108,10 +142,16 @@ if (validated.NODE_ENV === 'production') {
   }
 }
 
-export const env = {
+parseTrustProxy(validated.TRUST_PROXY); // fail fast on invalid proxy configuration
+
+return {
   ...validated,
   JWT_SECRET: effectiveJwtSecret,
   JWT_ACCESS_SECRET: effectiveJwtSecret, // alias
   BOOTSTRAP_TOKEN: effectiveBootstrapToken,
   INITIAL_ADMIN_BOOTSTRAP_SECRET: effectiveBootstrapToken, // alias
 };
+}
+
+export const env = validateEnv(process.env as Record<string, string | undefined>);
+export const trustProxySetting: TrustProxySetting = parseTrustProxy(env.TRUST_PROXY);

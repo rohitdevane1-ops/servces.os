@@ -1,11 +1,14 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import Stripe from 'stripe';
+import pg from 'pg';
 import crypto from 'crypto';
 import { pool } from '../../database/pool.js';
 import { successResponse, errorResponse } from '../../types/envelope.js';
 import { authenticate, requirePermission } from '../../middleware/rbac.js';
 import { env } from '../../config/env.js';
+import { getStripe, hasStripeConfigured, isDefinitiveStripeError } from '../../services/stripeClient.js';
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const invoiceQuerySchema = z.object({
   page: z.coerce.number().min(1).default(1),
@@ -18,6 +21,101 @@ const payoutTriggerSchema = z.object({
   amountCents: z.number().int().positive(),
   description: z.string().optional(),
 });
+
+type ResolvedTxResult =
+  | { status: 'FOUND'; row: any }
+  | { status: 'MISSING' }
+  | { status: 'CONFLICT'; code: string; message: string };
+
+/**
+ * Sequential dual-key webhook resolution:
+ *  1) Match by verified Stripe PaymentIntent ID first.
+ *  2) Fallback to metadata.transactionId (strict UUID) ONLY where stripe_payment_intent_id IS NULL.
+ *  3) Reject divergence between PaymentIntent ID, metadata.transactionId, and metadata.tenantId with 409.
+ */
+async function resolveWebhookPaymentTx(
+  client: pg.PoolClient,
+  stripePaymentIntentId: string,
+  metadata?: Record<string, any>
+): Promise<ResolvedTxResult> {
+  const selectSql = `
+    SELECT pt.id, pt.tenant_id, pt.invoice_id, pt.stripe_payment_intent_id,
+           pt.authorized_amount_cents, pt.currency, pt.status,
+           i.booking_id, i.total_amount_cents,
+           b.status as booking_status, b.assigned_provider_id,
+           t.default_platform_commission_bps
+    FROM payment_transactions pt
+    JOIN invoices i ON i.id = pt.invoice_id
+    JOIN bookings b ON b.id = i.booking_id
+    JOIN tenants t ON t.id = pt.tenant_id`;
+
+  const metaTxId = typeof metadata?.transactionId === 'string' && UUID_REGEX.test(metadata.transactionId)
+    ? metadata.transactionId
+    : null;
+  const metaTenantId = typeof metadata?.tenantId === 'string' && UUID_REGEX.test(metadata.tenantId)
+    ? metadata.tenantId
+    : null;
+
+  const byPiRes = await client.query(
+    `${selectSql} WHERE pt.stripe_payment_intent_id = $1 FOR UPDATE OF pt`,
+    [stripePaymentIntentId]
+  );
+
+  if (byPiRes.rows.length > 0) {
+    const row = byPiRes.rows[0];
+    if (metaTxId && row.id !== metaTxId) {
+      return {
+        status: 'CONFLICT',
+        code: 'WEBHOOK_CORRELATION_CONFLICT',
+        message: `Stripe PaymentIntent ${stripePaymentIntentId} maps to transaction ${row.id}, conflicting with metadata transactionId ${metaTxId}.`,
+      };
+    }
+    if (metaTenantId && row.tenant_id !== metaTenantId) {
+      return {
+        status: 'CONFLICT',
+        code: 'WEBHOOK_TENANT_MISMATCH',
+        message: `Webhook metadata tenantId ${metaTenantId} mismatches payment transaction tenant ${row.tenant_id}.`,
+      };
+    }
+    return { status: 'FOUND', row };
+  }
+
+  if (metaTxId) {
+    const byMetaRes = await client.query(
+      `${selectSql} WHERE pt.id = $1 FOR UPDATE OF pt`,
+      [metaTxId]
+    );
+    if (byMetaRes.rows.length > 0) {
+      const row = byMetaRes.rows[0];
+      if (row.stripe_payment_intent_id && row.stripe_payment_intent_id !== stripePaymentIntentId) {
+        return {
+          status: 'CONFLICT',
+          code: 'WEBHOOK_CORRELATION_CONFLICT',
+          message: `Transaction ${row.id} is already bound to ${row.stripe_payment_intent_id}, conflicting with incoming ${stripePaymentIntentId}.`,
+        };
+      }
+      if (metaTenantId && row.tenant_id !== metaTenantId) {
+        return {
+          status: 'CONFLICT',
+          code: 'WEBHOOK_TENANT_MISMATCH',
+          message: `Webhook metadata tenantId ${metaTenantId} mismatches payment transaction tenant ${row.tenant_id}.`,
+        };
+      }
+      if (!row.stripe_payment_intent_id) {
+        await client.query(
+          `UPDATE payment_transactions
+           SET stripe_payment_intent_id = $1, updated_at = NOW()
+           WHERE id = $2 AND stripe_payment_intent_id IS NULL`,
+          [stripePaymentIntentId, row.id]
+        );
+        row.stripe_payment_intent_id = stripePaymentIntentId;
+      }
+      return { status: 'FOUND', row };
+    }
+  }
+
+  return { status: 'MISSING' };
+}
 
 export async function financeRoutes(fastify: FastifyInstance) {
   // Capture raw body buffer for Stripe webhook HMAC signature verification
@@ -43,7 +141,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
     const sig = request.headers['stripe-signature'] as string;
     let event: any = request.body;
 
-    // Verify HMAC signature when STRIPE_WEBHOOK_SECRET is configured
+    // Enforce HMAC signature verification in production and whenever STRIPE_WEBHOOK_SECRET or STRIPE_SECRET_KEY is configured
     if (env.STRIPE_WEBHOOK_SECRET) {
       if (!sig) {
         return reply.status(400).send(
@@ -51,7 +149,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
         );
       }
       try {
-        const stripe = new Stripe(env.STRIPE_SECRET_KEY || '');
+        const stripe = getStripe(env.STRIPE_SECRET_KEY || '');
         const rawPayload = (request as any).rawBody || (typeof request.body === 'string' ? request.body : JSON.stringify(request.body));
         event = stripe.webhooks.constructEvent(rawPayload, sig, env.STRIPE_WEBHOOK_SECRET);
       } catch (sigErr: any) {
@@ -59,9 +157,9 @@ export async function financeRoutes(fastify: FastifyInstance) {
           errorResponse('INVALID_STRIPE_SIGNATURE', `Signature verification failed: ${sigErr.message}`, requestId)
         );
       }
-    } else if (env.NODE_ENV === 'production') {
+    } else if (env.NODE_ENV === 'production' || env.STRIPE_SECRET_KEY) {
       return reply.status(500).send(
-        errorResponse('WEBHOOK_SECRET_MISSING', 'STRIPE_WEBHOOK_SECRET is required to process inbound webhooks in production.', requestId)
+        errorResponse('WEBHOOK_SECRET_MISSING', 'STRIPE_WEBHOOK_SECRET is required to process inbound webhooks.', requestId)
       );
     }
 
@@ -74,7 +172,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
     const eventId = event.id;
     const eventType = event.type;
 
-    // 1. Transactional & Atomic Idempotency Event Claim
+    // 1. Transactional & Atomic Idempotency Event Claim (rolled back if target local record is missing or conflicted)
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -88,156 +186,313 @@ export async function financeRoutes(fastify: FastifyInstance) {
       );
 
       if (claimRes.rowCount === 0) {
-        // Event already claimed or processed concurrently
         await client.query('ROLLBACK');
         return reply.status(200).send({ received: true, idempotent: true });
       }
 
-      // 2. Process Known Events Atomically with Tenant and State Validation
+      // 2. Process Known Events Atomically with Tenant, Amount, Currency and State Validation
       if (eventType === 'payment_intent.succeeded') {
         const paymentIntent = event.data?.object;
-        if (paymentIntent?.id) {
-          const amountReceived = paymentIntent.amount_received ?? paymentIntent.amount;
-          const eventCurrency = (paymentIntent.currency || 'usd').toUpperCase();
+        if (!paymentIntent?.id) {
+          await client.query('ROLLBACK');
+          return reply.status(400).send(errorResponse('INVALID_PAYLOAD', 'Missing paymentIntent.id', requestId));
+        }
 
-          const txRes = await client.query<{
-            id: string;
-            tenant_id: string;
-            invoice_id: string;
-            authorized_amount_cents: string;
-            currency: string;
-            booking_id: string;
-            total_amount_cents: string;
-            assigned_provider_id: string;
-            default_platform_commission_bps: number;
-          }>(
-            `SELECT pt.id, pt.tenant_id, pt.invoice_id, pt.authorized_amount_cents, pt.currency,
-                    i.booking_id, i.total_amount_cents,
-                    b.assigned_provider_id,
-                    t.default_platform_commission_bps
-             FROM payment_transactions pt
-             JOIN invoices i ON i.id = pt.invoice_id
-             JOIN bookings b ON b.id = i.booking_id
-             JOIN tenants t ON t.id = pt.tenant_id
-             WHERE pt.stripe_payment_intent_id = $1
-             FOR UPDATE OF pt`,
-            [paymentIntent.id]
+        const resolved = await resolveWebhookPaymentTx(client, paymentIntent.id, paymentIntent.metadata);
+        if (resolved.status === 'CONFLICT') {
+          await client.query('ROLLBACK');
+          return reply.status(409).send(errorResponse(resolved.code, resolved.message, requestId));
+        }
+        if (resolved.status === 'MISSING') {
+          await client.query('ROLLBACK');
+          return reply.status(503).send(
+            errorResponse('WEBHOOK_TARGET_NOT_FOUND', 'Referenced payment transaction is not committed yet; retry later.', requestId)
+          );
+        }
+
+        const tx = resolved.row;
+        const amountReceived = paymentIntent.amount_received ?? paymentIntent.amount;
+        const eventCurrency = (paymentIntent.currency || 'usd').toUpperCase();
+        const authorizedCents = parseInt(tx.authorized_amount_cents, 10);
+        const txCurrency = (tx.currency || 'usd').toUpperCase();
+
+        // Strict Discrepancy Quarantine: Check amount and currency
+        if (amountReceived !== authorizedCents || eventCurrency !== txCurrency) {
+          await client.query(
+            `UPDATE payment_transactions 
+             SET status = 'DISCREPANCY_QUARANTINED', error_message = $1, updated_at = NOW() 
+             WHERE id = $2`,
+            [`Amount/currency mismatch: received ${amountReceived} ${eventCurrency}, expected ${authorizedCents} ${txCurrency}`, tx.id]
+          );
+        } else {
+          // 1. Settle Payment Transaction (idempotent transition to SUCCEEDED)
+          await client.query(
+            `UPDATE payment_transactions 
+             SET status = 'SUCCEEDED', captured_amount_cents = $1, updated_at = NOW() 
+             WHERE id = $2 AND status IN ('PENDING', 'REQUIRES_CAPTURE', 'SUCCEEDED')`,
+            [amountReceived, tx.id]
           );
 
-          if (txRes.rows.length > 0) {
-            const tx = txRes.rows[0];
-            const authorizedCents = parseInt(tx.authorized_amount_cents, 10);
-            const txCurrency = (tx.currency || 'usd').toUpperCase();
+          // 2. Settle Invoice
+          await client.query(
+            `UPDATE invoices 
+             SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() 
+             WHERE id = $1`,
+            [tx.invoice_id]
+          );
 
-            // Strict Discrepancy Quarantine: Check amount and currency
-            if (amountReceived !== authorizedCents || eventCurrency !== txCurrency) {
+          // 3. Post Double-Entry Ledger Entries
+          const accRes = await client.query(
+            `SELECT id, account_number FROM ledger_accounts WHERE tenant_id = $1`,
+            [tx.tenant_id]
+          );
+          const accounts = accRes.rows;
+          const bankAssetAcc = accounts.find(a => a.account_number === '1010')?.id;
+          const escrowClearingAcc = accounts.find(a => a.account_number === '1020')?.id || bankAssetAcc;
+          const escrowLiabilityAcc = accounts.find(a => a.account_number === '2010')?.id;
+          const techPayableAcc = accounts.find(a => a.account_number === '2020')?.id;
+          const platformRevAcc = accounts.find(a => a.account_number === '4010')?.id;
+
+          // Always record ESCROW_CAPTURE on capture: Dr 1020 (Stripe Holding Escrow Clearing) / Cr 2010 (Customer Escrow Liability)
+          if (escrowClearingAcc && escrowLiabilityAcc && amountReceived > 0) {
+            await client.query(
+              `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+               VALUES ($1, $2, 'ESCROW_CAPTURE', $3, $4, $5, $6)
+               ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+              [tx.tenant_id, tx.id, escrowClearingAcc, escrowLiabilityAcc, amountReceived, `Escrow captured via webhook for invoice ${tx.invoice_id}`]
+            );
+          }
+
+          // Release Escrow to Platform Revenue (4010) and Tech Payable (2020) ONLY when booking work is COMPLETED
+          if (tx.booking_status === 'COMPLETED') {
+            const totalCents = Number(tx.total_amount_cents || amountReceived);
+            const commissionBps = Number(tx.default_platform_commission_bps || 1500);
+            const platformFeeCents = Math.round(totalCents * (commissionBps / 10000));
+            const netTechPayoutCents = totalCents - platformFeeCents;
+
+            if (escrowLiabilityAcc && platformRevAcc && platformFeeCents > 0) {
               await client.query(
-                `UPDATE payment_transactions 
-                 SET status = 'DISCREPANCY_QUARANTINED', error_message = $1, updated_at = NOW() 
-                 WHERE id = $2`,
-                [`Amount/currency mismatch: received ${amountReceived} ${eventCurrency}, expected ${authorizedCents} ${txCurrency}`, tx.id]
+                `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+                 VALUES ($1, $2, 'PLATFORM_FEE', $3, $4, $5, $6)
+                 ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+                [tx.tenant_id, tx.id, escrowLiabilityAcc, platformRevAcc, platformFeeCents, `Platform fee via webhook for invoice ${tx.invoice_id}`]
               );
-            } else {
-              // 1. Settle Payment Transaction
+            }
+
+            if (escrowLiabilityAcc && techPayableAcc && netTechPayoutCents > 0) {
               await client.query(
-                `UPDATE payment_transactions 
-                 SET status = 'SUCCEEDED', captured_amount_cents = $1, updated_at = NOW() 
-                 WHERE id = $2`,
-                [amountReceived, tx.id]
+                `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+                 VALUES ($1, $2, 'TECH_PAYABLE', $3, $4, $5, $6)
+                 ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+                [tx.tenant_id, tx.id, escrowLiabilityAcc, techPayableAcc, netTechPayoutCents, `Technician payable via webhook for invoice ${tx.invoice_id}`]
               );
-
-              // 2. Settle Invoice
-              await client.query(
-                `UPDATE invoices 
-                 SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() 
-                 WHERE id = $1`,
-                [tx.invoice_id]
-              );
-
-              // 3. Post Double-Entry Ledger Entries
-              const accRes = await client.query(
-                `SELECT id, account_number FROM ledger_accounts WHERE tenant_id = $1`,
-                [tx.tenant_id]
-              );
-              const accounts = accRes.rows;
-              const escrowLiabilityAcc = accounts.find(a => a.account_number === '2010')?.id;
-              const techPayableAcc = accounts.find(a => a.account_number === '2020')?.id;
-              const platformRevAcc = accounts.find(a => a.account_number === '4010')?.id;
-
-              const totalCents = Number(tx.total_amount_cents || amountReceived);
-              const commissionBps = Number(tx.default_platform_commission_bps || 1500);
-              const platformFeeCents = Math.round(totalCents * (commissionBps / 10000));
-              const netTechPayoutCents = totalCents - platformFeeCents;
-
-              if (escrowLiabilityAcc && platformRevAcc && platformFeeCents > 0) {
-                await client.query(
-                  `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
-                   VALUES ($1, $2, 'PLATFORM_FEE', $3, $4, $5, $6)
-                   ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
-                  [tx.tenant_id, tx.id, escrowLiabilityAcc, platformRevAcc, platformFeeCents, `Platform fee via webhook for invoice ${tx.invoice_id}`]
-                );
-              }
-
-              if (escrowLiabilityAcc && techPayableAcc && netTechPayoutCents > 0) {
-                await client.query(
-                  `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
-                   VALUES ($1, $2, 'TECH_PAYABLE', $3, $4, $5, $6)
-                   ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
-                  [tx.tenant_id, tx.id, escrowLiabilityAcc, techPayableAcc, netTechPayoutCents, `Technician payable via webhook for invoice ${tx.invoice_id}`]
-                );
-              }
             }
           }
         }
       } else if (eventType === 'payment_intent.payment_failed') {
         const paymentIntent = event.data?.object;
         if (paymentIntent?.id) {
+          const resolved = await resolveWebhookPaymentTx(client, paymentIntent.id, paymentIntent.metadata);
+          if (resolved.status === 'CONFLICT') {
+            await client.query('ROLLBACK');
+            return reply.status(409).send(errorResponse(resolved.code, resolved.message, requestId));
+          }
+          if (resolved.status === 'MISSING') {
+            await client.query('ROLLBACK');
+            return reply.status(503).send(errorResponse('WEBHOOK_TARGET_NOT_FOUND', 'Payment transaction not committed yet.', requestId));
+          }
           await client.query(
             `UPDATE payment_transactions 
              SET status = 'FAILED', updated_at = NOW() 
-             WHERE stripe_payment_intent_id = $1`,
-            [paymentIntent.id]
+             WHERE id = $1 AND status NOT IN ('SUCCEEDED', 'REFUNDED')`,
+            [resolved.row.id]
           );
         }
       } else if (eventType === 'payment_intent.canceled') {
         const paymentIntent = event.data?.object;
         if (paymentIntent?.id) {
+          const resolved = await resolveWebhookPaymentTx(client, paymentIntent.id, paymentIntent.metadata);
+          if (resolved.status === 'CONFLICT') {
+            await client.query('ROLLBACK');
+            return reply.status(409).send(errorResponse(resolved.code, resolved.message, requestId));
+          }
+          if (resolved.status === 'MISSING') {
+            await client.query('ROLLBACK');
+            return reply.status(503).send(errorResponse('WEBHOOK_TARGET_NOT_FOUND', 'Payment transaction not committed yet.', requestId));
+          }
           await client.query(
             `UPDATE payment_transactions 
              SET status = 'VOIDED', updated_at = NOW() 
-             WHERE stripe_payment_intent_id = $1`,
-            [paymentIntent.id]
+             WHERE id = $1 AND status NOT IN ('SUCCEEDED', 'REFUNDED')`,
+            [resolved.row.id]
           );
         }
       } else if (eventType === 'charge.refunded') {
         const charge = event.data?.object;
         if (charge?.payment_intent) {
+          const resolved = await resolveWebhookPaymentTx(client, charge.payment_intent, charge.metadata);
+          if (resolved.status === 'CONFLICT') {
+            await client.query('ROLLBACK');
+            return reply.status(409).send(errorResponse(resolved.code, resolved.message, requestId));
+          }
+          if (resolved.status === 'MISSING') {
+            await client.query('ROLLBACK');
+            return reply.status(503).send(errorResponse('WEBHOOK_TARGET_NOT_FOUND', 'Payment transaction not committed yet.', requestId));
+          }
           await client.query(
             `UPDATE payment_transactions 
              SET status = 'REFUNDED', refunded_amount_cents = $1, updated_at = NOW() 
-             WHERE stripe_payment_intent_id = $2`,
-            [charge.amount_refunded || 0, charge.payment_intent]
+             WHERE id = $2`,
+            [charge.amount_refunded || 0, resolved.row.id]
           );
         }
       } else if (eventType === 'transfer.reversed') {
         const transfer = event.data?.object;
         if (transfer?.id) {
-          await client.query(
-            `UPDATE provider_payouts 
-             SET status = 'REVERSED', updated_at = NOW() 
-             WHERE stripe_transfer_id = $1`,
+          const payoutRes = await client.query<{
+            id: string;
+            tenant_id: string;
+            provider_id: string;
+            amount_cents: string;
+            amount_reversed_cents: string;
+            status: string;
+          }>(
+            `SELECT id, tenant_id, provider_id, amount_cents, amount_reversed_cents, status
+             FROM provider_payouts
+             WHERE stripe_transfer_id = $1
+             FOR UPDATE`,
             [transfer.id]
           );
+
+          if (payoutRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return reply.status(503).send(
+              errorResponse('WEBHOOK_TARGET_NOT_FOUND', `Payout for Stripe transfer ${transfer.id} not found yet.`, requestId)
+            );
+          }
+
+          const payout = payoutRes.rows[0];
+          const totalCents = parseInt(payout.amount_cents, 10);
+          const alreadyReversed = parseInt(payout.amount_reversed_cents || '0', 10);
+          const cumulativeReversed = Number(transfer.amount_reversed ?? transfer.amount ?? 0);
+
+          if (cumulativeReversed <= 0 || cumulativeReversed > totalCents) {
+            await client.query('ROLLBACK');
+            return reply.status(422).send(
+              errorResponse('INVALID_REVERSAL_AMOUNT', `Cumulative reversal ${cumulativeReversed} is out of bounds for payout amount ${totalCents}.`, requestId)
+            );
+          }
+
+          if (cumulativeReversed <= alreadyReversed) {
+            // Stale out-of-order or duplicate reversal event: ignore delta, claim idempotently
+            await client.query('COMMIT');
+            return reply.status(200).send({ received: true, idempotent: true });
+          }
+
+          const deltaCents = cumulativeReversed - alreadyReversed;
+          const stripeReversalId = transfer.reversals?.data?.[0]?.id || null;
+
+          const revInsertRes = await client.query<{ id: string }>(
+            `INSERT INTO provider_payout_reversals (
+               tenant_id, payout_id, stripe_event_id, stripe_reversal_id, delta_amount_cents, cumulative_reversed_cents
+             ) VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (stripe_event_id) DO NOTHING
+             RETURNING id`,
+            [payout.tenant_id, payout.id, eventId, stripeReversalId, deltaCents, cumulativeReversed]
+          );
+
+          if (revInsertRes.rows.length > 0) {
+            const newPayoutStatus = cumulativeReversed === totalCents ? 'REVERSED' : 'PARTIALLY_REVERSED';
+            await client.query(
+              `UPDATE provider_payouts
+               SET amount_reversed_cents = $1, status = $2, updated_at = NOW()
+               WHERE id = $3`,
+              [cumulativeReversed, newPayoutStatus, payout.id]
+            );
+
+            // Reversal delta ledger entry: mirrors PAYOUT_DISBURSAL (Dr 1010 Operating Cash / Cr 2020 Tech Payable)
+            const accRes = await client.query(
+              `SELECT id, account_number FROM ledger_accounts
+               WHERE tenant_id = $1 AND account_number IN ('1010', '2020')`,
+              [payout.tenant_id]
+            );
+            const bankAsset = accRes.rows.find(a => a.account_number === '1010');
+            const techPayable = accRes.rows.find(a => a.account_number === '2020');
+
+            if (bankAsset && techPayable) {
+              const postingType = `PAYOUT_REVERSAL_${revInsertRes.rows[0].id.replace(/-/g, '').slice(0, 24)}`;
+              await client.query(
+                `INSERT INTO ledger_entries (tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT (payout_id, posting_type) DO NOTHING`,
+                [
+                  payout.tenant_id,
+                  payout.id,
+                  postingType,
+                  bankAsset.id,
+                  techPayable.id,
+                  deltaCents,
+                  `Reversal delta (${deltaCents} cents) for transfer ${transfer.id}`
+                ]
+              );
+            }
+          }
         }
       } else if (eventType === 'payout.failed') {
         const payoutObj = event.data?.object;
         if (payoutObj?.id) {
-          await client.query(
-            `UPDATE provider_payouts 
-             SET status = 'FAILED', updated_at = NOW() 
-             WHERE stripe_transfer_id = $1`,
-            [payoutObj.id]
-          );
+          const objId = String(payoutObj.id);
+          // A Stripe connected-account payout ID (po_...) is NOT a platform transfer ID (tr_...).
+          if (objId.startsWith('po_')) {
+            if (event.account) {
+              const provRes = await client.query(
+                `SELECT tenant_id, user_id FROM provider_profiles WHERE stripe_connect_account_id = $1`,
+                [event.account]
+              );
+              if (provRes.rows.length > 0) {
+                await client.query(
+                  `INSERT INTO audit_logs (tenant_id, actor_role, action, resource_type, resource_id, diff_payload)
+                   VALUES ($1, 'SYSTEM', 'CONNECTED_ACCOUNT_PAYOUT_FAILED', 'provider_profile', $2, $3)`,
+                  [
+                    provRes.rows[0].tenant_id,
+                    provRes.rows[0].user_id,
+                    JSON.stringify({ stripePayoutId: objId, connectAccount: event.account, failureCode: payoutObj.failure_code })
+                  ]
+                );
+              }
+            }
+          } else if (objId.startsWith('tr_')) {
+            await client.query(
+              `UPDATE provider_payouts 
+               SET status = 'FAILED', updated_at = NOW() 
+               WHERE stripe_transfer_id = $1`,
+              [objId]
+            );
+          }
+        }
+      } else if (eventType === 'payment_intent.amount_capturable_updated') {
+        const paymentIntent = event.data?.object;
+        if (paymentIntent?.id) {
+          const resolved = await resolveWebhookPaymentTx(client, paymentIntent.id, paymentIntent.metadata);
+          if (resolved.status === 'CONFLICT') {
+            await client.query('ROLLBACK');
+            return reply.status(409).send(errorResponse(resolved.code, resolved.message, requestId));
+          }
+          if (resolved.status === 'MISSING') {
+            await client.query('ROLLBACK');
+            return reply.status(503).send(errorResponse('WEBHOOK_TARGET_NOT_FOUND', 'Payment transaction not committed yet.', requestId));
+          }
+          // Authorization only: advance PENDING -> REQUIRES_CAPTURE without downgrading SUCCEEDED or posting revenue ledger
+          if (resolved.row.status === 'PENDING' && paymentIntent.status === 'requires_capture') {
+            await client.query(
+              `UPDATE payment_transactions SET status = 'REQUIRES_CAPTURE', updated_at = NOW() WHERE id = $1 AND status = 'PENDING'`,
+              [resolved.row.id]
+            );
+            await client.query(
+              `UPDATE invoices SET status = 'AUTHORIZED', updated_at = NOW() WHERE id = $1 AND status = 'DRAFT'`,
+              [resolved.row.invoice_id]
+            );
+          }
         }
       }
 
@@ -703,9 +958,9 @@ export async function financeRoutes(fastify: FastifyInstance) {
       const idempotencyKey = `payout_${clientKey}`;
       const requestFingerprint = crypto.createHash('sha256').update(`${tenantId}:${providerId}:${amountCents}`).digest('hex');
 
-      // PAY-05: Simulation gating: In production or staging, fail closed if Stripe key is missing
-      if (!env.STRIPE_SECRET_KEY) {
-        if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging') {
+      // PAY-05: Simulation gating: In production, fail closed if Stripe key is missing
+      if (!hasStripeConfigured()) {
+        if (process.env.NODE_ENV === 'production') {
           return reply.status(422).send(
             errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', 'Live Stripe payout gateway is not configured on this server.', requestId)
           );
@@ -724,6 +979,8 @@ export async function financeRoutes(fastify: FastifyInstance) {
       let stripeAccountId: string | null = null;
       let techPayableId: string;
       let bankAssetId: string;
+      let existingPayout: any = null;
+      const transferDesc = description || null;
 
       try {
         await client.query('BEGIN');
@@ -748,9 +1005,35 @@ export async function financeRoutes(fastify: FastifyInstance) {
         providerName = provider.full_name;
         stripeAccountId = provider.stripe_connect_account_id;
 
+        // Verify standard ledger accounts exist before proceeding
+        const accRes = await client.query(
+          `SELECT id, account_number FROM ledger_accounts 
+           WHERE tenant_id = $1 AND account_number IN ('1010', '2020')`,
+          [tenantId]
+        );
+        const techPayable = accRes.rows.find(a => a.account_number === '2020');
+        const bankAsset = accRes.rows.find(a => a.account_number === '1010');
+
+        if (!techPayable || !bankAsset) {
+          await client.query('ROLLBACK');
+          return reply.status(422).send(
+            errorResponse('LEDGER_ACCOUNTS_MISSING', 'Standard ledger accounts (1010 Operating Bank / 2020 Technician Payable) are not provisioned for this tenant.', requestId)
+          );
+        }
+        techPayableId = techPayable.id;
+        bankAssetId = bankAsset.id;
+
         // PAY-02: Check existing payout idempotency INSIDE the serialized transaction BEFORE balance calculation
-        const existingPayoutRes = await client.query<{ id: string; stripe_transfer_id: string; amount_cents: string; status: string; request_fingerprint?: string }>(
-          `SELECT id, stripe_transfer_id, amount_cents, status, request_fingerprint 
+        const existingPayoutRes = await client.query<{
+          id: string;
+          stripe_transfer_id: string | null;
+          amount_cents: string;
+          status: string;
+          request_fingerprint?: string;
+          destination_account_id?: string | null;
+          transfer_description?: string | null;
+        }>(
+          `SELECT id, stripe_transfer_id, amount_cents, status, request_fingerprint, destination_account_id, transfer_description
            FROM provider_payouts 
            WHERE idempotency_key = $1 AND tenant_id = $2
            FOR UPDATE`,
@@ -766,129 +1049,54 @@ export async function financeRoutes(fastify: FastifyInstance) {
               errorResponse('IDEMPOTENCY_KEY_MISMATCH', 'Idempotency key was previously used with different payout parameters (provider or amount).', requestId)
             );
           }
-
-          // Crash Recovery (PAY-03): If transfer was interrupted before DB commit, retrieve/reissue via deterministic Stripe idempotency key
-          if (!ep.stripe_transfer_id && env.STRIPE_SECRET_KEY && stripeAccountId) {
-            try {
-              const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-              const recoveredTransfer = await stripe.transfers.create({
-                amount: parseInt(ep.amount_cents, 10),
-                currency: 'usd',
-                destination: stripeAccountId,
-                description: `Provider payout recovery for ${providerName}`
-              }, {
-                idempotencyKey: `payout_stripe_${ep.id}`
-              });
-              ep.stripe_transfer_id = recoveredTransfer.id;
-              ep.status = 'PROCESSING';
-              await client.query(
-                `UPDATE provider_payouts SET stripe_transfer_id = $1, status = 'PROCESSING', processed_at = NOW(), updated_at = NOW() WHERE id = $2`,
-                [recoveredTransfer.id, ep.id]
-              );
-            } catch (stripeErr: any) {
-              // Stripe operation failed or rejected
-            }
-          }
-
-          // Crash Recovery (PAY-03 & AUDIT-01): If transfer exists, ensure status is restored and ledger entry is posted uniquely by payout_id
-          if (ep.stripe_transfer_id) {
-            if (ep.status !== 'PROCESSING' && ep.status !== 'PAID') {
-              ep.status = 'PROCESSING';
-              await client.query(
-                `UPDATE provider_payouts SET status = 'PROCESSING', updated_at = NOW() WHERE id = $1`,
-                [ep.id]
-              );
-            }
-
-            const ledgerCheck = await client.query(
-              `SELECT id FROM ledger_entries WHERE payout_id = $1 AND posting_type = 'PAYOUT_DISBURSAL'`,
-              [ep.id]
-            );
-            if (ledgerCheck.rowCount === 0) {
-              const accRes = await client.query(
-                `SELECT id, account_number FROM ledger_accounts 
-                 WHERE tenant_id = $1 AND account_number IN ('1010', '2020')`,
-                [tenantId]
-              );
-              const techPayable = accRes.rows.find(a => a.account_number === '2020');
-              const bankAsset = accRes.rows.find(a => a.account_number === '1010');
-              if (techPayable && bankAsset) {
-                await client.query(
-                  `INSERT INTO ledger_entries (tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
-                   VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)
-                   ON CONFLICT (payout_id, posting_type) DO NOTHING`,
-                  [tenantId, ep.id, techPayable.id, bankAsset.id, ep.amount_cents, `Payout to ${providerName} (${ep.stripe_transfer_id}) [Reconciled]`]
-                );
-              }
-            }
-          }
-
+          existingPayout = ep;
           await client.query('COMMIT');
-          return reply.status(200).send(
-            successResponse({
-              payoutId: ep.id,
-              transferId: ep.stripe_transfer_id,
-              amountCents: parseInt(ep.amount_cents, 10),
-              status: ep.status,
-              message: 'Existing payout operation retrieved idempotently.'
-            }, requestId)
+        } else {
+          // Check provider's settled earnings balance (joining tenants for platform commission terms)
+          // Subtract net payouts (amount_cents - amount_reversed_cents) for PAID, PROCESSING, PENDING_PROVIDER_CONFIRMATION, PARTIALLY_REVERSED
+          const balanceRes = await client.query(
+            `SELECT 
+              COALESCE(SUM(CASE WHEN b.assigned_provider_id = $1 AND b.status = 'COMPLETED' THEN (i.total_amount_cents * (10000 - COALESCE(t.default_platform_commission_bps, 1500)) / 10000) ELSE 0 END), 0)::bigint as total_earned_cents,
+              COALESCE((
+                SELECT SUM(amount_cents - COALESCE(amount_reversed_cents, 0))
+                FROM provider_payouts
+                WHERE provider_id = $1 AND tenant_id = $2
+                  AND status <> 'FAILED'
+                  AND (status IN ('PAID', 'PROCESSING', 'TRANSFER_CONFIRMED', 'PENDING_PROVIDER_CONFIRMATION', 'PARTIALLY_REVERSED') OR stripe_transfer_id IS NOT NULL)
+              ), 0)::bigint as total_paid_cents
+             FROM bookings b
+             JOIN tenants t ON t.id = b.tenant_id
+             JOIN invoices i ON i.booking_id = b.id AND i.status = 'PAID'
+             WHERE b.assigned_provider_id = $1 AND b.tenant_id = $2`,
+            [providerId, tenantId]
           );
-        }
+          const totalEarned = Number(balanceRes.rows[0]?.total_earned_cents || 0);
+          const totalPaid = Number(balanceRes.rows[0]?.total_paid_cents || 0);
+          const unpaidBalanceCents = Math.max(0, totalEarned - totalPaid);
 
-        // Verify standard ledger accounts exist before proceeding
-        const accRes = await client.query(
-          `SELECT id, account_number FROM ledger_accounts 
-           WHERE tenant_id = $1 AND account_number IN ('1010', '2020')`,
-          [tenantId]
-        );
+          // Universal invariant: Payout must never exceed settled unpaid earnings
+          if (amountCents > unpaidBalanceCents) {
+            await client.query('ROLLBACK');
+            return reply.status(400).send(
+              errorResponse('INSUFFICIENT_PAYOUT_BALANCE', `Payout amount (${amountCents} cents) exceeds provider settled unpaid balance (${unpaidBalanceCents} cents).`, requestId)
+            );
+          }
 
-        const techPayable = accRes.rows.find(a => a.account_number === '2020');
-        const bankAsset = accRes.rows.find(a => a.account_number === '1010');
-
-        if (!techPayable || !bankAsset) {
-          await client.query('ROLLBACK');
-          return reply.status(422).send(
-            errorResponse('LEDGER_ACCOUNTS_MISSING', 'Standard ledger accounts (1010 Operating Bank / 2020 Technician Payable) are not provisioned for this tenant.', requestId)
+          // Insert durable payout record in PROCESSING state with persisted destination & description
+          const persistedDesc = transferDesc || `Provider payout to ${providerName}`;
+          const pendingPayoutRes = await client.query(
+            `INSERT INTO provider_payouts (
+              tenant_id, provider_id, amount_cents, currency, status, idempotency_key, request_fingerprint,
+              destination_account_id, transfer_description
+            ) VALUES ($1, $2, $3, 'USD', 'PROCESSING', $4, $5, $6, $7)
+            RETURNING id`,
+            [tenantId, providerId, amountCents, idempotencyKey, requestFingerprint, stripeAccountId, persistedDesc]
           );
+          payoutId = pendingPayoutRes.rows[0].id;
+
+          // COMMIT Phase 1: Payout record is now durable in PostgreSQL
+          await client.query('COMMIT');
         }
-        techPayableId = techPayable.id;
-        bankAssetId = bankAsset.id;
-
-        // Check provider's settled earnings balance (joining tenants for platform commission terms)
-        const balanceRes = await client.query(
-          `SELECT 
-            COALESCE(SUM(CASE WHEN b.assigned_provider_id = $1 AND b.status = 'COMPLETED' THEN (i.total_amount_cents * (10000 - COALESCE(t.default_platform_commission_bps, 1500)) / 10000) ELSE 0 END), 0)::bigint as total_earned_cents,
-            COALESCE((SELECT SUM(amount_cents) FROM provider_payouts WHERE provider_id = $1 AND tenant_id = $2 AND (status IN ('PAID', 'PROCESSING', 'TRANSFER_CONFIRMED') OR stripe_transfer_id IS NOT NULL)), 0)::bigint as total_paid_cents
-           FROM bookings b
-           JOIN tenants t ON t.id = b.tenant_id
-           JOIN invoices i ON i.booking_id = b.id AND i.status = 'PAID'
-           WHERE b.assigned_provider_id = $1 AND b.tenant_id = $2`,
-          [providerId, tenantId]
-        );
-        const totalEarned = Number(balanceRes.rows[0]?.total_earned_cents || 0);
-        const totalPaid = Number(balanceRes.rows[0]?.total_paid_cents || 0);
-        const unpaidBalanceCents = Math.max(0, totalEarned - totalPaid);
-
-        // Universal invariant: Payout must never exceed settled unpaid earnings
-        if (amountCents > unpaidBalanceCents) {
-          await client.query('ROLLBACK');
-          return reply.status(400).send(
-            errorResponse('INSUFFICIENT_PAYOUT_BALANCE', `Payout amount (${amountCents} cents) exceeds provider settled unpaid balance (${unpaidBalanceCents} cents).`, requestId)
-          );
-        }
-
-        // Insert durable payout record in PROCESSING state
-        const pendingPayoutRes = await client.query(
-          `INSERT INTO provider_payouts (
-            tenant_id, provider_id, amount_cents, currency, status, idempotency_key, request_fingerprint
-          ) VALUES ($1, $2, $3, 'USD', 'PROCESSING', $4, $5)
-          RETURNING id`,
-          [tenantId, providerId, amountCents, idempotencyKey, requestFingerprint]
-        );
-        payoutId = pendingPayoutRes.rows[0].id;
-
-        // COMMIT Phase 1: Payout record is now durable in PostgreSQL
-        await client.query('COMMIT');
       } catch (err) {
         await client.query('ROLLBACK');
         throw err;
@@ -896,16 +1104,104 @@ export async function financeRoutes(fastify: FastifyInstance) {
         client.release();
       }
 
+      // Idempotent Replay & Crash Recovery (strictly OUTSIDE Phase 1 transaction)
+      if (existingPayout) {
+        const ep = existingPayout;
+        const recoveryDest = ep.destination_account_id || stripeAccountId;
+        const recoveryDesc = ep.transfer_description || `Provider payout recovery for ${providerName}`;
+
+        if (!ep.stripe_transfer_id && hasStripeConfigured() && recoveryDest && ep.status !== 'FAILED') {
+          try {
+            const stripe = getStripe(env.STRIPE_SECRET_KEY);
+            const recoveredTransfer = await stripe.transfers.create({
+              amount: parseInt(ep.amount_cents, 10),
+              currency: 'usd',
+              destination: recoveryDest,
+              description: recoveryDesc
+            }, {
+              idempotencyKey: `payout_stripe_${ep.id}`
+            });
+            ep.stripe_transfer_id = recoveredTransfer.id;
+            ep.status = 'PROCESSING';
+          } catch (stripeErr: any) {
+            if (isDefinitiveStripeError(stripeErr)) {
+              await pool.query(
+                `UPDATE provider_payouts SET status = 'FAILED', failure_reason = $2, updated_at = NOW() WHERE id = $1`,
+                [ep.id, stripeErr.message]
+              );
+              return reply.status(502).send(
+                errorResponse('STRIPE_TRANSFER_FAILED', `Stripe Connect payout recovery failed: ${stripeErr.message}`, requestId)
+              );
+            }
+            await pool.query(
+              `UPDATE provider_payouts SET status = 'PENDING_PROVIDER_CONFIRMATION', failure_reason = $2, updated_at = NOW() WHERE id = $1`,
+              [ep.id, stripeErr.message]
+            );
+            return reply.status(202).send(
+              successResponse({
+                payoutId: ep.id,
+                transferId: null,
+                amountCents: parseInt(ep.amount_cents, 10),
+                status: 'PENDING_PROVIDER_CONFIRMATION',
+                message: 'Payout outcome remains ambiguous due to network error; balance reserved pending reconciliation.'
+              }, requestId)
+            );
+          }
+        }
+
+        if (ep.stripe_transfer_id) {
+          const recClient = await pool.connect();
+          try {
+            await recClient.query('BEGIN');
+            if (!['PROCESSING', 'PAID', 'PARTIALLY_REVERSED', 'REVERSED'].includes(ep.status)) {
+              ep.status = 'PROCESSING';
+            }
+            await recClient.query(
+              `UPDATE provider_payouts
+               SET stripe_transfer_id = COALESCE(stripe_transfer_id, $1),
+                   status = $2,
+                   processed_at = COALESCE(processed_at, NOW()),
+                   last_reconciled_at = NOW(),
+                   updated_at = NOW()
+               WHERE id = $3`,
+              [ep.stripe_transfer_id, ep.status, ep.id]
+            );
+
+            await recClient.query(
+              `INSERT INTO ledger_entries (tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+               VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)
+               ON CONFLICT (payout_id, posting_type) DO NOTHING`,
+              [tenantId, ep.id, techPayableId, bankAssetId, ep.amount_cents, `Payout to ${providerName} (${ep.stripe_transfer_id}) [Reconciled]`]
+            );
+            await recClient.query('COMMIT');
+          } catch (recErr) {
+            await recClient.query('ROLLBACK');
+            throw recErr;
+          } finally {
+            recClient.release();
+          }
+        }
+
+        return reply.status(200).send(
+          successResponse({
+            payoutId: ep.id,
+            transferId: ep.stripe_transfer_id,
+            amountCents: parseInt(ep.amount_cents, 10),
+            status: ep.status,
+            message: 'Existing payout operation retrieved idempotently.'
+          }, requestId)
+        );
+      }
+
       // PHASE 2 (PAY-03): Call Stripe Connect Transfer with durable database-backed idempotency key
       let transferRef: string;
-      const isSimulated = !env.STRIPE_SECRET_KEY;
+      const isSimulated = !hasStripeConfigured();
 
-      if (env.STRIPE_SECRET_KEY) {
+      if (hasStripeConfigured()) {
         if (!stripeAccountId) {
-          // Mark durable payout as FAILED since provider is missing Connect account
           await pool.query(
-            `UPDATE provider_payouts SET status = 'FAILED' WHERE id = $1`,
-            [payoutId]
+            `UPDATE provider_payouts SET status = 'FAILED', failure_reason = 'Missing Stripe Connect account', updated_at = NOW() WHERE id = $1`,
+            [payoutId!]
           );
           return reply.status(422).send(
             errorResponse('PROVIDER_PAYOUT_NOT_CONFIGURED', 'Technician does not have a linked Stripe Connect payout account.', requestId)
@@ -913,29 +1209,45 @@ export async function financeRoutes(fastify: FastifyInstance) {
         }
 
         try {
-          const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+          const stripe = getStripe(env.STRIPE_SECRET_KEY);
           const transfer = await stripe.transfers.create({
             amount: amountCents,
             currency: 'usd',
             destination: stripeAccountId,
             description: description || `Provider payout to ${providerName}`
           }, {
-            idempotencyKey: `payout_stripe_${payoutId}` // Stable, database-tracked UUID
+            idempotencyKey: `payout_stripe_${payoutId!}`
           });
           transferRef = transfer.id;
         } catch (stripeErr: any) {
-          // Stripe call failed: mark durable payout as FAILED so it cannot be double-processed
+          if (isDefinitiveStripeError(stripeErr)) {
+            await pool.query(
+              `UPDATE provider_payouts SET status = 'FAILED', failure_reason = $2, updated_at = NOW() WHERE id = $1`,
+              [payoutId!, stripeErr.message]
+            );
+            return reply.status(502).send(
+              errorResponse('STRIPE_TRANSFER_FAILED', `Stripe Connect payout transfer failed: ${stripeErr.message}`, requestId)
+            );
+          }
+
+          // Ambiguous network/timeout/5xx/rate-limit failure: DO NOT mark FAILED! Keep balance reserved.
           await pool.query(
-            `UPDATE provider_payouts SET status = 'FAILED' WHERE id = $1`,
-            [payoutId]
+            `UPDATE provider_payouts SET status = 'PENDING_PROVIDER_CONFIRMATION', failure_reason = $2, updated_at = NOW() WHERE id = $1`,
+            [payoutId!, stripeErr.message]
           );
-          return reply.status(502).send(
-            errorResponse('STRIPE_TRANSFER_FAILED', `Stripe Connect payout transfer failed: ${stripeErr.message}`, requestId)
+          return reply.status(202).send(
+            successResponse({
+              payoutId: payoutId!,
+              amountCents,
+              providerName,
+              status: 'PENDING_PROVIDER_CONFIRMATION',
+              message: 'Stripe transfer timed out or returned transient error; funds remain reserved pending reconciliation.'
+            }, requestId)
           );
         }
       } else {
         // PAY-05: Sandbox test simulation only
-        transferRef = `tr_test_simulated_${payoutId}`;
+        transferRef = `tr_test_simulated_${payoutId!}`;
       }
 
       // PHASE 3 (PAY-03): Reconcile external transfer, post double-entry ledger entries, and audit log
@@ -945,19 +1257,20 @@ export async function financeRoutes(fastify: FastifyInstance) {
 
         const payoutRes = await reconClient.query(
           `UPDATE provider_payouts
-           SET stripe_transfer_id = $1, processed_at = NOW(), status = 'PROCESSING'
+           SET stripe_transfer_id = $1, processed_at = NOW(), status = 'PROCESSING', updated_at = NOW()
            WHERE id = $2
            RETURNING id, stripe_transfer_id, amount_cents, status, created_at`,
-          [transferRef, payoutId]
+          [transferRef, payoutId!]
         );
 
         await reconClient.query(
           `INSERT INTO ledger_entries (
             tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description
-          ) VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)`,
+          ) VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)
+          ON CONFLICT (payout_id, posting_type) DO NOTHING`,
           [
             tenantId,
-            payoutId,
+            payoutId!,
             techPayableId,
             bankAssetId,
             amountCents,
@@ -974,7 +1287,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
             request.user!.role,
             'PAYOUT_PROCESSED',
             'provider_payout',
-            payoutId,
+            payoutId!,
             JSON.stringify({ providerId, amountCents, transferRef, isSimulated })
           ]
         );
@@ -1000,7 +1313,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
       }
     });
 
-    // 5b. Reconcile Orphaned or Pending Payout (PAY-03 Reconciler)
+    // 5b. Reconcile Orphaned or Pending Payout (3-Phase, Zero Stripe Calls Inside DB Transaction)
     protectedRoutes.post('/payouts/:id/reconcile', {
       preHandler: [requirePermission('finance:payout:execute')],
       schema: {
@@ -1013,94 +1326,157 @@ export async function financeRoutes(fastify: FastifyInstance) {
       const { id } = request.params as any;
       const tenantId = request.tenantId;
 
-      const client = await pool.connect();
+      // PHASE 1: Fast Read (release DB client before Stripe I/O)
+      const readClient = await pool.connect();
+      let payout: any;
+      let providerConnectId: string | null = null;
       try {
-        await client.query('BEGIN');
-        const payoutRes = await client.query(
-          `SELECT id, provider_id, amount_cents, status, stripe_transfer_id, idempotency_key
-           FROM provider_payouts
-           WHERE id = $1 AND tenant_id = $2
-           FOR UPDATE`,
+        const payoutRes = await readClient.query(
+          `SELECT p.id, p.provider_id, p.amount_cents, p.status, p.stripe_transfer_id,
+                  p.idempotency_key, p.destination_account_id, p.transfer_description,
+                  pr.stripe_connect_account_id, pr.full_name
+           FROM provider_payouts p
+           LEFT JOIN provider_profiles pr ON pr.user_id = p.provider_id AND pr.tenant_id = p.tenant_id
+           WHERE p.id = $1 AND p.tenant_id = $2`,
           [id, tenantId]
         );
 
         if (payoutRes.rowCount === 0) {
+          return reply.status(404).send(errorResponse('NOT_FOUND', 'Payout record not found', requestId));
+        }
+
+        payout = payoutRes.rows[0];
+        providerConnectId = payout.destination_account_id || payout.stripe_connect_account_id || null;
+      } finally {
+        readClient.release();
+      }
+
+      // PHASE 2: External Stripe Recovery/Verification OUTSIDE any open transaction
+      let reconciledTransferId: string | null = payout.stripe_transfer_id || null;
+      let definitiveFailureReason: string | null = null;
+      let transientErrorReason: string | null = null;
+
+      if (hasStripeConfigured()) {
+        const stripe = getStripe(env.STRIPE_SECRET_KEY);
+        if (reconciledTransferId && reconciledTransferId.startsWith('tr_') && !reconciledTransferId.startsWith('tr_test_')) {
+          try {
+            const retrieved = await stripe.transfers.retrieve(reconciledTransferId);
+            if (retrieved.reversed) {
+              // Full reversal details are handled by transfer.reversed webhook; do not overwrite
+            }
+          } catch (stripeErr: any) {
+            if (!isDefinitiveStripeError(stripeErr)) {
+              transientErrorReason = stripeErr.message;
+            }
+          }
+        } else if (!reconciledTransferId && providerConnectId && payout.status !== 'FAILED') {
+          try {
+            const recovered = await stripe.transfers.create({
+              amount: parseInt(payout.amount_cents, 10),
+              currency: 'usd',
+              destination: providerConnectId,
+              description: payout.transfer_description || `Admin reconciliation payout ${payout.id}`
+            }, {
+              idempotencyKey: `payout_stripe_${payout.id}`
+            });
+            reconciledTransferId = recovered.id;
+          } catch (stripeErr: any) {
+            if (isDefinitiveStripeError(stripeErr)) {
+              definitiveFailureReason = stripeErr.message;
+            } else {
+              transientErrorReason = stripeErr.message;
+            }
+          }
+        }
+      }
+
+      // PHASE 3: Short Atomic Reconciliation Transaction
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const lockRes = await client.query(
+          `SELECT id, status, stripe_transfer_id, amount_cents FROM provider_payouts WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+          [id, tenantId]
+        );
+        if (lockRes.rowCount === 0) {
           await client.query('ROLLBACK');
           return reply.status(404).send(errorResponse('NOT_FOUND', 'Payout record not found', requestId));
         }
 
-        const payout = payoutRes.rows[0];
+        const locked = lockRes.rows[0];
+        const effectiveTransferId = locked.stripe_transfer_id || reconciledTransferId;
 
-        // Recover missing transfer reference from Stripe via deterministic idempotency key if interrupted
-        if (!payout.stripe_transfer_id && env.STRIPE_SECRET_KEY) {
-          const provRes = await client.query(
-            `SELECT stripe_connect_account_id, full_name FROM provider_profiles WHERE user_id = $1 AND tenant_id = $2`,
-            [payout.provider_id, tenantId]
+        if (definitiveFailureReason && !effectiveTransferId) {
+          await client.query(
+            `UPDATE provider_payouts
+             SET status = 'FAILED', failure_reason = $2, reconcile_attempts = reconcile_attempts + 1,
+                 last_reconciled_at = NOW(), updated_at = NOW()
+             WHERE id = $1`,
+            [id, definitiveFailureReason]
           );
-          if (provRes.rowCount && provRes.rows[0].stripe_connect_account_id) {
-            try {
-              const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-              const recovered = await stripe.transfers.create({
-                amount: parseInt(payout.amount_cents, 10),
-                currency: 'usd',
-                destination: provRes.rows[0].stripe_connect_account_id,
-                description: `Admin reconciliation payout ${payout.id}`
-              }, {
-                idempotencyKey: `payout_stripe_${payout.id}`
-              });
-              payout.stripe_transfer_id = recovered.id;
-              payout.status = 'PROCESSING';
-              await client.query(
-                `UPDATE provider_payouts SET stripe_transfer_id = $1, status = 'PROCESSING', processed_at = NOW(), updated_at = NOW() WHERE id = $2`,
-                [recovered.id, payout.id]
-              );
-            } catch (_) {}
-          }
+          await client.query('COMMIT');
+          return reply.status(200).send(successResponse({
+            reconciled: true,
+            payoutId: id,
+            status: 'FAILED',
+            message: `Confirmed definitive rejection from Stripe: ${definitiveFailureReason}`
+          }, requestId));
         }
 
-        // If transfer ID is present, ensure status is restored and ledger entry is posted uniquely by payout_id
-        if (payout.stripe_transfer_id) {
-          if (payout.status !== 'PROCESSING' && payout.status !== 'PAID') {
-            payout.status = 'PROCESSING';
-            await client.query(
-              `UPDATE provider_payouts SET status = 'PROCESSING', updated_at = NOW() WHERE id = $1`,
-              [payout.id]
-            );
-          }
+        if (effectiveTransferId) {
+          const nextStatus = ['PROCESSING', 'PAID', 'PARTIALLY_REVERSED', 'REVERSED'].includes(locked.status)
+            ? locked.status
+            : 'PROCESSING';
 
-          const ledgerCheck = await client.query(
-            `SELECT id FROM ledger_entries WHERE payout_id = $1 AND posting_type = 'PAYOUT_DISBURSAL'`,
-            [payout.id]
+          await client.query(
+            `UPDATE provider_payouts
+             SET stripe_transfer_id = COALESCE(stripe_transfer_id, $1),
+                 status = $2,
+                 processed_at = COALESCE(processed_at, NOW()),
+                 reconcile_attempts = reconcile_attempts + 1,
+                 last_reconciled_at = NOW(),
+                 updated_at = NOW()
+             WHERE id = $3`,
+            [effectiveTransferId, nextStatus, id]
           );
 
-          if (ledgerCheck.rowCount === 0) {
-            const accRes = await client.query(
-              `SELECT id, account_number FROM ledger_accounts 
-               WHERE tenant_id = $1 AND account_number IN ('1010', '2020')`,
-              [tenantId]
+          const accRes = await client.query(
+            `SELECT id, account_number FROM ledger_accounts 
+             WHERE tenant_id = $1 AND account_number IN ('1010', '2020')`,
+            [tenantId]
+          );
+          const techPayable = accRes.rows.find(a => a.account_number === '2020');
+          const bankAsset = accRes.rows.find(a => a.account_number === '1010');
+          if (techPayable && bankAsset) {
+            await client.query(
+              `INSERT INTO ledger_entries (tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+               VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)
+               ON CONFLICT (payout_id, posting_type) DO NOTHING`,
+              [tenantId, id, techPayable.id, bankAsset.id, locked.amount_cents, `Reconciled payout ${id} (${effectiveTransferId})`]
             );
-            const techPayable = accRes.rows.find(a => a.account_number === '2020');
-            const bankAsset = accRes.rows.find(a => a.account_number === '1010');
-            if (techPayable && bankAsset) {
-              await client.query(
-                `INSERT INTO ledger_entries (tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
-                 VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)
-                 ON CONFLICT (payout_id, posting_type) DO NOTHING`,
-                [tenantId, payout.id, techPayable.id, bankAsset.id, payout.amount_cents, `Reconciled payout ${payout.id} (${payout.stripe_transfer_id})`]
-              );
-            }
           }
 
           await client.query('COMMIT');
-          return reply.status(200).send(successResponse({ reconciled: true, payoutId: payout.id, status: payout.status }, requestId));
+          return reply.status(200).send(successResponse({ reconciled: true, payoutId: id, status: nextStatus, transferId: effectiveTransferId }, requestId));
         }
 
+        await client.query(
+          `UPDATE provider_payouts
+           SET reconcile_attempts = reconcile_attempts + 1,
+               last_reconciled_at = NOW(),
+               failure_reason = COALESCE($2, failure_reason),
+               updated_at = NOW()
+           WHERE id = $1`,
+          [id, transientErrorReason]
+        );
         await client.query('COMMIT');
-        return reply.status(200).send(successResponse({
+        return reply.status(transientErrorReason ? 202 : 200).send(successResponse({
           reconciled: false,
-          payoutId: payout.id,
-          status: payout.status,
-          message: 'Stripe transfer reference not found; payout remains unreconciled.'
+          payoutId: id,
+          status: locked.status,
+          message: transientErrorReason
+            ? `Stripe reconciliation encountered transient error (${transientErrorReason}); balance stays reserved.`
+            : 'Stripe transfer reference not found; payout remains unreconciled.'
         }, requestId));
       } catch (err) {
         await client.query('ROLLBACK');

@@ -1,14 +1,13 @@
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import Stripe from 'stripe';
 import crypto from 'node:crypto';
+import Stripe from 'stripe';
 import { pool } from '../../database/pool.js';
 import { successResponse, errorResponse } from '../../types/envelope.js';
 import { authenticate } from '../../middleware/rbac.js';
 import { env } from '../../config/env.js';
-
-// Lockout store for customer safety PIN verification brute-force protection
-const pinAttemptStore = new Map<string, { attempts: number; lockedUntil: number }>();
+import { getStripe, hasStripeConfigured } from '../../services/stripeClient.js';
+import { outboxWorker } from '../../workers/outbox.worker.js';
 
 const createBookingSchema = z.object({
   serviceId: z.string().uuid(),
@@ -40,11 +39,11 @@ const completeWorkOrderSchema = z.object({
 export async function bookingRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', authenticate);
 
-  // 1. Create On-Demand Booking Request
+  // 1. Create On-Demand Booking Request (Decoupled Phase 1 Reservation + Durable Outbox)
   fastify.post('/', {
     schema: {
       tags: ['Bookings & Dispatch'],
-      summary: 'Create an on-demand booking request with pre-auth escrow hold',
+      summary: 'Create an on-demand booking request with durable outbox payment reservation',
       security: [{ bearerAuth: [] }]
     }
   }, async (request, reply) => {
@@ -57,16 +56,26 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { serviceId, addressText, city, state, postalCode, latitude, longitude, accessInstructions, scheduledStart, priority } = parsed.data;
+    const { serviceId, addressText, city, state, postalCode, latitude, longitude, accessInstructions, scheduledStart, priority, paymentMethodId } = parsed.data;
     const userId = request.user!.id;
     const tenantId = request.tenantId;
 
+    // Preflight Stripe configuration BEFORE opening any DB transaction
+    if (!hasStripeConfigured() && process.env.NODE_ENV === 'production') {
+      return reply.status(422).send(
+        errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', 'Live payment gateway (Stripe) is not configured on this server.', requestId)
+      );
+    }
+
+    const stripeEnabled = hasStripeConfigured();
     const client = await pool.connect();
+    let responsePayload: any = null;
+
     try {
       await client.query('BEGIN');
 
       // A. Ensure customer profile exists
-      let custRes = await client.query('SELECT user_id FROM customer_profiles WHERE user_id = $1', [userId]);
+      const custRes = await client.query('SELECT user_id FROM customer_profiles WHERE user_id = $1', [userId]);
       if (custRes.rows.length === 0) {
         await client.query(
           `INSERT INTO customer_profiles (user_id, tenant_id, full_name, default_address_text)
@@ -75,7 +84,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         );
       }
 
-      // B. Create or find customer address with PostGIS Point
+      // B. Create customer address with PostGIS Point
       const addrRes = await client.query(
         `INSERT INTO customer_addresses (
           customer_id, tenant_id, address_line1, city, state_province, postal_code,
@@ -107,7 +116,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       const bookingRef = `SVC-${randomSuffix}`;
 
       // E. Insert Booking Record
-      const scheduledTime = scheduledStart ? new Date(scheduledStart) : new Date(Date.now() + 45 * 60 * 1000); // 45m emergency default
+      const scheduledTime = scheduledStart ? new Date(scheduledStart) : new Date(Date.now() + 45 * 60 * 1000);
       const bookingRes = await client.query(
         `INSERT INTO bookings (
           tenant_id, booking_reference, customer_id, service_id, address_id,
@@ -118,78 +127,22 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
       const booking = bookingRes.rows[0];
 
-      // F. Create Initial Itemized Invoice
+      // F. Create Initial Draft Invoice & Line Items
       const laborCents = Number(service.base_price_cents);
       const diagnosticCents = priority === 'EMERGENCY' ? 4900 : 2000;
       const totalAmountCents = laborCents + diagnosticCents;
       const invoiceNo = `INV-${new Date().getFullYear()}-${randomSuffix}`;
 
-      // H. Create Pre-Auth Payment Transaction Record with verified hold status
-      let stripeIntentId: string;
-      let clientSecret: string | null = null;
-      let initialPaymentStatus: 'REQUIRES_CAPTURE' | 'PENDING' = 'PENDING';
-      let invoiceStatus: 'AUTHORIZED' | 'DRAFT' = 'DRAFT';
-
-      if (env.STRIPE_SECRET_KEY) {
-        try {
-          const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-          const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
-            amount: totalAmountCents,
-            currency: 'usd',
-            capture_method: 'manual', // Hold funds until completion
-            metadata: {
-              tenantId,
-              bookingRef,
-              customerId: userId,
-            }
-          };
-
-          if (parsed.data.paymentMethodId) {
-            paymentIntentParams.payment_method = parsed.data.paymentMethodId;
-            paymentIntentParams.confirm = true;
-            paymentIntentParams.return_url = 'https://serviceproos.com/booking/complete';
-          }
-
-          const paymentIntent = await stripe.paymentIntents.create(
-            paymentIntentParams,
-            { idempotencyKey: `idem_pi_${booking.id}` }
-          );
-
-          stripeIntentId = paymentIntent.id;
-          clientSecret = paymentIntent.client_secret;
-
-          // Only record as AUTHORIZED/REQUIRES_CAPTURE if Stripe confirmed the hold
-          if (paymentIntent.status === 'requires_capture') {
-            initialPaymentStatus = 'REQUIRES_CAPTURE';
-            invoiceStatus = 'AUTHORIZED';
-          }
-        } catch (stripeErr: any) {
-          await client.query('ROLLBACK');
-          return reply.status(502).send(
-            errorResponse('STRIPE_PREAUTH_FAILED', `Stripe pre-authorization hold failed: ${stripeErr.message}`, requestId)
-          );
-        }
-      } else {
-        if (process.env.NODE_ENV === 'production') {
-          await client.query('ROLLBACK');
-          return reply.status(422).send(
-            errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', 'Live payment gateway (Stripe) is not configured on this server.', requestId)
-          );
-        }
-        stripeIntentId = `pi_sandbox_unsettled_${Date.now()}_${randomSuffix}`;
-      }
-
       const invRes = await client.query(
         `INSERT INTO invoices (
           tenant_id, booking_id, invoice_number, labor_subtotal_cents,
           diagnostic_fee_cents, total_amount_cents, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'DRAFT')
         RETURNING id`,
-        [tenantId, booking.id, invoiceNo, laborCents, diagnosticCents, totalAmountCents, invoiceStatus]
+        [tenantId, booking.id, invoiceNo, laborCents, diagnosticCents, totalAmountCents]
       );
       const invoiceId = invRes.rows[0].id;
 
-      // G. Insert Invoice Line Items
       await client.query(
         `INSERT INTO invoice_items (invoice_id, description, item_type, quantity, unit_price_cents, total_cents)
          VALUES 
@@ -198,46 +151,164 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         [invoiceId, service.name, laborCents, diagnosticCents]
       );
 
-      await client.query(
+      // G. Insert durable PENDING payment transaction (never call Stripe inside this tx)
+      const sandboxIntentId = stripeEnabled ? null : `pi_sandbox_unsettled_${Date.now()}_${randomSuffix}`;
+      const txRes = await client.query(
         `INSERT INTO payment_transactions (
           tenant_id, invoice_id, stripe_payment_intent_id, idempotency_key,
           authorized_amount_cents, transaction_type, status
-        ) VALUES ($1, $2, $3, $4, $5, 'PRE_AUTH', $6)`,
-        [tenantId, invoiceId, stripeIntentId, `idem_${booking.id}`, totalAmountCents, initialPaymentStatus]
+        ) VALUES ($1, $2, $3, $4, $5, 'PRE_AUTH', 'PENDING')
+        RETURNING id`,
+        [tenantId, invoiceId, sandboxIntentId, `idem_${booking.id}`, totalAmountCents]
       );
+      const paymentTransactionId = txRes.rows[0].id;
+
+      // H. Enqueue durable outbox operation when Stripe is configured
+      if (stripeEnabled) {
+        const outboxPayload = {
+          tenantId,
+          bookingId: booking.id,
+          bookingRef,
+          invoiceId,
+          transactionId: paymentTransactionId,
+          customerId: userId,
+          amountCents: totalAmountCents,
+          currency: 'usd',
+          paymentMethodId: paymentMethodId || null,
+        };
+
+        await client.query(
+          `INSERT INTO outbox_operations (
+            tenant_id, aggregate_type, aggregate_id, operation_type,
+            payload, idempotency_key, status
+          ) VALUES ($1, 'BOOKING_PAYMENT', $2, 'CREATE_PAYMENT_INTENT', $3, $4, 'PENDING')`,
+          [tenantId, booking.id, JSON.stringify(outboxPayload), `idem_pi_${booking.id}`]
+        );
+      }
 
       // I. Record Initial Timeline Audit Event
       await client.query(
         `INSERT INTO booking_timeline_events (
           booking_id, tenant_id, from_status, to_status, actor_id, event_title, event_details
         ) VALUES ($1, $2, NULL, 'REQUESTED', $3, 'Booking Order Initialized', $4)`,
-        [booking.id, tenantId, userId, `Order #${bookingRef} created with escrow pre-auth of $${(totalAmountCents / 100).toFixed(2)}`]
+        [booking.id, tenantId, userId, `Order #${bookingRef} reserved; escrow authorization queued for $${(totalAmountCents / 100).toFixed(2)}`]
       );
 
       await client.query('COMMIT');
 
-      return reply.status(201).send(
-        successResponse({
-          bookingId: booking.id,
-          bookingReference: booking.booking_reference,
-          status: booking.status,
-          safetyPin: booking.customer_safety_pin,
-          clientSecret: clientSecret || undefined,
-          scheduledStart: booking.scheduled_start,
-          serviceName: service.name,
-          preAuthAmountCents: totalAmountCents,
-          invoiceNumber: invoiceNo,
-        }, requestId)
-      );
+      responsePayload = {
+        bookingId: booking.id,
+        bookingReference: booking.booking_reference,
+        paymentTransactionId,
+        status: 'PENDING_PAYMENT',
+        bookingStatus: booking.status,
+        safetyPin: booking.customer_safety_pin,
+        scheduledStart: booking.scheduled_start,
+        serviceName: service.name,
+        preAuthAmountCents: totalAmountCents,
+        invoiceNumber: invoiceNo,
+      };
     } catch (err: any) {
       await client.query('ROLLBACK');
       throw err;
     } finally {
       client.release();
     }
+
+    if (stripeEnabled && process.env.OUTBOX_WORKER_ENABLED !== 'false') {
+      setImmediate(() => {
+        outboxWorker.processNextJob().catch(() => {});
+      });
+    }
+
+    return reply.status(202).send(successResponse(responsePayload, requestId));
   });
 
-  // 1b. Confirm Pre-Authorization Hold after Client Stripe SDK Card Authorization (PAY-01)
+  // 1a. Retrieve PaymentIntent Client Secret & Provisioning Status for Client Checkout
+  fastify.get('/:id/payment-intent', {
+    schema: {
+      tags: ['Bookings & Dispatch'],
+      summary: 'Retrieve PaymentIntent client_secret and provisioning status for a booking',
+      security: [{ bearerAuth: [] }]
+    }
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const { id } = request.params as any;
+    const tenantId = request.tenantId;
+    const callerId = request.user?.id;
+    const callerRole = request.user?.role;
+
+    const readClient = await pool.connect();
+    let row: any;
+    try {
+      const res = await readClient.query(
+        `SELECT b.id as booking_id, b.customer_id,
+                pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status, pt.authorized_amount_cents,
+                oo.status as outbox_status, oo.last_error as outbox_error
+         FROM bookings b
+         JOIN invoices i ON i.booking_id = b.id AND i.tenant_id = $2
+         JOIN payment_transactions pt ON pt.invoice_id = i.id AND pt.tenant_id = $2
+         LEFT JOIN outbox_operations oo ON oo.aggregate_type = 'BOOKING_PAYMENT' AND oo.aggregate_id = b.id
+         WHERE b.id = $1 AND b.tenant_id = $2`,
+        [id, tenantId]
+      );
+
+      if (res.rows.length === 0) {
+        return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking payment record not found.', requestId));
+      }
+
+      row = res.rows[0];
+    } finally {
+      readClient.release();
+    }
+
+    const isOwner = row.customer_id === callerId;
+    const isPrivilegedOperator = ['ADMIN', 'STAFF'].includes(callerRole || '');
+    if (!isOwner && !isPrivilegedOperator) {
+      return reply.status(403).send(errorResponse('FORBIDDEN', 'Not authorized to access this booking payment intent.', requestId));
+    }
+
+    if (!row.stripe_payment_intent_id) {
+      return reply.status(202).send(
+        successResponse({
+          bookingId: id,
+          paymentTransactionId: row.tx_id,
+          status: row.tx_status === 'FAILED' ? 'FAILED' : 'PROVISIONING',
+          outboxStatus: row.outbox_status || 'PENDING',
+          error: row.outbox_error || undefined,
+        }, requestId)
+      );
+    }
+
+    if (hasStripeConfigured() && row.stripe_payment_intent_id.startsWith('pi_')) {
+      const stripe = getStripe(env.STRIPE_SECRET_KEY);
+      const pi = await stripe.paymentIntents.retrieve(row.stripe_payment_intent_id);
+      return reply.status(200).send(
+        successResponse({
+          bookingId: id,
+          paymentTransactionId: row.tx_id,
+          paymentIntentId: pi.id,
+          clientSecret: pi.client_secret,
+          status: row.tx_status,
+          stripeStatus: pi.status,
+          amountCents: Number(row.authorized_amount_cents),
+        }, requestId)
+      );
+    }
+
+    return reply.status(200).send(
+      successResponse({
+        bookingId: id,
+        paymentTransactionId: row.tx_id,
+        paymentIntentId: row.stripe_payment_intent_id,
+        clientSecret: null,
+        status: row.tx_status,
+        amountCents: Number(row.authorized_amount_cents),
+      }, requestId)
+    );
+  });
+
+  // 1b. Confirm Pre-Authorization Hold after Client Stripe SDK Card Authorization (PAY-01, 3-Phase)
   fastify.post('/:id/confirm-payment', {
     schema: {
       tags: ['Bookings & Dispatch'],
@@ -251,115 +322,136 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const callerId = request.user?.id;
     const callerRole = request.user?.role;
 
-    const client = await pool.connect();
+    // PHASE 1: Fast Read & Authorization Guard (release DB client before Stripe I/O)
+    const readClient = await pool.connect();
+    let row: any;
     try {
-      await client.query('BEGIN');
-      const bRes = await client.query(
-        `SELECT b.id, b.status, b.customer_id, i.id as invoice_id, pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status
+      const bRes = await readClient.query(
+        `SELECT b.id, b.status, b.customer_id, i.id as invoice_id, i.total_amount_cents,
+                pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status, pt.authorized_amount_cents
          FROM bookings b
          JOIN invoices i ON i.booking_id = b.id AND i.tenant_id = $2
          JOIN payment_transactions pt ON pt.invoice_id = i.id AND pt.tenant_id = $2
-         WHERE b.id = $1 AND b.tenant_id = $2
-         FOR UPDATE OF b`,
+         WHERE b.id = $1 AND b.tenant_id = $2`,
         [id, tenantId]
       );
 
       if (bRes.rows.length === 0) {
-        await client.query('ROLLBACK');
         return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId));
       }
 
-      const row = bRes.rows[0];
+      row = bRes.rows[0];
+    } finally {
+      readClient.release();
+    }
 
-      // Strict Authorization Guard: Caller must be the booking owner or an authorized operator (canonical ADMIN/STAFF)
-      const isOwner = row.customer_id === callerId;
-      const isPrivilegedOperator = ['ADMIN', 'STAFF'].includes(callerRole || '');
+    // Strict Authorization Guard: Caller must be the booking owner or an authorized operator (canonical ADMIN/STAFF)
+    const isOwner = row.customer_id === callerId;
+    const isPrivilegedOperator = ['ADMIN', 'STAFF'].includes(callerRole || '');
 
-      if (!isOwner && !isPrivilegedOperator) {
-        await client.query('ROLLBACK');
-        return reply.status(403).send(
-          errorResponse('FORBIDDEN', 'You are not authorized to confirm payment for this booking.', requestId)
+    if (!isOwner && !isPrivilegedOperator) {
+      return reply.status(403).send(
+        errorResponse('FORBIDDEN', 'You are not authorized to confirm payment for this booking.', requestId)
+      );
+    }
+
+    // Idempotent return if already in a confirmed state
+    if (row.tx_status === 'REQUIRES_CAPTURE' || row.tx_status === 'SUCCEEDED') {
+      return reply.status(200).send(successResponse({ confirmed: true, status: row.tx_status }, requestId));
+    }
+
+    if (!row.stripe_payment_intent_id) {
+      return reply.status(400).send(
+        errorResponse('PAYMENT_INTENT_MISSING', 'No payment intent associated with this booking invoice.', requestId)
+      );
+    }
+
+    // PHASE 2: External Stripe Retrieve (OUTSIDE any DB transaction)
+    let targetTxStatus: 'REQUIRES_CAPTURE' | 'SUCCEEDED' = 'REQUIRES_CAPTURE';
+    let targetInvoiceStatus: 'AUTHORIZED' | 'PAID' = 'AUTHORIZED';
+
+    if (hasStripeConfigured() && row.stripe_payment_intent_id.startsWith('pi_')) {
+      let pi: Stripe.PaymentIntent;
+      try {
+        const stripe = getStripe(env.STRIPE_SECRET_KEY);
+        pi = await stripe.paymentIntents.retrieve(row.stripe_payment_intent_id);
+      } catch (stripeErr: any) {
+        return reply.status(502).send(
+          errorResponse('STRIPE_RETRIEVE_FAILED', `Failed to verify PaymentIntent with Stripe: ${stripeErr.message}`, requestId)
         );
       }
 
-      // Idempotent return if already in a confirmed state
-      if (row.tx_status === 'REQUIRES_CAPTURE' || row.tx_status === 'SUCCEEDED') {
+      if (pi.status === 'succeeded') {
+        targetTxStatus = 'SUCCEEDED';
+        targetInvoiceStatus = 'PAID';
+      } else if (pi.status === 'requires_capture') {
+        targetTxStatus = 'REQUIRES_CAPTURE';
+        targetInvoiceStatus = 'AUTHORIZED';
+      } else {
+        return reply.status(409).send(
+          errorResponse('PAYMENT_NOT_AUTHORIZED', `Stripe PaymentIntent status is ${pi.status}; payment is not authorized.`, requestId)
+        );
+      }
+    } else if (process.env.NODE_ENV === 'production') {
+      return reply.status(422).send(
+        errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', 'Live Stripe gateway is not configured on this server.', requestId)
+      );
+    }
+
+    // PHASE 3: Short Atomic Reconciliation Transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const lockRes = await client.query(
+        `SELECT status FROM payment_transactions WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+        [row.tx_id, tenantId]
+      );
+      const currentStatus = lockRes.rows[0]?.status;
+      if (currentStatus === 'SUCCEEDED') {
         await client.query('COMMIT');
-        return reply.status(200).send(successResponse({ confirmed: true, status: row.tx_status }, requestId));
-      }
-
-      // Require verifiable PaymentIntent identifier
-      if (!row.stripe_payment_intent_id) {
-        await client.query('ROLLBACK');
-        return reply.status(400).send(
-          errorResponse('PAYMENT_INTENT_MISSING', 'No payment intent associated with this booking invoice.', requestId)
-        );
-      }
-
-      let targetTxStatus: 'REQUIRES_CAPTURE' | 'SUCCEEDED' = 'REQUIRES_CAPTURE';
-      let targetInvoiceStatus: 'AUTHORIZED' | 'PAID' = 'AUTHORIZED';
-
-      if (env.STRIPE_SECRET_KEY && row.stripe_payment_intent_id.startsWith('pi_')) {
-        const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-        const pi = await stripe.paymentIntents.retrieve(row.stripe_payment_intent_id);
-
-        if (pi.status === 'succeeded') {
-          targetTxStatus = 'SUCCEEDED';
-          targetInvoiceStatus = 'PAID';
-        } else if (pi.status === 'requires_capture') {
-          targetTxStatus = 'REQUIRES_CAPTURE';
-          targetInvoiceStatus = 'AUTHORIZED';
-        } else {
-          await client.query('ROLLBACK');
-          return reply.status(400).send(
-            errorResponse('PAYMENT_NOT_AUTHORIZED', `Stripe PaymentIntent status is ${pi.status}; payment is not authorized.`, requestId)
-          );
-        }
-      } else if (process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging') {
-        await client.query('ROLLBACK');
-        return reply.status(422).send(
-          errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', 'Live Stripe gateway is not configured on this server.', requestId)
-        );
+        return reply.status(200).send(successResponse({ confirmed: true, status: 'SUCCEEDED' }, requestId));
       }
 
       if (targetTxStatus === 'SUCCEEDED') {
         await client.query(
           `UPDATE payment_transactions 
-           SET status = 'SUCCEEDED', captured_amount_cents = authorized_amount_cents 
-           WHERE id = $1`, 
+           SET status = 'SUCCEEDED', captured_amount_cents = authorized_amount_cents, updated_at = NOW() 
+           WHERE id = $1`,
           [row.tx_id]
         );
       } else {
-        await client.query(`UPDATE payment_transactions SET status = 'REQUIRES_CAPTURE' WHERE id = $1`, [row.tx_id]);
+        await client.query(
+          `UPDATE payment_transactions SET status = 'REQUIRES_CAPTURE', updated_at = NOW() WHERE id = $1 AND status = 'PENDING'`,
+          [row.tx_id]
+        );
       }
 
       if (targetInvoiceStatus === 'PAID') {
-        await client.query(`UPDATE invoices SET status = 'PAID', updated_at = NOW() WHERE id = $1`, [row.invoice_id]);
-        
-        // Post double-entry ledger entry for settled/paid customer payments:
-        // Debit: 1010 (Operating Bank Account)
-        // Credit: 2010 (Customer Escrow Liability)
+        await client.query(`UPDATE invoices SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = $1`, [row.invoice_id]);
+
+        // Escrow Capture: Debit 1020 (Stripe Holding Escrow Clearing), Credit 2010 (Customer Escrow Deposits Liability)
         const accRes = await client.query(
           `SELECT id, account_number FROM ledger_accounts 
-           WHERE tenant_id = $1 AND account_number IN ('1010', '2010')`,
+           WHERE tenant_id = $1 AND account_number IN ('1010', '1020', '2010')`,
           [tenantId]
         );
-        const bankAsset = accRes.rows.find(a => a.account_number === '1010');
+        const escrowClearing = accRes.rows.find(a => a.account_number === '1020') || accRes.rows.find(a => a.account_number === '1010');
         const escrowLiability = accRes.rows.find(a => a.account_number === '2010');
 
-        if (bankAsset && escrowLiability) {
-          const invAmountRes = await client.query(`SELECT total_amount_cents FROM invoices WHERE id = $1`, [row.invoice_id]);
-          const amountCents = invAmountRes.rows[0]?.total_amount_cents || 0;
+        if (escrowClearing && escrowLiability) {
+          const amountCents = Number(row.total_amount_cents || row.authorized_amount_cents || 0);
           if (amountCents > 0) {
             await client.query(
-              `INSERT INTO ledger_entries (tenant_id, debit_account_id, credit_account_id, amount_cents, description)
-               VALUES ($1, $2, $3, $4, $5)`,
-              [tenantId, bankAsset.id, escrowLiability.id, amountCents, `Payment settled for booking ${id}`]
+              `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+               VALUES ($1, $2, 'ESCROW_CAPTURE', $3, $4, $5, $6)
+               ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+              [tenantId, row.tx_id, escrowClearing.id, escrowLiability.id, amountCents, `Escrow captured for booking ${id}`]
             );
           }
         }
       } else {
-        await client.query(`UPDATE invoices SET status = 'AUTHORIZED', updated_at = NOW() WHERE id = $1`, [row.invoice_id]);
+        await client.query(`UPDATE invoices SET status = 'AUTHORIZED', updated_at = NOW() WHERE id = $1 AND status = 'DRAFT'`, [row.invoice_id]);
       }
 
       await client.query('COMMIT');
@@ -589,7 +681,9 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       await client.query('BEGIN');
 
       const bRes = await client.query(
-        'SELECT id, customer_safety_pin, status, assigned_provider_id FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE',
+        `SELECT id, customer_safety_pin, status, assigned_provider_id,
+                safety_pin_failed_attempts, safety_pin_locked_until, safety_pin_last_failed_at
+         FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
         [id, tenantId]
       );
 
@@ -635,36 +729,57 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         );
       }
 
-      // Check PIN lockout
-      const attemptKey = `pin_${id}`;
+      // Persistent PostgreSQL PIN lockout enforcement
       const now = Date.now();
-      const attemptRecord = pinAttemptStore.get(attemptKey);
-      if (attemptRecord && attemptRecord.lockedUntil > now) {
-        const remainingSeconds = Math.ceil((attemptRecord.lockedUntil - now) / 1000);
-        await client.query('ROLLBACK');
+      const lockedUntilMs = booking.safety_pin_locked_until ? new Date(booking.safety_pin_locked_until).getTime() : 0;
+      if (lockedUntilMs > now) {
+        const remainingSeconds = Math.ceil((lockedUntilMs - now) / 1000);
+        await client.query('COMMIT');
         return reply.status(429).send(
           errorResponse('TOO_MANY_PIN_ATTEMPTS', `Safety PIN verification locked due to excessive failed attempts. Please retry in ${remainingSeconds} seconds.`, requestId)
         );
       }
 
-      if (booking.customer_safety_pin !== safetyPin) {
-        const currentAttempts = (attemptRecord && attemptRecord.lockedUntil <= now ? attemptRecord.attempts : 0) + 1;
-        if (currentAttempts >= 5) {
-          pinAttemptStore.set(attemptKey, { attempts: currentAttempts, lockedUntil: now + 15 * 60 * 1000 }); // 15-minute lockout
-        } else {
-          pinAttemptStore.set(attemptKey, { attempts: currentAttempts, lockedUntil: 0 });
-        }
-        await client.query('ROLLBACK');
+      const storedPin = String(booking.customer_safety_pin || '');
+      const pinMatches =
+        storedPin.length === safetyPin.length &&
+        storedPin.length > 0 &&
+        crypto.timingSafeEqual(Buffer.from(storedPin, 'utf8'), Buffer.from(safetyPin, 'utf8'));
+
+      if (!pinMatches) {
+        const lastFailedMs = booking.safety_pin_last_failed_at ? new Date(booking.safety_pin_last_failed_at).getTime() : 0;
+        const windowExpired = (lockedUntilMs > 0 && lockedUntilMs <= now) || (lastFailedMs > 0 && now - lastFailedMs > 15 * 60 * 1000);
+        const baseAttempts = windowExpired ? 0 : Number(booking.safety_pin_failed_attempts || 0);
+        const currentAttempts = baseAttempts + 1;
+        const newLockedUntil = currentAttempts >= 5 ? new Date(now + 15 * 60 * 1000).toISOString() : null;
+
+        await client.query(
+          `UPDATE bookings
+           SET safety_pin_failed_attempts = $1,
+               safety_pin_locked_until = $2,
+               safety_pin_last_failed_at = NOW(),
+               updated_at = NOW()
+           WHERE id = $3`,
+          [currentAttempts, newLockedUntil, id]
+        );
+        // COMMIT failed attempt counter so lockout persists across instances and restarts
+        await client.query('COMMIT');
         return reply.status(400).send(
           errorResponse('INVALID_SAFETY_PIN', `The 4-digit safety PIN provided is incorrect. ${Math.max(0, 5 - currentAttempts)} attempts remaining before lockout.`, requestId)
         );
       }
 
       // Successful verification: clear lockout and invalidate PIN so it cannot be reused
-      pinAttemptStore.delete(attemptKey);
       await client.query(
         `UPDATE bookings 
-         SET status = 'ON_SITE', pin_verified_at = NOW(), customer_safety_pin = NULL, geofence_arrival_at = COALESCE(geofence_arrival_at, NOW())
+         SET status = 'ON_SITE',
+             pin_verified_at = NOW(),
+             customer_safety_pin = NULL,
+             safety_pin_failed_attempts = 0,
+             safety_pin_locked_until = NULL,
+             safety_pin_last_failed_at = NULL,
+             geofence_arrival_at = COALESCE(geofence_arrival_at, NOW()),
+             updated_at = NOW()
          WHERE id = $1`,
         [id]
       );
@@ -795,9 +910,9 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     }
 
     // PHASE 2: External Stripe Capture (Executed OUTSIDE any open database transaction)
-    if (booking.invoice_id && paymentTx && env.STRIPE_SECRET_KEY && paymentTx.status !== 'SUCCEEDED' && paymentTx.stripe_payment_intent_id?.startsWith('pi_')) {
+    if (booking.invoice_id && paymentTx && hasStripeConfigured() && paymentTx.status !== 'SUCCEEDED' && paymentTx.stripe_payment_intent_id?.startsWith('pi_')) {
       try {
-        const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+        const stripe = getStripe(env.STRIPE_SECRET_KEY);
         await stripe.paymentIntents.capture(
           paymentTx.stripe_payment_intent_id,
           {},
@@ -808,7 +923,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           stripeErr.code === 'payment_intent_unexpected_state' ||
           stripeErr.message?.toLowerCase().includes('already been captured');
         if (isAlreadyCaptured) {
-          const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+          const stripe = getStripe(env.STRIPE_SECRET_KEY);
           const pi = await stripe.paymentIntents.retrieve(paymentTx.stripe_payment_intent_id);
           if (pi.status !== 'succeeded') {
             return reply.status(502).send(
@@ -862,14 +977,14 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       // C. Capture Invoice Payment & Release Escrow Hold Idempotently
       if (booking.invoice_id) {
         await settleClient.query(
-          `UPDATE invoices SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()) WHERE id = $1`,
+          `UPDATE invoices SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = $1`,
           [booking.invoice_id]
         );
 
         // Update Payment Transaction (conditional on non-succeeded status)
         await settleClient.query(
           `UPDATE payment_transactions 
-           SET captured_amount_cents = authorized_amount_cents, status = 'SUCCEEDED'
+           SET captured_amount_cents = authorized_amount_cents, status = 'SUCCEEDED', updated_at = NOW()
            WHERE invoice_id = $1 AND status != 'SUCCEEDED'`,
           [booking.invoice_id]
         );
@@ -881,6 +996,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         );
         const accounts = accRes.rows;
         const cashAcc = accounts.find(a => a.account_number === '1010')?.id;
+        const escrowClearingAcc = accounts.find(a => a.account_number === '1020')?.id || cashAcc;
         const escrowLiabilityAcc = accounts.find(a => a.account_number === '2010')?.id;
         const techPayableAcc = accounts.find(a => a.account_number === '2020')?.id;
         const platformRevAcc = accounts.find(a => a.account_number === '4010')?.id;
@@ -890,7 +1006,22 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         const platformFeeCents = Math.round(totalCents * (commissionBps / 10000));
         const netTechPayoutCents = totalCents - platformFeeCents;
 
-        if (paymentTx?.id && cashAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && totalCents > 0) {
+        if (paymentTx?.id && escrowClearingAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && totalCents > 0) {
+          // Record Escrow Capture idempotently (Dr 1020 Stripe Holding Escrow / Cr 2010 Customer Escrow Deposits)
+          await settleClient.query(
+            `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+             VALUES ($1, $2, 'ESCROW_CAPTURE', $3, $4, $5, $6)
+             ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+            [
+              tenantId,
+              paymentTx.id,
+              escrowClearingAcc,
+              escrowLiabilityAcc,
+              totalCents,
+              `Escrow captured on work order completion for #${id}`
+            ]
+          );
+
           if (platformFeeCents > 0) {
             await settleClient.query(
               `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
@@ -950,7 +1081,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // 6. Cancel Booking Order
+  // 6. Cancel Booking Order (3-Phase: Read -> Stripe Cancel Outside TX -> Atomic DB Settlement)
   fastify.post('/:id/cancel', {
     schema: {
       tags: ['Bookings & Dispatch'],
@@ -971,116 +1102,158 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const userRole = request.user!.role;
     const userId = request.user!.id;
 
-    const client = await pool.connect();
+    // PHASE 1: Fast Read & Authorization (no DB lock held across Stripe network I/O)
+    const readClient = await pool.connect();
+    let booking: any;
     try {
-      await client.query('BEGIN');
-
-      const bRes = await client.query(
-        `SELECT b.id, b.status, b.customer_id, b.assigned_provider_id, i.id as invoice_id
+      const bRes = await readClient.query(
+        `SELECT b.id, b.status, b.customer_id, b.assigned_provider_id,
+                i.id as invoice_id,
+                pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status
          FROM bookings b
          LEFT JOIN invoices i ON i.booking_id = b.id
-         WHERE b.id = $1 AND b.tenant_id = $2
-         FOR UPDATE OF b`,
+         LEFT JOIN payment_transactions pt ON pt.invoice_id = i.id
+         WHERE b.id = $1 AND b.tenant_id = $2`,
         [id, tenantId]
       );
 
       if (bRes.rows.length === 0) {
-        await client.query('ROLLBACK');
         return reply.status(404).send(
           errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId)
         );
       }
+      booking = bRes.rows[0];
+    } finally {
+      readClient.release();
+    }
 
-      const booking = bRes.rows[0];
+    const canCancel = userRole === 'ADMIN' ||
+                      userRole === 'STAFF' ||
+                      (userRole === 'CUSTOMER' && booking.customer_id === userId);
+    if (!canCancel) {
+      return reply.status(403).send(
+        errorResponse('FORBIDDEN', 'You do not have permission to cancel this booking.', requestId)
+      );
+    }
 
-      // Authorization: Admin, Staff, or the customer who booked it
-      const canCancel = userRole === 'ADMIN' ||
-                        userRole === 'STAFF' ||
-                        (userRole === 'CUSTOMER' && booking.customer_id === userId);
+    if (booking.status === 'CANCELLED') {
+      return reply.status(200).send(
+        successResponse({
+          id: booking.id,
+          status: 'CANCELLED',
+          message: 'Booking is already cancelled.'
+        }, requestId)
+      );
+    }
 
-      if (!canCancel) {
-        await client.query('ROLLBACK');
-        return reply.status(403).send(
-          errorResponse('FORBIDDEN', 'You do not have permission to cancel this booking.', requestId)
+    if (booking.status === 'COMPLETED') {
+      return reply.status(400).send(
+        errorResponse('INVALID_STATE', 'Cannot cancel an already completed work order. Open a dispute or refund request instead.', requestId)
+      );
+    }
+
+    if (booking.tx_status === 'SUCCEEDED') {
+      return reply.status(409).send(
+        errorResponse('PAYMENT_ALREADY_CAPTURED', 'Payment has already been captured; refund is required before cancelling.', requestId)
+      );
+    }
+
+    // PHASE 2: Cancel Stripe PaymentIntent Authorization Outside Any Open Transaction
+    if (
+      booking.invoice_id &&
+      hasStripeConfigured() &&
+      booking.stripe_payment_intent_id?.startsWith('pi_') &&
+      ['REQUIRES_CAPTURE', 'PENDING'].includes(booking.tx_status)
+    ) {
+      try {
+        const stripe = getStripe(env.STRIPE_SECRET_KEY);
+        await stripe.paymentIntents.cancel(
+          booking.stripe_payment_intent_id,
+          {},
+          { idempotencyKey: `cancel_tx_${booking.invoice_id}` }
         );
+      } catch (stripeErr: any) {
+        const msg = String(stripeErr?.message || '').toLowerCase();
+        const isAlreadyCanceled = stripeErr.code === 'resource_already_canceled' ||
+                                  msg.includes('already been canceled') ||
+                                  msg.includes('already canceled');
+        const isAlreadyCaptured = msg.includes('already been captured') || msg.includes('succeeded');
+        if (isAlreadyCaptured) {
+          return reply.status(409).send(
+            errorResponse('PAYMENT_ALREADY_CAPTURED', 'Stripe PaymentIntent has already been captured; refund required.', requestId)
+          );
+        }
+        if (!isAlreadyCanceled) {
+          return reply.status(502).send(
+            errorResponse('STRIPE_CANCELLATION_FAILED', `Failed to release pre-authorization hold with Stripe: ${stripeErr.message}`, requestId)
+          );
+        }
+        request.log.warn({ err: stripeErr }, 'Stripe PaymentIntent was already voided/canceled');
       }
+    }
 
-      // If already cancelled, return idempotent response
-      if (booking.status === 'CANCELLED') {
+    // PHASE 3: Short Atomic Local Settlement Transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const lockRes = await client.query(
+        `SELECT id, status FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+        [id, tenantId]
+      );
+      if (lockRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId));
+      }
+      const locked = lockRes.rows[0];
+      if (locked.status === 'CANCELLED') {
         await client.query('COMMIT');
         return reply.status(200).send(
-          successResponse({
-            id: booking.id,
-            status: 'CANCELLED',
-            message: 'Booking is already cancelled.'
-          }, requestId)
+          successResponse({ id: locked.id, status: 'CANCELLED', message: 'Booking is already cancelled.' }, requestId)
         );
       }
-
-      // Cannot cancel completed jobs
-      if (booking.status === 'COMPLETED') {
+      if (locked.status === 'COMPLETED') {
         await client.query('ROLLBACK');
         return reply.status(400).send(
-          errorResponse('INVALID_STATE', 'Cannot cancel an already completed work order. Open a dispute or refund request instead.', requestId)
+          errorResponse('INVALID_STATE', 'Cannot cancel an already completed work order.', requestId)
         );
       }
 
-      // Update booking status
+      const cancellationReason = reason ? `Cancellation reason: ${reason}` : 'Cancelled by customer / admin.';
       await client.query(
-        `UPDATE bookings SET status = 'CANCELLED', updated_at = NOW() WHERE id = $1`,
+        `UPDATE bookings SET status = 'CANCELLED', cancellation_reason = $2, cancelled_by_user_id = $3, updated_at = NOW() WHERE id = $1`,
+        [id, cancellationReason, userId]
+      );
+
+      // Prevent background outbox worker from creating a PI for this cancelled booking
+      await client.query(
+        `UPDATE outbox_operations
+         SET status = 'CANCELLED', lease_expires_at = NULL, updated_at = NOW()
+         WHERE aggregate_type = 'BOOKING_PAYMENT'
+           AND aggregate_id = $1
+           AND status IN ('PENDING', 'REQUIRES_RECONCILIATION')`,
         [id]
       );
 
-      // Void or cancel related invoice and release escrow authorization
       if (booking.invoice_id) {
-        if (env.STRIPE_SECRET_KEY) {
-          const txRes = await client.query(
-            `SELECT stripe_payment_intent_id FROM payment_transactions WHERE invoice_id = $1 AND status = 'REQUIRES_CAPTURE'`,
-            [booking.invoice_id]
-          );
-          if (txRes.rows.length > 0 && txRes.rows[0].stripe_payment_intent_id.startsWith('pi_')) {
-            try {
-              const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-              await stripe.paymentIntents.cancel(
-                txRes.rows[0].stripe_payment_intent_id,
-                {},
-                { idempotencyKey: `cancel_tx_${booking.invoice_id}` }
-              );
-            } catch (stripeErr: any) {
-              const isAlreadyCanceled = stripeErr.code === 'resource_already_canceled' ||
-                                        String(stripeErr.message || '').toLowerCase().includes('already been canceled') ||
-                                        String(stripeErr.message || '').toLowerCase().includes('already canceled');
-              if (!isAlreadyCanceled) {
-                await client.query('ROLLBACK');
-                return reply.status(502).send(
-                  errorResponse('STRIPE_CANCELLATION_FAILED', `Failed to release pre-authorization hold with Stripe: ${stripeErr.message}`, requestId)
-                );
-              }
-              request.log.warn({ err: stripeErr }, 'Stripe PaymentIntent was already voided/canceled');
-            }
-          }
-        }
-
         await client.query(
-          `UPDATE invoices SET status = 'VOID' WHERE id = $1`,
+          `UPDATE invoices SET status = 'VOID', updated_at = NOW() WHERE id = $1`,
           [booking.invoice_id]
         );
 
         await client.query(
           `UPDATE payment_transactions 
-           SET status = 'VOIDED'
+           SET status = 'VOIDED', updated_at = NOW()
            WHERE invoice_id = $1 AND status IN ('REQUIRES_CAPTURE', 'PENDING')`,
           [booking.invoice_id]
         );
       }
 
-      // Record timeline audit event
-      const cancellationReason = reason ? `Cancellation reason: ${reason}` : 'Cancelled by customer / admin.';
       await client.query(
         `INSERT INTO booking_timeline_events (
           booking_id, tenant_id, from_status, to_status, actor_id, event_title, event_details
         ) VALUES ($1, $2, $3, 'CANCELLED', $4, 'Booking Cancelled', $5)`,
-        [id, tenantId, booking.status, userId, cancellationReason]
+        [id, tenantId, locked.status, userId, cancellationReason]
       );
 
       await client.query('COMMIT');

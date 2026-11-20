@@ -24,9 +24,23 @@ declare module 'fastify' {
   }
 }
 
+/**
+ * Exact, method-aware, query-stripped match for the Stripe webhook. The handler verifies the
+ * Stripe signature before any DB work and derives the tenant from the matched DB records.
+ */
+export const STRIPE_WEBHOOK_PATH = '/api/v1/finances/webhooks/stripe';
+export function isStripeWebhookRequest(method: string, rawUrl: string): boolean {
+  if (method.toUpperCase() !== 'POST') return false;
+  const pathOnly = rawUrl.split('?')[0].replace(/\/+$/, '');
+  return pathOnly === STRIPE_WEBHOOK_PATH;
+}
+
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function tenantResolver(request: FastifyRequest, reply: FastifyReply) {
+  if (isStripeWebhookRequest(request.method, request.url)) {
+    return;
+  }
   // Allow health, docs, and installer routes without tenant resolution
   if (
     request.url.startsWith('/health') ||

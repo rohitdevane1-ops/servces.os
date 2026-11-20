@@ -2,9 +2,9 @@ name: ServicePro OS — Enterprise Production CI Pipeline
 
 on:
   push:
-    branches: [main, 'remediation/**']
+    branches: [main, 'remediation/**', 'fix/**']
   pull_request:
-    branches: [main, 'remediation/**']
+    branches: [main, 'remediation/**', 'fix/**']
   workflow_dispatch:
 
 concurrency:
@@ -66,15 +66,25 @@ jobs:
           cd server
           npm run build
 
-      - name: Run Backend Unit & Integration Tests
+      - name: Run Database Migrations & Verification
         env:
           NODE_ENV: test
           DATABASE_URL: postgresql://servicepro_admin:test_password_12345@localhost:5432/servicepro_test
+        run: |
+          cd server
+          npm run db:migrate
+          npm run db:verify
+
+      - name: Run Backend Unit & Integration Tests (Real PostGIS)
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://servicepro_admin:test_password_12345@localhost:5432/servicepro_test
+          TEST_DATABASE_URL: postgresql://servicepro_admin:test_password_12345@localhost:5432/servicepro_test
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test_jwt_secret_012345678901234567890123456789
           JWT_REFRESH_SECRET: test_jwt_refresh_secret_012345678901234567890123456789
           BOOTSTRAP_TOKEN: test_bootstrap_token_0123456789
-          APP_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          APP_ENCRYPTION_KEY: a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90
         run: |
           cd server
           npm test
@@ -125,11 +135,12 @@ jobs:
       - name: Checkout Codebase
         uses: actions/checkout@v4
 
-      - name: Validate Docker Compose Configuration
+      - name: Validate & Build Docker Compose Images
         run: |
           cp .env.example .env
           docker compose config --quiet
-          echo "Docker Compose configuration is valid."
+          docker compose build
+          echo "Docker Compose configuration and image builds succeeded."
 
   # ============================================================================
   # 4. REPOSITORY INTEGRITY & ZERO DATA LEAKAGE AUDIT
@@ -142,6 +153,11 @@ jobs:
     steps:
       - name: Checkout Codebase
         uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Verify Clean Environment Template
         run: |
@@ -156,9 +172,9 @@ jobs:
       - name: Backend Dependency Vulnerability Audit
         run: |
           cd server
-          npm audit --omit=dev --audit-level=high || true
+          npm audit --omit=dev --audit-level=high
 
       - name: Frontend Dependency Vulnerability Audit
         run: |
           cd admin_web
-          npm audit --omit=dev --audit-level=high || true
+          npm audit --omit=dev --audit-level=high

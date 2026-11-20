@@ -1,10 +1,29 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { pool } from '../../database/pool.js';
 import { AuthService } from './auth.service.js';
 import { successResponse, errorResponse } from '../../types/envelope.js';
 import { authenticate } from '../../middleware/rbac.js';
 import { verifyCaptcha } from '../../middleware/captcha.js';
+import { env } from '../../config/env.js';
+
+function isOriginAllowedForCookie(request: FastifyRequest): boolean {
+  let candidateOrigin = request.headers.origin;
+  if (!candidateOrigin && request.headers.referer) {
+    try {
+      candidateOrigin = new URL(request.headers.referer).origin;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidateOrigin) return true;
+  const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+  if (allowedOrigins.includes(candidateOrigin)) return true;
+  if (env.NODE_ENV !== 'production' && (candidateOrigin.includes('localhost') || candidateOrigin.includes('127.0.0.1'))) {
+    return true;
+  }
+  return false;
+}
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -515,7 +534,16 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   }, async (request, reply) => {
     const requestId = request.id || `req_${Date.now()}`;
-    const rawRefreshToken = request.cookies.refresh_token || (request.body as any)?.refreshToken;
+    const bodyToken = (request.body as any)?.refreshToken;
+    const cookieToken = request.cookies.refresh_token;
+
+    if (!bodyToken && cookieToken && !isOriginAllowedForCookie(request)) {
+      return reply.status(403).send(
+        errorResponse('CSRF_ORIGIN_MISMATCH', 'Cross-origin cookie refresh request rejected.', requestId)
+      );
+    }
+
+    const rawRefreshToken = cookieToken || bodyToken;
 
     if (!rawRefreshToken) {
       return reply.status(401).send(
@@ -560,7 +588,16 @@ export async function authRoutes(fastify: FastifyInstance) {
     }
   }, async (request, reply) => {
     const requestId = request.id || `req_${Date.now()}`;
-    const rawRefreshToken = request.cookies.refresh_token || (request.body as any)?.refreshToken;
+    const bodyToken = (request.body as any)?.refreshToken;
+    const cookieToken = request.cookies.refresh_token;
+
+    if (!bodyToken && cookieToken && !isOriginAllowedForCookie(request)) {
+      return reply.status(403).send(
+        errorResponse('CSRF_ORIGIN_MISMATCH', 'Cross-origin cookie logout request rejected.', requestId)
+      );
+    }
+
+    const rawRefreshToken = cookieToken || bodyToken;
 
     if (rawRefreshToken) {
       await AuthService.revokeSession(rawRefreshToken);

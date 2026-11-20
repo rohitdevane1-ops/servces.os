@@ -1,11 +1,11 @@
 # ServiceOS — Complete Issues & Solutions Report (single file)
 
-**Scope:** every known defect, with evidence, impact, the fix, and how to prove it.
-**Branch inspected:** `remediation/hardening-phase5-audit-resolution`.
-**Status of fixes:** NONE implemented yet. This is a report + solution specification. Do not read any item as "fixed".
+**Scope:** every known defect, with evidence, impact, the fix, and verification status.
+**Branch:** `fix/remediation-phased-execution` (branched from `remediation/hardening-phase5-audit-resolution`).
+**Status of fixes:** Core P0 (01–08), P1 (09–14), P2 (15–17, 19–21, 23) remediation implemented and verified against real embedded PostgreSQL 16 + Fastify + Stripe mocks on `fix/remediation-phased-execution` (see §9 below).
 
-**Evidence labels:** **[V]** verified by reading code/migrations (file:line) · **[R]** from earlier audit, not re-checked · **[U]** unverified, must be proven on a live database/CI.
-**Limits:** this machine has no `psql`, `docker` or `flutter`, so nothing database-backed or mobile has been executed. The 68 existing tests are static (regex/text checks) and pass regardless of the defects below.
+**Evidence labels:** **[V]** verified in code/migrations or executed test output · **[R]** from earlier audit, not re-checked · **[U]** unverified on this host due to missing Docker/Flutter SDK (wired in `.github/workflows/ci.yml`).
+**Environment limits:** Docker Engine and Flutter/Android SDK CLIs are not installed on this Windows host, so container image builds and Flutter/Gradle builds are statically verified only; database tests execute on real PostgreSQL 16 via `embedded-postgres` (with minimal PostGIS shim where native `postgis` extension is absent; CI uses `postgis/postgis:16-3.4-alpine`).
 
 ---
 
@@ -235,3 +235,21 @@ Unused imports and lint warnings (oxlint 527 warnings, 0 errors [R]); `setState`
 - Old audit §21 test breakdown (7 and 4 tests) was wrong; the real run is 13 and 6 = 68.
 - The Android client directory is `serviceos_android/`.
 - Booking status `PAYMENT_FAILED` does not exist (allowed: REQUESTED, BROADCASTING, ASSIGNED, EN_ROUTE, ON_SITE, COMPLETED, CANCELLED, DISPUTED); failures use `CANCELLED` + reason.
+
+---
+
+## 9. Remediation Implementation & Verification Ledger (`fix/remediation-phased-execution`)
+
+### 9.1 Implemented Artifacts
+- **Migration 010:** `server/src/database/migrations/010_remediation_core_invariants.sql` & `.down.sql` — adds `updated_at` triggers, `currency`, `error_message`, nullable `stripe_payment_intent_id` + partial unique index on `payment_transactions`, `DISCREPANCY_QUARANTINED` check status, widens `provider_payouts.status` (`VARCHAR(40)`), adds `amount_reversed_cents` + `PENDING_PROVIDER_CONFIRMATION` + `PARTIALLY_REVERSED` + `REVERSED`, creates `provider_payout_reversals`, creates `outbox_operations`, makes `bookings.customer_safety_pin` nullable (`NULL` or 4-digit check), adds persistent PIN lockout columns, replaces partial ledger unique indexes with full unique indexes for `ON CONFLICT`, and enforces non-destructive `RAISE EXCEPTION` guards on rollback.
+- **Stripe Injectable Client & Outbox Worker:** `server/src/services/stripeClient.ts` (`getStripe`, `hasStripeConfigured`, `setStripeForTest`, `isDefinitiveStripeError`), `server/src/workers/outbox.worker.ts` (`OutboxWorker` with single-job `FOR UPDATE SKIP LOCKED`, active lease heartbeat every `leaseMs / 3`, strict `WHERE id = $1 AND locked_by = $2` owner verification, same-key timeout retry + `REQUIRES_RECONCILIATION`, hard-decline cancellation), wired into `server/src/index.ts`.
+- **Bookings & Safety PIN (`server/src/modules/bookings/bookings.routes.ts`):** Removed in-memory `pinAttemptStore`; converted `POST /` to durable reservation + outbox returning HTTP `202` `PENDING_PAYMENT`; added authenticated `GET /:id/payment-intent`; refactored `POST /:id/confirm-payment` and `POST /:id/cancel` into 3-phase execution (zero Stripe I/O inside SQL transactions); added `ESCROW_CAPTURE` (`Dr 1020 / Cr 2010`) in completion & confirmation; moved safety-PIN failure counters & 15-minute lockout into PostgreSQL `bookings` with committed failure counts and constant-time compare.
+- **Finances, Webhooks & Reversals (`server/src/modules/finances/finances.routes.ts`):** Sequential dual-key webhook correlation (PI ID -> UUID metadata where PI IS NULL -> `409` on divergence); rollback + `503` on missing target rows (no premature claim); separate authorization (`payment_intent.amount_capturable_updated`) vs capture (`payment_intent.succeeded` `ESCROW_CAPTURE`, plus fee/payable only if booking `COMPLETED`); cumulative monotonic `transfer.reversed` delta engine with `provider_payout_reversals` and `Dr 1010 / Cr 2020` mirror posting; `payout.failed` `po_` vs `tr_` separation; 3-phase `POST /payouts` crash recovery & `POST /payouts/:id/reconcile`; `PENDING_PROVIDER_CONFIRMATION` balance reservation.
+- **Security & Auth (`server/src/config/env.ts`, `app.ts`, `plugins/security.ts`, `middleware/tenant.ts`, `modules/auth/auth.routes.ts`):** Added default `APP_ENCRYPTION_KEY` to `INSECURE_DEFAULTS`; added `TRUST_PROXY` validation & Fastify `trustProxy`; removed `127.0.0.1` rate-limit allow-list; attached status `403` to CORS rejection; exact method+path+query-stripped webhook exemption in `tenantResolver`; CSRF `Origin`/`Referer` allowlist validation on cookie `/auth/refresh` and `/auth/logout`.
+- **Admin Web, Mobile & CI:** Removed production `localStorage` and mock-fixture fallback hydration in `admin_web/src/context/AdminContext.tsx`; mounted declarative `AppRouter.createRouter` in `serviceos/lib/app.dart` & `serviceos/lib/core/routing/app_router.dart`; added `fetchBookingPaymentIntent` to `serviceos/lib/core/network/api_client.dart` and `serviceos_android/.../ApiClient.kt`; hardened `.github/workflows/ci.yml` (`db:migrate`, `TEST_DATABASE_URL`, `docker compose build`, removed `|| true` audit masks).
+- **Real PostgreSQL & Fastify Test Suites:** `server/tests/helpers/db.ts`, `server/tests/db/schema_contract_baseline.test.ts` (6 tests), `server/tests/db/migration_010.test.ts` (5 tests), and `server/tests/db/remediation_full_integration.test.ts` (9 integration tests enforcing zero Stripe calls inside active transactions).
+
+### 9.2 Verified Command Outputs
+- `cd server && npx tsc --noEmit` → exit code `0` (0 errors).
+- `cd server && NODE_ENV=test npm test` → **88 tests across 16 suites: 88 passed, 0 failed, 0 skipped**.
+- `cd admin_web && npm run lint && npm run build` → `oxlint`: 0 errors (517 pre-existing warnings); `tsc -b && vite build`: exit code `0` (`dist/assets/index-*.js`).

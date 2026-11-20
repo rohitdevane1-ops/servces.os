@@ -256,6 +256,11 @@ class ApiClient {
     return response.data['data'] ?? {};
   }
 
+  Future<Map<String, dynamic>> fetchBookingPaymentIntent(String bookingId) async {
+    final response = await _dio.get('/bookings/$bookingId/payment-intent');
+    return response.data['data'] ?? {};
+  }
+
   Future<List<dynamic>> fetchBookings({String? status, int page = 1, int limit = 20}) async {
     final response = await _dio.get(
       '/bookings',

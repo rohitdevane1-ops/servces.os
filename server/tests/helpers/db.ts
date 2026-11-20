@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 
@@ -93,7 +94,16 @@ export async function startTestDb(opts: { migrateUpTo?: string | null } = {}): P
   let url: string;
 
   if (external) {
-    url = external;
+    const adminPool = new pg.Pool({ connectionString: external, max: 2 });
+    const dbName = `srv_test_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    await adminPool.query(`CREATE DATABASE "${dbName}"`);
+    const u = new URL(external);
+    u.pathname = `/${dbName}`;
+    url = u.toString();
+    stopFn = async () => {
+      await adminPool.query(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
+      await adminPool.end();
+    };
   } else {
     const { default: EmbeddedPostgres } = await import('embedded-postgres');
     const port = await freePort();
@@ -176,6 +186,8 @@ export async function seedWorld(pool: pg.Pool, slug = 'acme') {
 
   const customerId = await mkUser(`cust@${slug}.test`, 'CUSTOMER');
   const techId = await mkUser(`tech@${slug}.test`, 'TECHNICIAN');
+  const adminId = await mkUser(`admin@${slug}.test`, 'ADMIN');
+  await pool.query(`INSERT INTO admin_profiles (user_id, tenant_id, full_name) VALUES ($1,$2,'Admin')`, [adminId, tenantId]);
   await pool.query(`INSERT INTO customer_profiles (user_id, tenant_id, full_name) VALUES ($1,$2,'Cust')`, [customerId, tenantId]);
   await pool.query(
     `INSERT INTO provider_profiles (user_id, tenant_id, full_name, trade_category, stripe_connect_account_id, stripe_payouts_enabled)
@@ -185,7 +197,7 @@ export async function seedWorld(pool: pg.Pool, slug = 'acme') {
   const serviceId = (await pool.query(
     `INSERT INTO services (tenant_id, category_id, name, slug, base_price_cents) VALUES ($1,$2,'Leak fix','leak-fix',10000) RETURNING id`,
     [tenantId, cat])).rows[0].id as string;
-  return { tenantId, accountIds, customerId, techId, serviceId };
+  return { tenantId, accountIds, customerId, techId, adminId, serviceId };
 }
 
 let seq = 0;

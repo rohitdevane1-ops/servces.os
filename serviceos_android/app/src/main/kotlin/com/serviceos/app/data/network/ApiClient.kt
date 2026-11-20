@@ -261,6 +261,10 @@ object ApiClient {
         return executeRequest("/bookings", "POST", bookingJson)
     }
 
+    suspend fun fetchBookingPaymentIntent(bookingId: String): Result<JSONObject> {
+        return executeRequest("/bookings/$bookingId/payment-intent", "GET")
+    }
+
     suspend fun cancelBooking(bookingId: String, reason: String?): Result<JSONObject> {
         val body = JSONObject().apply {
             if (reason != null) put("reason", reason)

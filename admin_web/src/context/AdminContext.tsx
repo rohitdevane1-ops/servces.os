@@ -67,6 +67,21 @@ export interface UserProfile {
   bio: string;
 }
 
+function loadOperationalState<T>(storageKey: string, devFallback: T[]): T[] {
+  if (import.meta.env.PROD && import.meta.env.VITE_DEMO_MODE !== 'true') {
+    return [];
+  }
+  const saved = localStorage.getItem(storageKey);
+  if (saved) {
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return devFallback;
+    }
+  }
+  return devFallback;
+}
+
 export const INITIAL_INCIDENTS: Incident[] = [];
 
 export interface AuthSession {
@@ -336,69 +351,33 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
-  const [bookings, setBookings] = useState<Booking[]>(() => {
-    const saved = localStorage.getItem('servicepro_bookings');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return import.meta.env.PROD ? [] : INITIAL_BOOKINGS;
-  });
-  const [technicians, setTechnicians] = useState<Technician[]>(() => {
-    const saved = localStorage.getItem('servicepro_technicians');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return import.meta.env.PROD ? [] : INITIAL_TECHNICIANS;
-  });
-  const [customers, setCustomers] = useState<Customer[]>(() => {
-    const saved = localStorage.getItem('servicepro_customers');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return import.meta.env.PROD ? [] : INITIAL_CUSTOMERS;
-  });
-  const [services, setServices] = useState<ServiceItem[]>(() => {
-    const saved = localStorage.getItem('servicepro_services');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return INITIAL_SERVICES;
-  });
-  const [categories, setCategories] = useState<ServiceCategory[]>(() => {
-    const saved = localStorage.getItem('servicepro_categories');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return SERVICE_CATEGORIES;
-  });
-  const [invoices, setInvoices] = useState<Invoice[]>(() => {
-    const saved = localStorage.getItem('servicepro_invoices');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return INITIAL_INVOICES;
-  });
-  const [tickets, setTickets] = useState<SupportTicket[]>(() => {
-    const saved = localStorage.getItem('servicepro_tickets');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return INITIAL_TICKETS;
-  });
-  const [reviews, setReviews] = useState<CustomerReview[]>(() => {
-    const saved = localStorage.getItem('servicepro_reviews');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return INITIAL_REVIEWS;
-  });
-  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(() => {
-    const saved = localStorage.getItem('servicepro_audit_logs');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return INITIAL_AUDIT_LOGS;
-  });
+  const [bookings, setBookings] = useState<Booking[]>(() =>
+    loadOperationalState('servicepro_bookings', INITIAL_BOOKINGS)
+  );
+  const [technicians, setTechnicians] = useState<Technician[]>(() =>
+    loadOperationalState('servicepro_technicians', INITIAL_TECHNICIANS)
+  );
+  const [customers, setCustomers] = useState<Customer[]>(() =>
+    loadOperationalState('servicepro_customers', INITIAL_CUSTOMERS)
+  );
+  const [services, setServices] = useState<ServiceItem[]>(() =>
+    loadOperationalState('servicepro_services', INITIAL_SERVICES)
+  );
+  const [categories, setCategories] = useState<ServiceCategory[]>(() =>
+    loadOperationalState('servicepro_categories', SERVICE_CATEGORIES)
+  );
+  const [invoices, setInvoices] = useState<Invoice[]>(() =>
+    loadOperationalState('servicepro_invoices', INITIAL_INVOICES)
+  );
+  const [tickets, setTickets] = useState<SupportTicket[]>(() =>
+    loadOperationalState('servicepro_tickets', INITIAL_TICKETS)
+  );
+  const [reviews, setReviews] = useState<CustomerReview[]>(() =>
+    loadOperationalState('servicepro_reviews', INITIAL_REVIEWS)
+  );
+  const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(() =>
+    loadOperationalState('servicepro_audit_logs', INITIAL_AUDIT_LOGS)
+  );
 
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -587,13 +566,9 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   }, [addToast]);
 
   // Incidents State (Territory Localized & Context-Driven)
-  const [incidents, setIncidents] = useState<Incident[]>(() => {
-    const saved = localStorage.getItem('servicepro_incidents');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) {}
-    }
-    return INITIAL_INCIDENTS;
-  });
+  const [incidents, setIncidents] = useState<Incident[]>(() =>
+    loadOperationalState('servicepro_incidents', INITIAL_INCIDENTS)
+  );
 
   const resolveIncident = useCallback((id: string) => {
     setIncidents(prev => {
@@ -1059,7 +1034,9 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   }, [currentRole, addToast]);
 
   // Universal User Dossier (Customer, Technician, Staff)
-  const [staffMembers, setStaffMembers] = useState<StaffMember[]>(INITIAL_STAFF_MEMBERS);
+  const [staffMembers, setStaffMembers] = useState<StaffMember[]>(() =>
+    loadOperationalState('servicepro_staff_members', INITIAL_STAFF_MEMBERS)
+  );
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(() => customers[0]?.id || '');
   const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>(() => technicians[0]?.id || '');
   const [selectedStaffId, setSelectedStaffId] = useState<string>(() => staffMembers[0]?.id || '');

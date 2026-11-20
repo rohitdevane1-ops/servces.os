@@ -33,8 +33,10 @@ export default fp(async function securityPlugin(fastify: FastifyInstance) {
         return cb(null, true);
       }
 
-      // Reject unauthorized origins with credentials
-      return cb(new Error('CORS request rejected: Origin not authorized'), false);
+      // Reject unauthorized origins with credentials (403, not 500)
+      const err: any = new Error('CORS request rejected: Origin not authorized');
+      err.statusCode = 403;
+      return cb(err, false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
@@ -59,7 +61,6 @@ export default fp(async function securityPlugin(fastify: FastifyInstance) {
   await fastify.register(rateLimit, {
     max: 100,
     timeWindow: '1 minute',
-    allowList: ['127.0.0.1'],
     errorResponseBuilder: (request, context) => {
       const err = errorResponse(
         'RATE_LIMIT_EXCEEDED',
