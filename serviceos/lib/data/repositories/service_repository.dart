@@ -41,12 +41,16 @@ class ServiceRepository implements IServiceRepository {
         if (remote.isNotEmpty) {
           // Map remote rows to CategoryItemModel
           _cachedCategories = remote.map((row) {
+            final titleStr = row['title'] as String? ?? (row['name'] as String? ?? 'Category');
             return CategoryItemModel(
               id: row['id'] as String? ?? '',
-              name: row['title'] as String? ?? '',
+              title: titleStr,
+              shortTitle: row['short_title'] as String? ?? titleStr,
               slug: row['slug'] as String? ?? '',
-              icon: row['icon_name'] as String? ?? 'wrench',
-              bannerUrl: row['image_url'] as String? ?? 'assets/images/banner_woman.png',
+              priority: row['priority_rank'] as int? ?? (row['display_order'] as int? ?? 1),
+              iconName: row['icon_name'] as String? ?? 'wrench',
+              image: row['image_url'] as String? ?? 'assets/images/banner_woman.png',
+              totalServices: 0,
               services: [], // Populated on drill-down
             );
           }).toList();
@@ -62,6 +66,19 @@ class ServiceRepository implements IServiceRepository {
 
   @override
   Future<List<ServiceItemModel>> getPopularServices() async {
+    // Try Supabase if live connected
+    if (_supabaseService.isLiveConnected) {
+      try {
+        final remote = await _remoteDataSource.fetchServices();
+        if (remote.isNotEmpty) {
+          final mapped = remote.map((r) => ServiceItemModel.fromJson(r)).toList();
+          final popular = mapped.where((s) => s.popular).toList();
+          if (popular.isNotEmpty) return popular;
+          return mapped.take(12).toList();
+        }
+      } catch (_) {}
+    }
+
     final categories = await getCategories();
     final List<ServiceItemModel> popular = [];
 
@@ -73,11 +90,23 @@ class ServiceRepository implements IServiceRepository {
       }
     }
 
-    return popular;
+    if (popular.isNotEmpty) return popular;
+    return categories.expand((c) => c.services).take(12).toList();
   }
 
   @override
   Future<List<ServiceItemModel>> getServicesByCategory(String categorySlug) async {
+    if (_supabaseService.isLiveConnected) {
+      try {
+        final remote = await _remoteDataSource.fetchServices(
+          categoryId: categorySlug.toLowerCase() == 'all' ? null : categorySlug,
+        );
+        if (remote.isNotEmpty) {
+          return remote.map((r) => ServiceItemModel.fromJson(r)).toList();
+        }
+      } catch (_) {}
+    }
+
     final categories = await getCategories();
     if (categories.isEmpty) return [];
     if (categorySlug.toLowerCase() == 'all') {
@@ -93,9 +122,18 @@ class ServiceRepository implements IServiceRepository {
 
   @override
   Future<List<ServiceItemModel>> searchServices(String query) async {
+    final cleanQuery = query.toLowerCase().trim();
+    if (_supabaseService.isLiveConnected) {
+      try {
+        final remote = await _remoteDataSource.fetchServices(search: cleanQuery.isEmpty ? null : cleanQuery);
+        if (remote.isNotEmpty) {
+          return remote.map((r) => ServiceItemModel.fromJson(r)).toList();
+        }
+      } catch (_) {}
+    }
+
     final categories = await getCategories();
     final allServices = categories.expand((c) => c.services).toList();
-    final cleanQuery = query.toLowerCase().trim();
 
     if (cleanQuery.isEmpty) return allServices;
 

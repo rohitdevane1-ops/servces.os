@@ -43,21 +43,17 @@ export async function tenantResolver(request: FastifyRequest, reply: FastifyRepl
   let tokenTenantId: string | undefined = (request.user as any)?.tenantId;
 
   // Extract from Authorization header if present and request.user is not yet populated (onRequest hook)
+  // BACK-08: Only resolve tokenTenantId for tenant scoping; DO NOT populate request.user here.
+  // The dedicated authenticate preHandler is the sole authority for establishing request.user.
   if (!tokenTenantId && request.headers.authorization?.startsWith('Bearer ')) {
     const rawToken = request.headers.authorization.slice(7).trim();
     try {
       const decoded = AuthService.verifyAccessToken(rawToken);
       if (decoded?.tenantId) {
         tokenTenantId = decoded.tenantId;
-        request.user = {
-          id: decoded.sub,
-          role: decoded.role,
-          tenantId: decoded.tenantId,
-          email: decoded.email,
-        };
       }
     } catch {
-      // Invalid/expired token will be handled by subsequent auth middleware
+      // Handled by subsequent auth preHandler
     }
   }
 

@@ -20,9 +20,40 @@ class BookingWizardScreen extends StatefulWidget {
 
 class _BookingWizardScreenState extends State<BookingWizardScreen> {
   int _currentStep = 1; // 1: Problem, 2: Address, 3: Schedule, 4: Cost & Escrow
-  String _selectedLeakLocation = 'Under Sink';
+  late String _selectedProblemLocation;
   bool _isEmergencySurge = false;
   String _selectedDate = 'Today (Nov 11)';
+  String _selectedTimeWindow = 'Morning (08:00 AM – 12:00 PM)';
+
+  final TextEditingController _notesController = TextEditingController();
+  final TextEditingController _addressController = TextEditingController(text: '742 Evergreen Terrace, Suite 100');
+
+  List<String> get _problemLocations {
+    final cat = widget.service.category.toLowerCase();
+    if (cat.contains('plumb')) {
+      return ['Under Sink', 'Behind Wall', 'Main Shut-off Valve', 'Ceiling Drip'];
+    } else if (cat.contains('electr')) {
+      return ['Breaker Panel', 'Wall Outlet / Switch', 'Lighting Fixture', 'Appliance Circuit'];
+    } else if (cat.contains('hvac') || cat.contains('air') || cat.contains('heat')) {
+      return ['AC Compressor', 'Smart Thermostat', 'Air Ducts / Vents', 'Furnace Unit'];
+    } else if (cat.contains('clean')) {
+      return ['Kitchen Deep Clean', 'Bathroom Sanitization', 'Full Living Area', 'Carpet & Upholstery'];
+    }
+    return ['Primary Fixture', 'Secondary Room', 'Exterior Unit', 'Full Diagnostic'];
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedProblemLocation = _problemLocations.first;
+  }
+
+  @override
+  void dispose() {
+    _notesController.dispose();
+    _addressController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -103,15 +134,20 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Where is the leak located?', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary)),
+              Text(
+                widget.service.category.toLowerCase().contains('plumb')
+                    ? 'Where is the leak located?'
+                    : 'Select Specific Work Area or Problem',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary),
+              ),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 10,
                 runSpacing: 10,
-                children: ['Under Sink', 'Behind Wall', 'Main Shut-off Valve', 'Ceiling Drip'].map((loc) {
-                  final isSelected = loc == _selectedLeakLocation;
+                children: _problemLocations.map((loc) {
+                  final isSelected = loc == _selectedProblemLocation;
                   return GestureDetector(
-                    onTap: () => setState(() => _selectedLeakLocation = loc),
+                    onTap: () => setState(() => _selectedProblemLocation = loc),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       decoration: BoxDecoration(
@@ -149,53 +185,66 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
         );
 
       case 2:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Confirm Service Address', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary)),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: surfaceColor,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: primaryBrand, width: 2),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.home_rounded, color: AppColors.dayPrimary, size: 28),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Service Delivery Address', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: textPrimary)),
-                        Text('Select or enter service address for on-site dispatch', style: TextStyle(fontSize: 11, color: textSecondary)),
-                      ],
+        return SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Confirm Service Address', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: textPrimary)),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: primaryBrand, width: 2),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.home_rounded, color: AppColors.dayPrimary, size: 28),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Service Delivery Address', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: textPrimary)),
+                          const SizedBox(height: 4),
+                          TextField(
+                            controller: _addressController,
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: textPrimary),
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              contentPadding: EdgeInsets.zero,
+                              border: InputBorder.none,
+                              hintText: 'Enter street address, city, state, zip',
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  const Icon(Icons.check_circle_rounded, color: AppColors.verifiedEmerald),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-            Text('Gate Code & Access Notes', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary)),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: surfaceColor,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: isDark ? AppColors.nightBorder : AppColors.dayBorder),
-              ),
-              child: const TextField(
-                decoration: InputDecoration(
-                  hintText: 'Gate or buzzer code, parking instructions...',
-                  border: InputBorder.none,
+                    const Icon(Icons.check_circle_rounded, color: AppColors.verifiedEmerald),
+                  ],
                 ),
               ),
-            ),
-          ],
+              const SizedBox(height: 20),
+              Text('Gate Code & Access Notes', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: textPrimary)),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: isDark ? AppColors.nightBorder : AppColors.dayBorder),
+                ),
+                child: TextField(
+                  controller: _notesController,
+                  decoration: const InputDecoration(
+                    hintText: 'Gate or buzzer code, parking instructions...',
+                    border: InputBorder.none,
+                  ),
+                ),
+              ),
+            ],
+          ),
         );
 
       case 3:
@@ -239,9 +288,11 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
             const SizedBox(height: 16),
             Text('Preferred Arrival Window', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: textSecondary)),
             const SizedBox(height: 8),
-            _buildWindowOption('Morning (08:00 AM – 12:00 PM)', true, primaryBrand, surfaceColor, textPrimary, isDark),
+            _buildWindowOption('Morning (08:00 AM – 12:00 PM)', _selectedTimeWindow == 'Morning (08:00 AM – 12:00 PM)', primaryBrand, surfaceColor, textPrimary, isDark),
             const SizedBox(height: 8),
-            _buildWindowOption('Afternoon (12:00 PM – 04:00 PM)', false, primaryBrand, surfaceColor, textPrimary, isDark),
+            _buildWindowOption('Afternoon (12:00 PM – 04:00 PM)', _selectedTimeWindow == 'Afternoon (12:00 PM – 04:00 PM)', primaryBrand, surfaceColor, textPrimary, isDark),
+            const SizedBox(height: 8),
+            _buildWindowOption('Evening (04:00 PM – 08:00 PM)', _selectedTimeWindow == 'Evening (04:00 PM – 08:00 PM)', primaryBrand, surfaceColor, textPrimary, isDark),
           ],
         );
 
@@ -263,7 +314,7 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
               child: Builder(
                 builder: (context) {
                   final basePrice = widget.service.price;
-                  final platformFee = basePrice > 0 ? (basePrice * 0.10) : 0.00;
+                  final platformFee = basePrice > 0 ? (basePrice * 0.15) : 0.00; // FLUT-04: Aligned to 15% enterprise platform commission
                   final tax = (basePrice + platformFee) * 0.07;
                   final total = basePrice + platformFee + tax;
                   return Column(
@@ -287,19 +338,22 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
   }
 
   Widget _buildWindowOption(String title, bool isSelected, Color primaryBrand, Color surfaceColor, Color textPrimary, bool isDark) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: isSelected ? primaryBrand.withOpacity(0.08) : surfaceColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: isSelected ? primaryBrand : (isDark ? AppColors.nightBorder : AppColors.dayBorder)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(title, style: TextStyle(fontSize: 13, fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600, color: isSelected ? primaryBrand : textPrimary)),
-          if (isSelected) Icon(Icons.check_circle, size: 18, color: primaryBrand),
-        ],
+    return GestureDetector(
+      onTap: () => setState(() => _selectedTimeWindow = title),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: isSelected ? primaryBrand.withOpacity(0.08) : surfaceColor,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: isSelected ? primaryBrand : (isDark ? AppColors.nightBorder : AppColors.dayBorder)),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(title, style: TextStyle(fontSize: 13, fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600, color: isSelected ? primaryBrand : textPrimary)),
+            if (isSelected) Icon(Icons.check_circle, size: 18, color: primaryBrand),
+          ],
+        ),
       ),
     );
   }

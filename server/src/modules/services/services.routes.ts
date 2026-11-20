@@ -168,6 +168,18 @@ export async function serviceRoutes(fastify: FastifyInstance) {
     try {
       await client.query('BEGIN');
 
+      // BACK-13: Validate that category exists and belongs to the authenticated tenant
+      const catCheck = await client.query(
+        `SELECT id FROM service_categories WHERE id = $1 AND tenant_id = $2`,
+        [categoryId, tenantId]
+      );
+      if (catCheck.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return reply.status(404).send(
+          errorResponse('CATEGORY_NOT_FOUND', 'Service category not found in your organization.', requestId)
+        );
+      }
+
       const serviceRes = await client.query(
         `INSERT INTO services (
           tenant_id, category_id, name, slug, description, base_price_cents,

@@ -29,10 +29,10 @@ export class AuthService {
     return bcrypt.compare(password, hash);
   }
 
-  static generateAccessToken(user: { id: string; role: string; tenantId: string; email: string }): string {
+  static generateAccessToken(user: { id?: string; sub?: string; role: string; tenantId: string; email: string }): string {
     return jwt.sign(
       {
-        sub: user.id,
+        sub: user.id || user.sub,
         role: user.role,
         tenantId: user.tenantId,
         email: user.email,
@@ -43,10 +43,10 @@ export class AuthService {
     );
   }
 
-  static generateMfaChallengeToken(user: { id: string; role: string; tenantId: string; email: string }): string {
+  static generateMfaChallengeToken(user: { id?: string; sub?: string; role: string; tenantId: string; email: string }): string {
     return jwt.sign(
       {
-        sub: user.id,
+        sub: user.id || user.sub,
         role: user.role,
         tenantId: user.tenantId,
         email: user.email,

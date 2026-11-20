@@ -12,10 +12,9 @@ function generateSecret(bytes = 32) {
 
 function generatePassword(length = 24) {
   const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+';
-  const bytes = crypto.randomBytes(length);
   let res = '';
   for (let i = 0; i < length; i++) {
-    res += chars[bytes[i] % chars.length];
+    res += chars[crypto.randomInt(0, chars.length)];
   }
   return res;
 }

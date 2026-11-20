@@ -31,6 +31,7 @@ abstract class ISupabaseRemoteDataSource {
     required String bookingId,
     required void Function(Map<String, dynamic> payload) onUpdate,
   });
+  Future<void> unsubscribe(RealtimeChannel? channel);
   Future<String?> uploadJobEvidence({
     required String bookingId,
     required String evidenceType,
@@ -246,6 +247,17 @@ class SupabaseRemoteDataSource implements ISupabaseRemoteDataSource {
     } catch (e) {
       debugPrint('[SupabaseRemoteDataSource] subscribeToBookingUpdates error: $e');
       return null;
+    }
+  }
+
+  @override
+  Future<void> unsubscribe(RealtimeChannel? channel) async {
+    if (channel != null && _client != null) {
+      try {
+        await _client!.removeChannel(channel);
+      } catch (e) {
+        debugPrint('[SupabaseRemoteDataSource] unsubscribe error: $e');
+      }
     }
   }
 

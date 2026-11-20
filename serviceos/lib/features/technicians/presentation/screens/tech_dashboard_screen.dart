@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/network/api_client.dart';
 
 class TechDashboardScreen extends StatefulWidget {
   final VoidCallback onSimulateBroadcast;
@@ -97,7 +98,12 @@ class _TechDashboardScreenState extends State<TechDashboardScreen> {
                     Switch(
                       value: _isOnline,
                       activeColor: const Color(0xFF10B981),
-                      onChanged: (val) => setState(() => _isOnline = val),
+                      onChanged: (val) async {
+                        setState(() => _isOnline = val);
+                        try {
+                          await ApiClient.instance.updateDutyStatus(val ? 'ONLINE' : 'OFFLINE');
+                        } catch (_) {}
+                      },
                     ),
                   ],
                 ),

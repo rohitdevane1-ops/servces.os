@@ -90,8 +90,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = state.copyWith(biometricEnabled: !state.biometricEnabled);
   }
 
-  void logout() {
-    state = state.copyWith(isAuthenticated: false);
+  /// Secure logout: Revokes active session on Fastify backend and wipes all tokens from FlutterSecureStorage
+  Future<void> logout() async {
+    try {
+      await ApiClient.instance.logout();
+    } catch (_) {}
+    state = state.copyWith(isAuthenticated: false, phoneNumber: '', displayName: '');
   }
 }
 

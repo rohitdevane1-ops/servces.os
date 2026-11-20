@@ -2,14 +2,18 @@ import 'package:flutter/material.dart';
 import '../../../../core/theme/app_theme.dart';
 
 class LiveDispatchRadarScreen extends StatefulWidget {
-  final VoidCallback onArrivalConfirmed;
   final VoidCallback onBack;
+  final VoidCallback? onArrivalConfirmed;
+  final VoidCallback? onChatWithTech;
+  final VoidCallback? onCompleteJob;
   final String? safetyPin;
 
   const LiveDispatchRadarScreen({
     super.key,
-    required this.onArrivalConfirmed,
     required this.onBack,
+    this.onArrivalConfirmed,
+    this.onChatWithTech,
+    this.onCompleteJob,
     this.safetyPin,
   });
 

@@ -97,19 +97,104 @@ export async function financeRoutes(fastify: FastifyInstance) {
       if (eventType === 'payment_intent.succeeded') {
         const paymentIntent = event.data?.object;
         if (paymentIntent?.id) {
-          await client.query(
-            `UPDATE payment_transactions 
-             SET status = 'SUCCEEDED', captured_amount_cents = authorized_amount_cents 
-             WHERE stripe_payment_intent_id = $1`,
+          const amountReceived = paymentIntent.amount_received ?? paymentIntent.amount;
+          const eventCurrency = (paymentIntent.currency || 'usd').toUpperCase();
+
+          const txRes = await client.query<{
+            id: string;
+            tenant_id: string;
+            invoice_id: string;
+            authorized_amount_cents: string;
+            currency: string;
+            booking_id: string;
+            total_amount_cents: string;
+            assigned_provider_id: string;
+            default_platform_commission_bps: number;
+          }>(
+            `SELECT pt.id, pt.tenant_id, pt.invoice_id, pt.authorized_amount_cents, pt.currency,
+                    i.booking_id, i.total_amount_cents,
+                    b.assigned_provider_id,
+                    t.default_platform_commission_bps
+             FROM payment_transactions pt
+             JOIN invoices i ON i.id = pt.invoice_id
+             JOIN bookings b ON b.id = i.booking_id
+             JOIN tenants t ON t.id = pt.tenant_id
+             WHERE pt.stripe_payment_intent_id = $1
+             FOR UPDATE OF pt`,
             [paymentIntent.id]
           );
+
+          if (txRes.rows.length > 0) {
+            const tx = txRes.rows[0];
+            const authorizedCents = parseInt(tx.authorized_amount_cents, 10);
+            const txCurrency = (tx.currency || 'usd').toUpperCase();
+
+            // Strict Discrepancy Quarantine: Check amount and currency
+            if (amountReceived !== authorizedCents || eventCurrency !== txCurrency) {
+              await client.query(
+                `UPDATE payment_transactions 
+                 SET status = 'DISCREPANCY_QUARANTINED', error_message = $1, updated_at = NOW() 
+                 WHERE id = $2`,
+                [`Amount/currency mismatch: received ${amountReceived} ${eventCurrency}, expected ${authorizedCents} ${txCurrency}`, tx.id]
+              );
+            } else {
+              // 1. Settle Payment Transaction
+              await client.query(
+                `UPDATE payment_transactions 
+                 SET status = 'SUCCEEDED', captured_amount_cents = $1, updated_at = NOW() 
+                 WHERE id = $2`,
+                [amountReceived, tx.id]
+              );
+
+              // 2. Settle Invoice
+              await client.query(
+                `UPDATE invoices 
+                 SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() 
+                 WHERE id = $1`,
+                [tx.invoice_id]
+              );
+
+              // 3. Post Double-Entry Ledger Entries
+              const accRes = await client.query(
+                `SELECT id, account_number FROM ledger_accounts WHERE tenant_id = $1`,
+                [tx.tenant_id]
+              );
+              const accounts = accRes.rows;
+              const escrowLiabilityAcc = accounts.find(a => a.account_number === '2010')?.id;
+              const techPayableAcc = accounts.find(a => a.account_number === '2020')?.id;
+              const platformRevAcc = accounts.find(a => a.account_number === '4010')?.id;
+
+              const totalCents = Number(tx.total_amount_cents || amountReceived);
+              const commissionBps = Number(tx.default_platform_commission_bps || 1500);
+              const platformFeeCents = Math.round(totalCents * (commissionBps / 10000));
+              const netTechPayoutCents = totalCents - platformFeeCents;
+
+              if (escrowLiabilityAcc && platformRevAcc && platformFeeCents > 0) {
+                await client.query(
+                  `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+                   VALUES ($1, $2, 'PLATFORM_FEE', $3, $4, $5, $6)
+                   ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+                  [tx.tenant_id, tx.id, escrowLiabilityAcc, platformRevAcc, platformFeeCents, `Platform fee via webhook for invoice ${tx.invoice_id}`]
+                );
+              }
+
+              if (escrowLiabilityAcc && techPayableAcc && netTechPayoutCents > 0) {
+                await client.query(
+                  `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+                   VALUES ($1, $2, 'TECH_PAYABLE', $3, $4, $5, $6)
+                   ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+                  [tx.tenant_id, tx.id, escrowLiabilityAcc, techPayableAcc, netTechPayoutCents, `Technician payable via webhook for invoice ${tx.invoice_id}`]
+                );
+              }
+            }
+          }
         }
       } else if (eventType === 'payment_intent.payment_failed') {
         const paymentIntent = event.data?.object;
         if (paymentIntent?.id) {
           await client.query(
             `UPDATE payment_transactions 
-             SET status = 'FAILED' 
+             SET status = 'FAILED', updated_at = NOW() 
              WHERE stripe_payment_intent_id = $1`,
             [paymentIntent.id]
           );
@@ -119,7 +204,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
         if (paymentIntent?.id) {
           await client.query(
             `UPDATE payment_transactions 
-             SET status = 'VOIDED' 
+             SET status = 'VOIDED', updated_at = NOW() 
              WHERE stripe_payment_intent_id = $1`,
             [paymentIntent.id]
           );
@@ -129,9 +214,29 @@ export async function financeRoutes(fastify: FastifyInstance) {
         if (charge?.payment_intent) {
           await client.query(
             `UPDATE payment_transactions 
-             SET status = 'REFUNDED', refunded_amount_cents = $1 
+             SET status = 'REFUNDED', refunded_amount_cents = $1, updated_at = NOW() 
              WHERE stripe_payment_intent_id = $2`,
             [charge.amount_refunded || 0, charge.payment_intent]
+          );
+        }
+      } else if (eventType === 'transfer.reversed') {
+        const transfer = event.data?.object;
+        if (transfer?.id) {
+          await client.query(
+            `UPDATE provider_payouts 
+             SET status = 'REVERSED', updated_at = NOW() 
+             WHERE stripe_transfer_id = $1`,
+            [transfer.id]
+          );
+        }
+      } else if (eventType === 'payout.failed') {
+        const payoutObj = event.data?.object;
+        if (payoutObj?.id) {
+          await client.query(
+            `UPDATE provider_payouts 
+             SET status = 'FAILED', updated_at = NOW() 
+             WHERE stripe_transfer_id = $1`,
+            [payoutObj.id]
           );
         }
       }
@@ -464,6 +569,101 @@ export async function financeRoutes(fastify: FastifyInstance) {
       );
     });
 
+    // 4b. Read-Only Financial Reconciliation & Integrity Audit Report
+    protectedRoutes.get('/reconciliation-report', {
+      preHandler: [requirePermission('finance:report:read')],
+      schema: {
+        tags: ['Finances & Ledger'],
+        summary: 'Read-only financial reconciliation and integrity audit report',
+        security: [{ bearerAuth: [] }]
+      }
+    }, async (request, reply) => {
+      const requestId = request.id || `req_${Date.now()}`;
+      const tenantId = request.tenantId;
+
+      // 1. Unreconciled Payouts: Payouts with a transfer ID but missing ledger entry
+      const unreconciledPayoutsRes = await pool.query(
+        `SELECT pp.id, pp.provider_id, pp.amount_cents, pp.status, pp.stripe_transfer_id, pp.created_at
+         FROM provider_payouts pp
+         WHERE pp.tenant_id = $1
+           AND pp.stripe_transfer_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM ledger_entries le 
+             WHERE le.payout_id = pp.id 
+                OR (le.tenant_id = $1 AND le.description LIKE '%' || pp.stripe_transfer_id || '%')
+           )`,
+        [tenantId]
+      );
+
+      // 2. Succeeded Payments with Unsettled Invoices (BACK-01 indicator)
+      const unsettledPaymentTxsRes = await pool.query(
+        `SELECT pt.id, pt.invoice_id, pt.stripe_payment_intent_id, pt.authorized_amount_cents, pt.captured_amount_cents, pt.status as tx_status,
+                i.status as invoice_status, i.total_amount_cents
+         FROM payment_transactions pt
+         JOIN invoices i ON i.id = pt.invoice_id
+         WHERE pt.tenant_id = $1
+           AND pt.status = 'SUCCEEDED'
+           AND i.status != 'PAID'`,
+        [tenantId]
+      );
+
+      // 3. Paid Invoices without Succeeded Transactions
+      const mismatchedInvoicesRes = await pool.query(
+        `SELECT i.id, i.booking_id, i.total_amount_cents, i.status as invoice_status,
+                pt.status as tx_status, pt.stripe_payment_intent_id
+         FROM invoices i
+         LEFT JOIN payment_transactions pt ON pt.invoice_id = i.id
+         WHERE i.tenant_id = $1
+           AND i.status = 'PAID'
+           AND (pt.id IS NULL OR pt.status != 'SUCCEEDED')`,
+        [tenantId]
+      );
+
+      // 4. Duplicate Ledger Candidate Postings
+      const duplicateLedgersRes = await pool.query(
+        `SELECT payout_id, transaction_id, posting_type, COUNT(*) as count
+         FROM ledger_entries
+         WHERE tenant_id = $1
+           AND (payout_id IS NOT NULL OR transaction_id IS NOT NULL)
+         GROUP BY payout_id, transaction_id, posting_type
+         HAVING COUNT(*) > 1`,
+        [tenantId]
+      );
+
+      // 5. Quarantined or Flagged Discrepancy Transactions
+      const quarantinedTxsRes = await pool.query(
+        `SELECT pt.id, pt.invoice_id, pt.stripe_payment_intent_id, pt.authorized_amount_cents, pt.status, pt.created_at
+         FROM payment_transactions pt
+         WHERE pt.tenant_id = $1 AND pt.status IN ('DISCREPANCY_QUARANTINED', 'FAILED')`,
+        [tenantId]
+      );
+
+      const isClean = unreconciledPayoutsRes.rowCount === 0 &&
+                      unsettledPaymentTxsRes.rowCount === 0 &&
+                      mismatchedInvoicesRes.rowCount === 0 &&
+                      duplicateLedgersRes.rowCount === 0 &&
+                      quarantinedTxsRes.rowCount === 0;
+
+      return reply.status(200).send(
+        successResponse({
+          healthy: isClean,
+          timestamp: new Date().toISOString(),
+          unreconciledPayoutsCount: unreconciledPayoutsRes.rowCount,
+          unsettledPaymentTxsCount: unsettledPaymentTxsRes.rowCount,
+          mismatchedInvoicesCount: mismatchedInvoicesRes.rowCount,
+          duplicateLedgerCount: duplicateLedgersRes.rowCount,
+          quarantinedTxsCount: quarantinedTxsRes.rowCount,
+          details: {
+            unreconciledPayouts: unreconciledPayoutsRes.rows,
+            unsettledPaymentTxs: unsettledPaymentTxsRes.rows,
+            mismatchedInvoices: mismatchedInvoicesRes.rows,
+            duplicateLedgers: duplicateLedgersRes.rows,
+            quarantinedTxs: quarantinedTxsRes.rows
+          }
+        }, requestId)
+      );
+    });
+
     // 5. Trigger Provider Payout with Pre-Reservation Durability and Two-Phase Stripe Reconciliation (PAY-02, PAY-03, PAY-04, PAY-05)
     protectedRoutes.post('/payouts', {
       preHandler: [requirePermission('finance:payout:execute')],
@@ -580,8 +780,9 @@ export async function financeRoutes(fastify: FastifyInstance) {
                 idempotencyKey: `payout_stripe_${ep.id}`
               });
               ep.stripe_transfer_id = recoveredTransfer.id;
+              ep.status = 'PROCESSING';
               await client.query(
-                `UPDATE provider_payouts SET stripe_transfer_id = $1, processed_at = NOW() WHERE id = $2`,
+                `UPDATE provider_payouts SET stripe_transfer_id = $1, status = 'PROCESSING', processed_at = NOW(), updated_at = NOW() WHERE id = $2`,
                 [recoveredTransfer.id, ep.id]
               );
             } catch (stripeErr: any) {
@@ -589,11 +790,19 @@ export async function financeRoutes(fastify: FastifyInstance) {
             }
           }
 
-          // Crash Recovery (PAY-03): If transfer exists but ledger entry was interrupted, reconcile now
-          if (ep.stripe_transfer_id && ep.status === 'PROCESSING') {
+          // Crash Recovery (PAY-03 & AUDIT-01): If transfer exists, ensure status is restored and ledger entry is posted uniquely by payout_id
+          if (ep.stripe_transfer_id) {
+            if (ep.status !== 'PROCESSING' && ep.status !== 'PAID') {
+              ep.status = 'PROCESSING';
+              await client.query(
+                `UPDATE provider_payouts SET status = 'PROCESSING', updated_at = NOW() WHERE id = $1`,
+                [ep.id]
+              );
+            }
+
             const ledgerCheck = await client.query(
-              `SELECT id FROM ledger_entries WHERE tenant_id = $1 AND description LIKE $2`,
-              [tenantId, `%${ep.stripe_transfer_id}%`]
+              `SELECT id FROM ledger_entries WHERE payout_id = $1 AND posting_type = 'PAYOUT_DISBURSAL'`,
+              [ep.id]
             );
             if (ledgerCheck.rowCount === 0) {
               const accRes = await client.query(
@@ -605,9 +814,10 @@ export async function financeRoutes(fastify: FastifyInstance) {
               const bankAsset = accRes.rows.find(a => a.account_number === '1010');
               if (techPayable && bankAsset) {
                 await client.query(
-                  `INSERT INTO ledger_entries (tenant_id, debit_account_id, credit_account_id, amount_cents, description)
-                   VALUES ($1, $2, $3, $4, $5)`,
-                  [tenantId, techPayable.id, bankAsset.id, ep.amount_cents, `Payout to ${providerName} (${ep.stripe_transfer_id}) [Reconciled]`]
+                  `INSERT INTO ledger_entries (tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+                   VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)
+                   ON CONFLICT (payout_id, posting_type) DO NOTHING`,
+                  [tenantId, ep.id, techPayable.id, bankAsset.id, ep.amount_cents, `Payout to ${providerName} (${ep.stripe_transfer_id}) [Reconciled]`]
                 );
               }
             }
@@ -648,7 +858,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
         const balanceRes = await client.query(
           `SELECT 
             COALESCE(SUM(CASE WHEN b.assigned_provider_id = $1 AND b.status = 'COMPLETED' THEN (i.total_amount_cents * (10000 - COALESCE(t.default_platform_commission_bps, 1500)) / 10000) ELSE 0 END), 0)::bigint as total_earned_cents,
-            COALESCE((SELECT SUM(amount_cents) FROM provider_payouts WHERE provider_id = $1 AND tenant_id = $2 AND status IN ('PAID', 'PROCESSING')), 0)::bigint as total_paid_cents
+            COALESCE((SELECT SUM(amount_cents) FROM provider_payouts WHERE provider_id = $1 AND tenant_id = $2 AND (status IN ('PAID', 'PROCESSING', 'TRANSFER_CONFIRMED') OR stripe_transfer_id IS NOT NULL)), 0)::bigint as total_paid_cents
            FROM bookings b
            JOIN tenants t ON t.id = b.tenant_id
            JOIN invoices i ON i.booking_id = b.id AND i.status = 'PAID'
@@ -743,10 +953,11 @@ export async function financeRoutes(fastify: FastifyInstance) {
 
         await reconClient.query(
           `INSERT INTO ledger_entries (
-            tenant_id, debit_account_id, credit_account_id, amount_cents, description
-          ) VALUES ($1, $2, $3, $4, $5)`,
+            tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description
+          ) VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)`,
           [
             tenantId,
+            payoutId,
             techPayableId,
             bankAssetId,
             amountCents,
@@ -838,19 +1049,28 @@ export async function financeRoutes(fastify: FastifyInstance) {
                 idempotencyKey: `payout_stripe_${payout.id}`
               });
               payout.stripe_transfer_id = recovered.id;
+              payout.status = 'PROCESSING';
               await client.query(
-                `UPDATE provider_payouts SET stripe_transfer_id = $1, processed_at = NOW() WHERE id = $2`,
+                `UPDATE provider_payouts SET stripe_transfer_id = $1, status = 'PROCESSING', processed_at = NOW(), updated_at = NOW() WHERE id = $2`,
                 [recovered.id, payout.id]
               );
             } catch (_) {}
           }
         }
 
-        // If transfer ID is present, verify ledger entry
+        // If transfer ID is present, ensure status is restored and ledger entry is posted uniquely by payout_id
         if (payout.stripe_transfer_id) {
+          if (payout.status !== 'PROCESSING' && payout.status !== 'PAID') {
+            payout.status = 'PROCESSING';
+            await client.query(
+              `UPDATE provider_payouts SET status = 'PROCESSING', updated_at = NOW() WHERE id = $1`,
+              [payout.id]
+            );
+          }
+
           const ledgerCheck = await client.query(
-            `SELECT id FROM ledger_entries WHERE tenant_id = $1 AND description LIKE $2`,
-            [tenantId, `%${payout.stripe_transfer_id}%`]
+            `SELECT id FROM ledger_entries WHERE payout_id = $1 AND posting_type = 'PAYOUT_DISBURSAL'`,
+            [payout.id]
           );
 
           if (ledgerCheck.rowCount === 0) {
@@ -863,16 +1083,25 @@ export async function financeRoutes(fastify: FastifyInstance) {
             const bankAsset = accRes.rows.find(a => a.account_number === '1010');
             if (techPayable && bankAsset) {
               await client.query(
-                `INSERT INTO ledger_entries (tenant_id, debit_account_id, credit_account_id, amount_cents, description)
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [tenantId, techPayable.id, bankAsset.id, payout.amount_cents, `Reconciled payout ${payout.id} (${payout.stripe_transfer_id})`]
+                `INSERT INTO ledger_entries (tenant_id, payout_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+                 VALUES ($1, $2, 'PAYOUT_DISBURSAL', $3, $4, $5, $6)
+                 ON CONFLICT (payout_id, posting_type) DO NOTHING`,
+                [tenantId, payout.id, techPayable.id, bankAsset.id, payout.amount_cents, `Reconciled payout ${payout.id} (${payout.stripe_transfer_id})`]
               );
             }
           }
+
+          await client.query('COMMIT');
+          return reply.status(200).send(successResponse({ reconciled: true, payoutId: payout.id, status: payout.status }, requestId));
         }
 
         await client.query('COMMIT');
-        return reply.status(200).send(successResponse({ reconciled: true, payoutId: payout.id, status: payout.status }, requestId));
+        return reply.status(200).send(successResponse({
+          reconciled: false,
+          payoutId: payout.id,
+          status: payout.status,
+          message: 'Stripe transfer reference not found; payout remains unreconciled.'
+        }, requestId));
       } catch (err) {
         await client.query('ROLLBACK');
         throw err;

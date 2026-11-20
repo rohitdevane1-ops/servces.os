@@ -167,6 +167,33 @@ class ApiClient {
     return response.data;
   }
 
+  /// Refreshes the active session using the persisted refresh token.
+  Future<Map<String, dynamic>> refreshToken() async {
+    final token = await getRefreshToken();
+    if (token == null || token.trim().isEmpty) {
+      return {'success': false, 'error': 'No refresh token available'};
+    }
+
+    try {
+      final response = await _dio.post('/auth/refresh', data: {'refreshToken': token.trim()});
+      if (response.data['success'] == true) {
+        final data = response.data['data'];
+        final newAccess = data['accessToken'] ?? data['tokens']?['accessToken'];
+        final newRefresh = data['refreshToken'] ?? data['tokens']?['refreshToken'];
+        if (newAccess != null) {
+          await _storage.write(key: 'serviceos_access_token', value: newAccess.toString());
+        }
+        if (newRefresh != null) {
+          await _storage.write(key: 'serviceos_refresh_token', value: newRefresh.toString());
+        }
+        return {'success': true, 'data': data};
+      }
+      return {'success': false, 'error': response.data['error']};
+    } catch (e) {
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
   Future<Map<String, dynamic>?> validateSession() async {
     final token = await getAccessToken();
     if (token == null || token.isEmpty) {

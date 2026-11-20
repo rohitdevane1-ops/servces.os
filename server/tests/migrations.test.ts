@@ -83,6 +83,19 @@ describe('Database Migrations Validation Suite', () => {
     );
   });
 
+  it('Migration 009 defines payout_id, posting_type, and idempotent unique indexes on ledger_entries', () => {
+    const up009 = fs.readFileSync(path.join(MIGRATIONS_DIR, '009_ledger_payout_and_booking_references.sql'), 'utf-8');
+    assert.match(up009, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+payout_id\s+UUID/i, '009 must add payout_id foreign key');
+    assert.match(up009, /ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+posting_type\s+VARCHAR/i, '009 must add posting_type column');
+    assert.match(up009, /CREATE\s+UNIQUE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+uq_ledger_payout_posting/i, '009 must define uq_ledger_payout_posting');
+    assert.match(up009, /CREATE\s+UNIQUE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+uq_ledger_tx_posting/i, '009 must define uq_ledger_tx_posting');
+
+    const down009 = fs.readFileSync(path.join(MIGRATIONS_DIR, '009_ledger_payout_and_booking_references.down.sql'), 'utf-8');
+    assert.match(down009, /DROP\s+INDEX\s+IF\s+EXISTS\s+uq_ledger_tx_posting/i, '009 down must drop uq_ledger_tx_posting');
+    assert.match(down009, /DROP\s+INDEX\s+IF\s+EXISTS\s+uq_ledger_payout_posting/i, '009 down must drop uq_ledger_payout_posting');
+    assert.match(down009, /DROP\s+COLUMN\s+IF\s+EXISTS\s+payout_id/i, '009 down must drop payout_id column');
+  });
+
   it('docker-compose.yml environment interpolations are safely quoted against YAML parse errors', () => {
     const composePath = path.resolve(__dirname, '../../docker-compose.yml');
     assert.ok(fs.existsSync(composePath), 'docker-compose.yml must exist');

@@ -23,14 +23,14 @@ class ServiceItemModel {
 
   factory ServiceItemModel.fromJson(Map<String, dynamic> json) {
     return ServiceItemModel(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      category: json['category'] as String,
-      price: (json['price'] as num).toDouble(),
-      durationMinutes: json['durationMinutes'] as int? ?? 60,
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? 'Home Service',
+      category: json['category'] as String? ?? (json['service_categories'] != null && json['service_categories'] is Map ? (json['service_categories']['name'] as String? ?? 'General') : 'General'),
+      price: json['price'] != null ? (json['price'] as num).toDouble() : (json['base_price_cents'] != null ? (json['base_price_cents'] as num).toDouble() / 100.0 : 0.0),
+      durationMinutes: json['durationMinutes'] as int? ?? (json['estimated_duration_minutes'] as int? ?? 60),
       rating: (json['rating'] as num?)?.toDouble() ?? 4.8,
       reviewCount: json['reviewCount'] as int? ?? 120,
-      popular: json['popular'] as bool? ?? false,
+      popular: json['popular'] as bool? ?? (json['is_popular'] as bool? ?? false),
       description: json['description'] as String? ?? '',
     );
   }
@@ -73,20 +73,28 @@ class CategoryItemModel {
     required this.services,
   });
 
+  // Backward compatibility getters
+  String get name => title;
+  String get icon => iconName;
+  String get bannerUrl => image;
+
   factory CategoryItemModel.fromJson(Map<String, dynamic> json) {
     var rawServices = json['services'] as List<dynamic>? ?? [];
     List<ServiceItemModel> parsedServices = rawServices
-        .map((s) => ServiceItemModel.fromJson(s as Map<String, dynamic>))
+        .map((s) => s is Map<String, dynamic> ? ServiceItemModel.fromJson(s) : ServiceItemModel.fromJson(Map<String, dynamic>.from(s as Map)))
         .toList();
 
+    final titleVal = json['title'] as String? ?? (json['name'] as String? ?? 'Service Category');
+    final shortTitleVal = json['shortTitle'] as String? ?? (json['short_title'] as String? ?? titleVal);
+
     return CategoryItemModel(
-      id: json['id'] as String,
-      slug: json['slug'] as String,
-      title: json['title'] as String,
-      shortTitle: json['shortTitle'] as String,
-      priority: json['priority'] as int? ?? 1,
-      iconName: json['iconName'] as String? ?? 'Wrench',
-      image: json['image'] as String? ?? '',
+      id: json['id'] as String? ?? '',
+      slug: json['slug'] as String? ?? '',
+      title: titleVal,
+      shortTitle: shortTitleVal,
+      priority: json['priority'] as int? ?? (json['display_order'] as int? ?? (json['priority_rank'] as int? ?? 1)),
+      iconName: json['iconName'] as String? ?? (json['icon_name'] as String? ?? 'Wrench'),
+      image: json['image'] as String? ?? (json['image_url'] as String? ?? 'assets/images/banner_woman.png'),
       totalServices: json['totalServices'] as int? ?? parsedServices.length,
       services: parsedServices,
     );

@@ -153,6 +153,12 @@ class BookingFlowNotifier extends StateNotifier<BookingFlowState> {
     );
     return newOrder;
   }
+
+  void resetFlow() {
+    state = BookingFlowState(
+      customerBookings: state.customerBookings,
+    );
+  }
 }
 
 final bookingFlowProvider = StateNotifierProvider<BookingFlowNotifier, BookingFlowState>((ref) {

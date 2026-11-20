@@ -3,13 +3,13 @@ import '../../../../core/theme/app_theme.dart';
 import '../../../../core/network/api_client.dart';
 
 class LoginScreen extends StatefulWidget {
-  final VoidCallback onLoginSuccess;
-  final VoidCallback onSelectRole;
+  final VoidCallback? onLoginSuccess;
+  final VoidCallback? onSelectRole;
 
   const LoginScreen({
     super.key,
-    required this.onLoginSuccess,
-    required this.onSelectRole,
+    this.onLoginSuccess,
+    this.onSelectRole,
   });
 
   @override
@@ -75,7 +75,7 @@ class _LoginScreenState extends State<LoginScreen> {
           return;
         }
 
-        widget.onLoginSuccess();
+        widget.onLoginSuccess?.call();
       } else {
         setState(() {
           _errorMessage = res['error']?['message']?.toString() ?? 'Invalid credentials';
@@ -113,7 +113,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       if (res['success'] == true) {
-        widget.onLoginSuccess();
+        widget.onLoginSuccess?.call();
       } else {
         setState(() {
           _errorMessage = res['error']?['message']?.toString() ?? 'Verification code invalid or expired';
@@ -148,7 +148,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       if (res['success'] == true) {
-        widget.onLoginSuccess();
+        widget.onLoginSuccess?.call();
       } else {
         setState(() {
           _errorMessage = 'Saved session expired. Please enter password.';
@@ -480,7 +480,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
               Center(
                 child: TextButton(
-                  onPressed: widget.onSelectRole,
+                  onPressed: widget.onSelectRole ?? () {},
                   child: Text(
                     'Switch Role: Join as Service Technician Pro',
                     style: TextStyle(

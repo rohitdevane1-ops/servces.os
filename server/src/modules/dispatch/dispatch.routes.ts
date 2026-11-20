@@ -90,8 +90,32 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
 
     const result = await pool.query(query, params);
 
+    // BACK-06: Field-masking for non-dispatchers / customers
+    const userRole = request.user?.role;
+    const isPrivileged = userRole === 'ADMIN' || userRole === 'STAFF';
+
+    const sanitizedRows = result.rows.map(row => {
+      if (isPrivileged) {
+        return row;
+      }
+      return {
+        id: row.id,
+        fullName: row.fullName,
+        tradeCategory: row.tradeCategory,
+        isVerified: row.isVerified,
+        dutyStatus: row.dutyStatus,
+        // Fuzzy coordinate: rounded to 2 decimals (~1.1 km precision) to protect driver privacy
+        latitude: Math.round(Number(row.latitude) * 100) / 100,
+        longitude: Math.round(Number(row.longitude) * 100) / 100,
+        distanceKm: row.distanceKm,
+        averageRating: row.averageRating,
+        reviewCount: row.reviewCount
+        // hourlyRateCents & headingDegrees omitted for customers
+      };
+    });
+
     return reply.status(200).send(
-      successResponse(result.rows, requestId)
+      successResponse(sanitizedRows, requestId)
     );
   });
 
@@ -380,6 +404,15 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
         await client.query('ROLLBACK');
         return reply.status(404).send(
           errorResponse('NOT_FOUND', 'Target technician not found', requestId)
+        );
+      }
+
+      const targetProvider = providerRes.rows[0];
+      // BACK-07: Enforce verified provider requirement before assignment
+      if (!targetProvider.is_verified) {
+        await client.query('ROLLBACK');
+        return reply.status(422).send(
+          errorResponse('PROVIDER_NOT_VERIFIED', 'Target technician is not verified for work order dispatch.', requestId)
         );
       }
 

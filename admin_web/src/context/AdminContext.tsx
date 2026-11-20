@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, ReactNode, useCallback, use
 import { verifySessionValidity } from '../security/sessionManager';
 import { recordSecurityEvent } from '../security/securityAuditLogger';
 import { supabaseService, SupabaseConfigState } from '../services/supabaseClient';
+import { apiClient } from '../services/apiClient';
 import { 
   Booking, 
   Technician, 
@@ -404,6 +405,77 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [selectedBookingForAssign, setSelectedBookingForAssign] = useState<Booking | null>(null);
   const [isCreateJobModalOpen, setIsCreateJobModalOpen] = useState(false);
 
+  // Synchronize live operational data from Fastify REST API on mount / login (ADMIN-01 & ADMIN-04)
+  useEffect(() => {
+    let active = true;
+    async function fetchLiveData() {
+      if (!session?.token) return;
+      try {
+        const [bookingsRes, servicesRes, categoriesRes] = await Promise.allSettled([
+          apiClient.getBookings({ limit: 50 }),
+          apiClient.getServices(),
+          apiClient.getCategories(),
+        ]);
+
+        if (!active) return;
+
+        if (bookingsRes.status === 'fulfilled' && bookingsRes.value.success && Array.isArray(bookingsRes.value.data) && bookingsRes.value.data.length > 0) {
+          const mappedBookings: Booking[] = bookingsRes.value.data.map((b: any) => ({
+            id: b.id,
+            jobNo: b.bookingReference || `JOB-${b.id?.substring(0, 6)}`,
+            customerName: b.customerName || 'Customer',
+            customerPhone: b.customerPhone || '',
+            customerAddress: b.addressText || 'Customer Address',
+            serviceName: b.serviceName || 'Home Service',
+            category: b.categoryName || 'General',
+            technicianName: b.providerName || 'Field Tech',
+            technicianId: b.providerId || '',
+            scheduleDate: b.scheduledStart ? new Date(b.scheduledStart).toLocaleDateString() : 'Today',
+            scheduleTime: b.scheduledStart ? new Date(b.scheduledStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '09:00 AM',
+            estimate: Number(b.totalAuthorizedCents || 0) / 100,
+            paymentStatus: b.escrowStatus === 'RELEASED_TO_PROVIDER' ? 'Paid' : 'Pending',
+            status: b.status === 'COMPLETED' ? 'Completed' : b.status === 'IN_PROGRESS' ? 'In Progress' : 'Scheduled',
+            priority: b.priority === 'EMERGENCY' ? 'Critical' : 'Medium',
+            lat: b.latitude || 25.7617,
+            lng: b.longitude || -80.1918,
+            notes: b.accessInstructions || ''
+          }));
+          setBookings(mappedBookings);
+        }
+
+        if (servicesRes.status === 'fulfilled' && servicesRes.value.success && Array.isArray(servicesRes.value.data) && servicesRes.value.data.length > 0) {
+          const mappedServices: ServiceItem[] = servicesRes.value.data.map((s: any) => ({
+            id: s.id,
+            name: s.name,
+            category: s.categoryName || 'General',
+            basePrice: Number(s.basePriceCents || 0) / 100,
+            durationMinutes: s.estimatedDurationMinutes || 60,
+            isPopular: s.isPopular || false,
+            status: s.isActive ? 'Active' : 'Draft',
+            description: s.description || ''
+          }));
+          setServices(mappedServices);
+        }
+
+        if (categoriesRes.status === 'fulfilled' && categoriesRes.value.success && Array.isArray(categoriesRes.value.data) && categoriesRes.value.data.length > 0) {
+          const mappedCategories: ServiceCategory[] = categoriesRes.value.data.map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            iconName: c.iconName || 'Wrench',
+            serviceCount: c.servicesCount || 10,
+            color: '#6366F1'
+          }));
+          setCategories(mappedCategories);
+        }
+      } catch (e) {
+        console.warn('[AdminContext] Live API data sync notice:', e);
+      }
+    }
+
+    fetchLiveData();
+    return () => { active = false; };
+  }, [session?.token]);
+
   const toggleSidebar = () => setIsSidebarCollapsed(prev => !prev);
 
   const addToast = useCallback((title: string, type: Toast['type'] = 'success') => {
@@ -425,7 +497,8 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [isWhiteLabelModalOpen, setIsWhiteLabelModalOpen] = useState(false);
 
   const enableDemoMode = useCallback(() => {
-    addToast('Zero-demo policy active: Database and state operate in clean production baseline mode.', 'info');
+    setIsDemoMode(true);
+    addToast('Demo simulation mode activated. Showcase fixtures are now enabled.', 'info');
   }, [addToast]);
 
   const disableDemoMode = useCallback(() => {
@@ -940,7 +1013,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     const nextId = `INV-${Date.now()}`;
     const fullInv: Invoice = {
       id: nextId,
-      invoiceNo: `#INV-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`,
+      invoiceNo: `#INV-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`,
       customerName: newInv.customerName || 'Customer',
       serviceName: newInv.serviceName || 'Custom Maintenance & Repair',
       date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
@@ -986,10 +1059,10 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   }, [currentRole, addToast]);
 
   // Universal User Dossier (Customer, Technician, Staff)
+  const [staffMembers, setStaffMembers] = useState<StaffMember[]>(INITIAL_STAFF_MEMBERS);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(() => customers[0]?.id || '');
   const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>(() => technicians[0]?.id || '');
   const [selectedStaffId, setSelectedStaffId] = useState<string>(() => staffMembers[0]?.id || '');
-  const [staffMembers] = useState<StaffMember[]>(INITIAL_STAFF_MEMBERS);
 
   const navigateToFacebookProfile = useCallback((target?: ViewingProfileTarget) => {
     const finalTarget = target || (currentRole === 'ADMIN' ? { type: 'admin' } : { type: 'staff', id: staffMembers[0]?.id || '' });
@@ -1232,27 +1305,31 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     events.forEach(evt => window.addEventListener(evt, recordActivity, { passive: true }));
 
     const timer = setInterval(() => {
-      if (isSessionLocked) return;
-      const validity = verifySessionValidity(session, lastActivityRef.current);
-      if (validity.isExpired) {
-        recordSecurityEvent(
-          'SESSION_EXPIRED',
-          session?.user?.email || 'authenticated-user',
-          currentRole,
-          'WARNING',
-          validity.reason || 'Session expired after 12 hours'
-        );
-        logout();
-        addToast('Session expired after 12 hours. Please re-authenticate.', 'error');
-      } else if (validity.isIdleTimedOut) {
-        recordSecurityEvent(
-          'SESSION_LOCKED',
-          session?.user?.email || 'authenticated-user',
-          currentRole,
-          'INFO',
-          'Session locked due to 15-minute inactivity'
-        );
-        lockSession();
+      try {
+        if (isSessionLocked) return;
+        const validity = verifySessionValidity(session, lastActivityRef.current);
+        if (validity.isExpired) {
+          recordSecurityEvent(
+            'SESSION_EXPIRED',
+            session?.user?.email || 'authenticated-user',
+            currentRole,
+            'WARNING',
+            validity.reason || 'Session expired after 12 hours'
+          );
+          logout();
+          addToast('Session expired after 12 hours. Please re-authenticate.', 'error');
+        } else if (validity.isIdleTimedOut) {
+          recordSecurityEvent(
+            'SESSION_LOCKED',
+            session?.user?.email || 'authenticated-user',
+            currentRole,
+            'INFO',
+            'Session locked due to 15-minute inactivity'
+          );
+          lockSession();
+        }
+      } catch (err) {
+        console.warn('[AdminContext] Session validity heartbeat verification check notice:', err);
       }
     }, 15000); // 15-second heartbeat check
 
@@ -1435,7 +1512,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     const newLog: AuditLogItem = {
       id: `A-${Date.now()}`,
-      timestamp: 'Just Now',
+      timestamp: new Date().toISOString(),
       user: currentRole === 'ADMIN' ? 'Admin' : 'Staff Dispatcher',
       role: currentRole === 'ADMIN' ? 'Super Admin' : 'Operations Dispatcher',
       action: 'Rescheduled',
@@ -1448,6 +1525,12 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       localStorage.setItem('servicepro_audit_logs', JSON.stringify(next));
       return next;
     });
+
+    if (supabaseService.isConfigured()) {
+      supabaseService.saveBooking({ id: bookingId, scheduleDate: newDate, scheduleTime: newSlot }).catch(err => {
+        console.warn('[AdminContext] reschedule sync error:', err);
+      });
+    }
 
     addToast(`Booking ${bookingId} successfully rescheduled to ${newDate} at ${newSlot}!`, 'success');
   };
@@ -1486,7 +1569,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     // Record audit log
     const newLog: AuditLogItem = {
       id: `A-${Date.now()}`,
-      timestamp: 'Just Now',
+      timestamp: new Date().toISOString(),
       user: 'Admin',
       role: 'Super Admin',
       action: 'Assigned',
@@ -1504,12 +1587,19 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setIsAssignModalOpen(false);
   };
 
-  const emergencyHandover = (bookingId: string, newTechnicianId: string, reason: string) => {
+  const emergencyHandover = async (bookingId: string, newTechnicianId: string, reason: string) => {
     const newTech = technicians.find(t => t.id === newTechnicianId);
     if (!newTech) return;
 
     const booking = bookings.find(b => b.id === bookingId);
     const oldTechName = booking ? booking.technicianName : 'Previous Tech';
+
+    // Call authoritative backend handover API (ADMIN-05)
+    try {
+      await apiClient.handoverBooking(bookingId, newTechnicianId, reason);
+    } catch (err) {
+      console.warn('[AdminContext] Handover API call non-blocking error:', err);
+    }
 
     setBookings(prev => {
       const next: Booking[] = prev.map(b => {
@@ -1531,7 +1621,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     // Record audit
     const newLog: AuditLogItem = {
       id: `A-${Date.now()}`,
-      timestamp: 'Just Now',
+      timestamp: new Date().toISOString(),
       user: 'Admin',
       role: 'Super Admin',
       action: 'Handover',
@@ -1545,7 +1635,7 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       return next;
     });
 
-    addToast(`Emergency Handover executed. Customer & ${newTech.name} notified via SMS.`, 'warning');
+    addToast(`Job ${bookingId} handed over to ${newTech.name}!`, 'warning');
     setIsAssignModalOpen(false);
   };
 

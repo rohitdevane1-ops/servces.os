@@ -60,7 +60,7 @@ class ServiceOSApp extends StatefulWidget {
 
 class _ServiceOSAppState extends State<ServiceOSApp> {
   bool _isDarkMode = false;
-  AppViewMode _currentView = AppViewMode.customerHome; // Default directly into master mockup showcase
+  AppViewMode _currentView = AppViewMode.splash; // Secure startup flow: Splash -> Login -> RoleGateway
 
   void _toggleTheme() {
     setState(() {

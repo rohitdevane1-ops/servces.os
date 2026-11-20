@@ -27,6 +27,7 @@ export interface ApiResponse<T = any> {
 class ApiClient {
   private baseUrl: string;
   private tenantId: string | null = null;
+  private refreshPromise: Promise<string | null> | null = null;
 
   constructor() {
     this.baseUrl = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3000/api/v1';
@@ -86,30 +87,46 @@ class ApiClient {
         headers,
       });
 
-      // Handle 401 token refresh rotation via HttpOnly cookie
+      // Handle 401 token refresh rotation via single-flight HttpOnly cookie request (ADMIN-09 / BACK-14)
       if (res.status === 401 && endpoint !== '/auth/login' && endpoint !== '/auth/refresh') {
-        const refreshHeaders: Record<string, string> = {
-          'Content-Type': 'application/json',
-        };
-        if (this.tenantId) {
-          refreshHeaders['x-tenant-id'] = this.tenantId;
+        if (!this.refreshPromise) {
+          this.refreshPromise = (async () => {
+            try {
+              const refreshHeaders: Record<string, string> = {
+                'Content-Type': 'application/json',
+              };
+              if (this.tenantId) {
+                refreshHeaders['x-tenant-id'] = this.tenantId;
+              }
+
+              const refreshRes = await fetch(`${this.baseUrl}/auth/refresh`, {
+                method: 'POST',
+                credentials: 'include',
+                headers: refreshHeaders,
+              });
+
+              if (refreshRes.ok) {
+                const refreshData = await refreshRes.json();
+                if (refreshData.success && refreshData.data?.accessToken) {
+                  this.setAccessToken(refreshData.data.accessToken);
+                  return refreshData.data.accessToken as string;
+                }
+              }
+              this.clearTokens();
+              return null;
+            } catch {
+              this.clearTokens();
+              return null;
+            } finally {
+              this.refreshPromise = null;
+            }
+          })();
         }
 
-        const refreshRes = await fetch(`${this.baseUrl}/auth/refresh`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: refreshHeaders,
-        });
-
-        if (refreshRes.ok) {
-          const refreshData = await refreshRes.json();
-          if (refreshData.success && refreshData.data?.accessToken) {
-            this.setAccessToken(refreshData.data.accessToken);
-            headers['Authorization'] = `Bearer ${refreshData.data.accessToken}`;
-            res = await fetch(url, { ...options, credentials: 'include', headers });
-          }
-        } else {
-          this.clearTokens();
+        const newAccessToken = await this.refreshPromise;
+        if (newAccessToken) {
+          headers['Authorization'] = `Bearer ${newAccessToken}`;
+          res = await fetch(url, { ...options, credentials: 'include', headers });
         }
       }
 

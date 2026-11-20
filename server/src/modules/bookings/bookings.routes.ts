@@ -717,47 +717,44 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const userRole = request.user!.role;
     const userId = request.user!.id;
 
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    // PHASE 1: Fast Read & Eligibility Verification (No long-lived transaction held)
+    const readClient = await pool.connect();
+    let booking: any;
+    let paymentTx: any = null;
 
-      const bRes = await client.query(
+    try {
+      const bRes = await readClient.query(
         `SELECT b.id, b.status, b.assigned_provider_id, i.id as invoice_id, i.total_amount_cents,
                 t.default_platform_commission_bps
          FROM bookings b
          JOIN tenants t ON t.id = b.tenant_id
          LEFT JOIN invoices i ON i.booking_id = b.id
-         WHERE b.id = $1 AND b.tenant_id = $2
-         FOR UPDATE OF b`,
+         WHERE b.id = $1 AND b.tenant_id = $2`,
         [id, tenantId]
       );
 
       if (bRes.rows.length === 0) {
-        await client.query('ROLLBACK');
         return reply.status(404).send(
           errorResponse('BOOKING_NOT_FOUND', 'Work order not found.', requestId)
         );
       }
 
-      const booking = bRes.rows[0];
+      booking = bRes.rows[0];
 
       // Authorization: Must be assigned technician, ADMIN, or STAFF
       if (userRole === 'TECHNICIAN' && booking.assigned_provider_id !== userId) {
-        await client.query('ROLLBACK');
         return reply.status(403).send(
           errorResponse('FORBIDDEN', 'You are not the assigned provider for this work order.', requestId)
         );
       }
       if (userRole === 'CUSTOMER') {
-        await client.query('ROLLBACK');
         return reply.status(403).send(
           errorResponse('FORBIDDEN', 'Customers cannot sign-off provider work orders directly.', requestId)
         );
       }
 
-      // State check: Must be in ON_SITE status to complete work order (or idempotent return if already completed)
+      // State check: Idempotent return if already completed
       if (booking.status === 'COMPLETED') {
-        await client.query('COMMIT');
         return reply.status(200).send(
           successResponse({
             completed: true,
@@ -769,14 +766,82 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       }
 
       if (booking.status !== 'ON_SITE') {
-        await client.query('ROLLBACK');
         return reply.status(400).send(
           errorResponse('INVALID_STATE', `Work order must be in ON_SITE status to complete (current status: ${booking.status}).`, requestId)
         );
       }
 
+      if (booking.invoice_id) {
+        const txRes = await readClient.query(
+          `SELECT id, stripe_payment_intent_id, status FROM payment_transactions WHERE invoice_id = $1`,
+          [booking.invoice_id]
+        );
+        if (txRes.rows.length === 0) {
+          return reply.status(400).send(
+            errorResponse('PAYMENT_TRANSACTION_MISSING', 'Work order invoice lacks an authorized payment transaction.', requestId)
+          );
+        }
+
+        paymentTx = txRes.rows[0];
+        const validStatuses = ['REQUIRES_CAPTURE', 'AUTHORIZED', 'SUCCEEDED', 'PENDING'];
+        if (!validStatuses.includes(paymentTx.status)) {
+          return reply.status(400).send(
+            errorResponse('INVALID_PAYMENT_STATE', `Payment transaction is in invalid state: ${paymentTx.status}`, requestId)
+          );
+        }
+      }
+    } finally {
+      readClient.release();
+    }
+
+    // PHASE 2: External Stripe Capture (Executed OUTSIDE any open database transaction)
+    if (booking.invoice_id && paymentTx && env.STRIPE_SECRET_KEY && paymentTx.status !== 'SUCCEEDED' && paymentTx.stripe_payment_intent_id?.startsWith('pi_')) {
+      try {
+        const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+        await stripe.paymentIntents.capture(
+          paymentTx.stripe_payment_intent_id,
+          {},
+          { idempotencyKey: `capture_tx_${booking.invoice_id}` }
+        );
+      } catch (stripeErr: any) {
+        const isAlreadyCaptured =
+          stripeErr.code === 'payment_intent_unexpected_state' ||
+          stripeErr.message?.toLowerCase().includes('already been captured');
+        if (isAlreadyCaptured) {
+          const stripe = new Stripe(env.STRIPE_SECRET_KEY);
+          const pi = await stripe.paymentIntents.retrieve(paymentTx.stripe_payment_intent_id);
+          if (pi.status !== 'succeeded') {
+            return reply.status(502).send(
+              errorResponse('STRIPE_CAPTURE_FAILED', `Stripe PaymentIntent is in unexpected state: ${pi.status}`, requestId)
+            );
+          }
+        } else {
+          return reply.status(502).send(
+            errorResponse('STRIPE_CAPTURE_FAILED', `Failed capturing escrow funds with Stripe: ${stripeErr.message}`, requestId)
+          );
+        }
+      }
+    }
+
+    // PHASE 3: Atomic Database Settlement (Short transaction, row locks, ledger entries)
+    const settleClient = await pool.connect();
+    try {
+      await settleClient.query('BEGIN');
+
+      // Re-lock booking to guarantee concurrency safety
+      const lockRes = await settleClient.query(
+        `SELECT id, status FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+        [id, tenantId]
+      );
+      if (lockRes.rows.length === 0 || lockRes.rows[0].status === 'COMPLETED') {
+        await settleClient.query('COMMIT');
+        return reply.status(200).send(
+          successResponse({ completed: true, bookingId: id, status: 'COMPLETED', idempotent: true }, requestId)
+        );
+      }
+
       // A. Save Work Order Proofs & Signatures (using canonical column name work_summary_notes)
-      await client.query(
+      await settleClient.query(
         `INSERT INTO work_order_proofs (
           booking_id, before_photos_urls, after_photos_urls, customer_signature_url, work_summary_notes
         ) VALUES ($1, $2, $3, $4, $5)
@@ -789,59 +854,20 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
 
       // B. Advance Booking Status to COMPLETED
-      await client.query(
+      await settleClient.query(
         `UPDATE bookings SET status = 'COMPLETED', updated_at = NOW() WHERE id = $1`,
         [id]
       );
 
       // C. Capture Invoice Payment & Release Escrow Hold Idempotently
       if (booking.invoice_id) {
-        let txId: string | null = null;
-        const txRes = await client.query(
-          `SELECT id, stripe_payment_intent_id, status FROM payment_transactions WHERE invoice_id = $1`,
-          [booking.invoice_id]
-        );
-        if (txRes.rows.length > 0) {
-          const tx = txRes.rows[0];
-          txId = tx.id;
-          if (env.STRIPE_SECRET_KEY && tx.status !== 'SUCCEEDED' && tx.stripe_payment_intent_id?.startsWith('pi_')) {
-            try {
-              const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-              await stripe.paymentIntents.capture(
-                tx.stripe_payment_intent_id,
-                {},
-                { idempotencyKey: `capture_tx_${booking.invoice_id}` }
-              );
-            } catch (stripeErr: any) {
-              const isAlreadyCaptured =
-                stripeErr.code === 'payment_intent_unexpected_state' ||
-                stripeErr.message?.toLowerCase().includes('already been captured');
-              if (isAlreadyCaptured) {
-                const stripe = new Stripe(env.STRIPE_SECRET_KEY);
-                const pi = await stripe.paymentIntents.retrieve(tx.stripe_payment_intent_id);
-                if (pi.status !== 'succeeded') {
-                  await client.query('ROLLBACK');
-                  return reply.status(502).send(
-                    errorResponse('STRIPE_CAPTURE_FAILED', `Stripe PaymentIntent is in unexpected state: ${pi.status}`, requestId)
-                  );
-                }
-              } else {
-                await client.query('ROLLBACK');
-                return reply.status(502).send(
-                  errorResponse('STRIPE_CAPTURE_FAILED', `Failed capturing escrow funds with Stripe: ${stripeErr.message}`, requestId)
-                );
-              }
-            }
-          }
-        }
-
-        await client.query(
+        await settleClient.query(
           `UPDATE invoices SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()) WHERE id = $1`,
           [booking.invoice_id]
         );
 
         // Update Payment Transaction (conditional on non-succeeded status)
-        await client.query(
+        await settleClient.query(
           `UPDATE payment_transactions 
            SET captured_amount_cents = authorized_amount_cents, status = 'SUCCEEDED'
            WHERE invoice_id = $1 AND status != 'SUCCEEDED'`,
@@ -849,7 +875,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         );
 
         // D. Post Double-Entry Ledger Entries Idempotently
-        const accRes = await client.query(
+        const accRes = await settleClient.query(
           `SELECT id, account_number FROM ledger_accounts WHERE tenant_id = $1`,
           [tenantId]
         );
@@ -864,42 +890,50 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         const platformFeeCents = Math.round(totalCents * (commissionBps / 10000));
         const netTechPayoutCents = totalCents - platformFeeCents;
 
-        // Check if ledger entries already exist for this transaction
-        const existingLedger = txId
-          ? await client.query(`SELECT id FROM ledger_entries WHERE transaction_id = $1 LIMIT 1`, [txId])
-          : { rows: [] };
+        if (paymentTx?.id && cashAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && totalCents > 0) {
+          if (platformFeeCents > 0) {
+            await settleClient.query(
+              `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+               VALUES ($1, $2, 'PLATFORM_FEE', $3, $4, $5, $6)
+               ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+              [
+                tenantId,
+                paymentTx.id,
+                escrowLiabilityAcc,
+                platformRevAcc,
+                platformFeeCents,
+                `Platform commission recognition (${(commissionBps/100).toFixed(1)}%) for #${id}`
+              ]
+            );
+          }
 
-        if (existingLedger.rows.length === 0 && cashAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && totalCents > 0) {
-          // Debit Customer Escrow Liability, Credit Platform Revenue & Technician Payable
-          await client.query(
-            `INSERT INTO ledger_entries (tenant_id, transaction_id, debit_account_id, credit_account_id, amount_cents, description)
-             VALUES 
-              ($1, $2, $3, $4, $5, $6),
-              ($1, $2, $3, $7, $8, $9)`,
-            [
-              tenantId,
-              txId,
-              escrowLiabilityAcc,
-              platformRevAcc,
-              platformFeeCents,
-              `Platform commission recognition (${(commissionBps/100).toFixed(1)}%) for #${id}`,
-              techPayableAcc,
-              netTechPayoutCents,
-              `Technician net earning payable for #${id}`
-            ]
-          );
+          if (netTechPayoutCents > 0) {
+            await settleClient.query(
+              `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+               VALUES ($1, $2, 'TECH_PAYABLE', $3, $4, $5, $6)
+               ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+              [
+                tenantId,
+                paymentTx.id,
+                escrowLiabilityAcc,
+                techPayableAcc,
+                netTechPayoutCents,
+                `Technician net earning payable for #${id}`
+              ]
+            );
+          }
         }
       }
 
       // E. Record Timeline Audit Event
-      await client.query(
+      await settleClient.query(
         `INSERT INTO booking_timeline_events (
           booking_id, tenant_id, from_status, to_status, actor_id, event_title, event_details
         ) VALUES ($1, $2, $3, 'COMPLETED', $4, 'Work Order Sign-Off & Escrow Capture', 'Customer digital signature recorded; escrow captured and split posted to ledger.')`,
         [id, tenantId, booking.status, request.user!.id]
       );
 
-      await client.query('COMMIT');
+      await settleClient.query('COMMIT');
 
       return reply.status(200).send(
         successResponse({
@@ -909,10 +943,10 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         }, requestId)
       );
     } catch (err: any) {
-      await client.query('ROLLBACK');
+      await settleClient.query('ROLLBACK');
       throw err;
     } finally {
-      client.release();
+      settleClient.release();
     }
   });
 

@@ -488,7 +488,9 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
               children: [
                 CircleAvatar(
                   radius: 20,
-                  backgroundImage: NetworkImage(techAvatar),
+                  backgroundImage: techAvatar.startsWith('assets/')
+                      ? AssetImage(techAvatar) as ImageProvider
+                      : NetworkImage(techAvatar),
                 ),
                 const SizedBox(width: 12),
                 Expanded(

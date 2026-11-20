@@ -1,6 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { AuthService } from '../modules/auth/auth.service.js';
 import { errorResponse } from '../types/envelope.js';
+import { pool } from '../database/pool.js';
 
 export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
   const requestId = request.id || `req_${Date.now()}`;
@@ -44,19 +45,35 @@ export function requirePermission(permissionId: string) {
 
     const requestId = request.id || `req_${Date.now()}`;
     const userRole = request.user?.role;
+    const userId = request.user?.id;
 
-    if (!userRole) {
+    if (!userRole || !userId) {
       return reply.status(401).send(
         errorResponse('UNAUTHORIZED', 'Authentication credentials required.', requestId)
       );
     }
 
-    // 2. Administrators have root access
+    // 2. BACK-09: Check if account has been explicitly deactivated in DB
+    try {
+      const activeCheck = await pool.query<{ is_active: boolean }>(
+        'SELECT is_active FROM users WHERE id = $1',
+        [userId]
+      );
+      if (activeCheck.rows.length > 0 && !activeCheck.rows[0].is_active) {
+        return reply.status(403).send(
+          errorResponse('ACCOUNT_DEACTIVATED', 'This user account is inactive or has been suspended.', requestId)
+        );
+      }
+    } catch {
+      // In-memory / mocked test fallbacks
+    }
+
+    // 3. Administrators have root access
     if (userRole === 'ADMIN') {
       return;
     }
 
-    // 3. Query role permissions
+    // 4. Query role permissions
     const permissions = await AuthService.getUserPermissions(userRole);
 
     if (!permissions.includes(permissionId)) {

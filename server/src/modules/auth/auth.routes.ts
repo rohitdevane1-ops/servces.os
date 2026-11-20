@@ -213,21 +213,54 @@ export async function authRoutes(fastify: FastifyInstance) {
     try {
       const payload = AuthService.verifyMfaChallengeToken(mfaSessionToken);
 
-      // Verify user is active
-      const userRes = await pool.query('SELECT is_active FROM users WHERE id = $1', [payload.sub]);
+      // Verify user is active and check lockout status (BACK-10)
+      const userRes = await pool.query(
+        'SELECT is_active, failed_login_attempts, locked_until FROM users WHERE id = $1',
+        [payload.sub]
+      );
       if (userRes.rows.length === 0 || !userRes.rows[0].is_active) {
         return reply.status(403).send(
           errorResponse('ACCOUNT_INACTIVE', 'This account has been deactivated.', requestId)
         );
       }
 
+      const userRow = userRes.rows[0];
+      if (userRow.locked_until && new Date(userRow.locked_until) > new Date()) {
+        return reply.status(429).send(
+          errorResponse('ACCOUNT_LOCKED', 'Account is temporarily locked due to multiple failed MFA attempts. Please try again later.', requestId)
+        );
+      }
+
       const valid = await AuthService.verifyTotpCode(payload.sub, totpCode);
 
       if (!valid) {
+        const attempts = (userRow.failed_login_attempts || 0) + 1;
+        const willLock = attempts >= 5;
+        await pool.query(
+          `UPDATE users 
+           SET failed_login_attempts = $1, 
+               locked_until = CASE WHEN $2 THEN NOW() + INTERVAL '15 minutes' ELSE locked_until END,
+               updated_at = NOW()
+           WHERE id = $3`,
+          [attempts, willLock, payload.sub]
+        );
+
+        if (willLock) {
+          return reply.status(429).send(
+            errorResponse('ACCOUNT_LOCKED', 'Too many failed MFA verification attempts. Account locked for 15 minutes.', requestId)
+          );
+        }
+
         return reply.status(401).send(
-          errorResponse('INVALID_TOTP_CODE', 'The 6-digit verification code is invalid or expired.', requestId)
+          errorResponse('INVALID_TOTP_CODE', `The 6-digit verification code is invalid. ${5 - attempts} attempts remaining before temporary lockout.`, requestId)
         );
       }
+
+      // Reset failure counter on successful verification
+      await pool.query(
+        `UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
+        [payload.sub]
+      );
 
       const accessToken = AuthService.generateAccessToken({
         id: payload.sub,
@@ -384,21 +417,54 @@ export async function authRoutes(fastify: FastifyInstance) {
     try {
       const payload = AuthService.verifyMfaChallengeToken(mfaSessionToken);
 
-      // Verify user is active
-      const userRes = await pool.query('SELECT is_active FROM users WHERE id = $1', [payload.sub]);
+      // Verify user is active and check lockout status (BACK-10)
+      const userRes = await pool.query(
+        'SELECT is_active, failed_login_attempts, locked_until FROM users WHERE id = $1',
+        [payload.sub]
+      );
       if (userRes.rows.length === 0 || !userRes.rows[0].is_active) {
         return reply.status(403).send(
           errorResponse('ACCOUNT_INACTIVE', 'This account has been deactivated.', requestId)
         );
       }
 
+      const userRow = userRes.rows[0];
+      if (userRow.locked_until && new Date(userRow.locked_until) > new Date()) {
+        return reply.status(429).send(
+          errorResponse('ACCOUNT_LOCKED', 'Account is temporarily locked due to multiple failed MFA attempts. Please try again later.', requestId)
+        );
+      }
+
       const valid = await AuthService.verifyMfaRecovery(payload.sub, backupCode);
 
       if (!valid) {
+        const attempts = (userRow.failed_login_attempts || 0) + 1;
+        const willLock = attempts >= 5;
+        await pool.query(
+          `UPDATE users 
+           SET failed_login_attempts = $1, 
+               locked_until = CASE WHEN $2 THEN NOW() + INTERVAL '15 minutes' ELSE locked_until END,
+               updated_at = NOW()
+           WHERE id = $3`,
+          [attempts, willLock, payload.sub]
+        );
+
+        if (willLock) {
+          return reply.status(429).send(
+            errorResponse('ACCOUNT_LOCKED', 'Too many failed emergency recovery attempts. Account locked for 15 minutes.', requestId)
+          );
+        }
+
         return reply.status(401).send(
-          errorResponse('INVALID_BACKUP_CODE', 'Emergency backup code is invalid or has already been used.', requestId)
+          errorResponse('INVALID_BACKUP_CODE', `Emergency backup code is invalid or has already been used. ${5 - attempts} attempts remaining before temporary lockout.`, requestId)
         );
       }
+
+      // Reset failure counter on successful recovery
+      await pool.query(
+        `UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
+        [payload.sub]
+      );
 
       const accessToken = AuthService.generateAccessToken({
         id: payload.sub,

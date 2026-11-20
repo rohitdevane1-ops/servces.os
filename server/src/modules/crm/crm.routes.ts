@@ -454,7 +454,15 @@ export async function crmRoutes(fastify: FastifyInstance) {
   }, async (request, reply) => {
     const requestId = request.id || `req_${Date.now()}`;
     const tenantId = request.tenantId;
+    const userRole = request.user?.role;
     const userId = request.user!.id;
+
+    // BACK-05: Enforce TECHNICIAN role for telemetry writes
+    if (userRole !== 'TECHNICIAN' && userRole !== 'ADMIN') {
+      return reply.status(403).send(
+        errorResponse('FORBIDDEN', 'Only technicians can submit GPS location telemetry.', requestId)
+      );
+    }
 
     const parsed = locationPingSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -464,6 +472,13 @@ export async function crmRoutes(fastify: FastifyInstance) {
     }
 
     const { latitude, longitude, headingDegrees, dutyStatus } = parsed.data;
+
+    // BACK-05: Reject placeholder (0, 0) coordinates to prevent corrupting spatial radar
+    if (latitude === 0 && longitude === 0) {
+      return reply.status(400).send(
+        errorResponse('INVALID_COORDINATES', 'Zero GPS coordinates are not permitted for live telemetry.', requestId)
+      );
+    }
 
     // Upsert into provider_locations
     await pool.query(
@@ -496,7 +511,15 @@ export async function crmRoutes(fastify: FastifyInstance) {
   }, async (request, reply) => {
     const requestId = request.id || `req_${Date.now()}`;
     const tenantId = request.tenantId;
+    const userRole = request.user?.role;
     const userId = request.user!.id;
+
+    // BACK-05: Enforce TECHNICIAN role for duty status writes
+    if (userRole !== 'TECHNICIAN' && userRole !== 'ADMIN') {
+      return reply.status(403).send(
+        errorResponse('FORBIDDEN', 'Only technicians can toggle duty status.', requestId)
+      );
+    }
 
     const parsed = updateDutyStatusSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -507,13 +530,20 @@ export async function crmRoutes(fastify: FastifyInstance) {
 
     const { dutyStatus } = parsed.data;
 
+    // BACK-05: Update duty status on existing record without injecting fake (0, 0) coordinates
     await pool.query(
-      `INSERT INTO provider_locations (provider_id, tenant_id, location, duty_status, last_ping_at)
-       VALUES ($1, $2, ST_SetSRID(ST_MakePoint(0, 0), 4326)::geography, $3, NOW())
-       ON CONFLICT (provider_id) DO UPDATE SET
-         duty_status = $3,
-         last_ping_at = NOW()`,
-      [userId, tenantId, dutyStatus]
+      `UPDATE provider_locations 
+       SET duty_status = $1, last_ping_at = NOW() 
+       WHERE provider_id = $2 AND tenant_id = $3`,
+      [dutyStatus, userId, tenantId]
+    );
+
+    // Sync active state to provider_profiles
+    await pool.query(
+      `UPDATE provider_profiles
+       SET is_active = CASE WHEN $1 = 'OFFLINE' THEN FALSE ELSE TRUE END, updated_at = NOW()
+       WHERE user_id = $2 AND tenant_id = $3`,
+      [dutyStatus, userId, tenantId]
     );
 
     return reply.status(200).send(

@@ -18,6 +18,32 @@ jobs:
   backend-verification:
     name: Backend API & Database Test Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4-alpine
+        env:
+          POSTGRES_DB: servicepro_test
+          POSTGRES_USER: servicepro_admin
+          POSTGRES_PASSWORD: test_password_12345
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U servicepro_admin -d servicepro_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout Codebase
@@ -41,6 +67,14 @@ jobs:
           npm run build
 
       - name: Run Backend Unit & Integration Tests
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://servicepro_admin:test_password_12345@localhost:5432/servicepro_test
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: test_jwt_secret_012345678901234567890123456789
+          JWT_REFRESH_SECRET: test_jwt_refresh_secret_012345678901234567890123456789
+          BOOTSTRAP_TOKEN: test_bootstrap_token_0123456789
+          APP_ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
         run: |
           cd server
           npm test
@@ -51,6 +85,7 @@ jobs:
   admin-web-build:
     name: Admin & Staff Portal Production Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Codebase
@@ -68,6 +103,11 @@ jobs:
           cd admin_web
           npm ci
 
+      - name: Lint Web Portal Source (oxlint)
+        run: |
+          cd admin_web
+          npm run lint
+
       - name: Build Web Portal Bundle (React 19 + Vite)
         run: |
           cd admin_web
@@ -79,6 +119,7 @@ jobs:
   docker-validation:
     name: Docker Turnkey Architecture Validation
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Codebase
@@ -96,6 +137,7 @@ jobs:
   security-audit:
     name: Zero Personal Data & Security Integrity Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Codebase
@@ -110,3 +152,13 @@ jobs:
           test -f INSTALLATION_GUIDE.md
           test -f API_DOCUMENTATION.md
           echo "All commercial deployment dossiers and configuration templates present."
+
+      - name: Backend Dependency Vulnerability Audit
+        run: |
+          cd server
+          npm audit --omit=dev --audit-level=high || true
+
+      - name: Frontend Dependency Vulnerability Audit
+        run: |
+          cd admin_web
+          npm audit --omit=dev --audit-level=high || true

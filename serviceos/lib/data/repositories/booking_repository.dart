@@ -1,3 +1,4 @@
+import 'dart:math';
 import '../models/booking_model.dart';
 import '../datasources/supabase_remote_datasource.dart';
 import '../datasources/local_fixture_datasource.dart';
@@ -199,7 +200,7 @@ class BookingRepository implements IBookingRepository {
     final total = basePrice + extraPartsTotal + rushFee;
     final platformFee = total * 0.15;
     final netPayout = total * 0.85;
-    final safetyPin = '${1000 + (DateTime.now().millisecond % 9000)}';
+    final safetyPin = '${Random.secure().nextInt(9000) + 1000}'; // FLUT-06: Cryptographically secure 4-digit PIN (1000-9999)
 
     if (_supabaseService.isLiveConnected && _supabaseService.client != null) {
       try {
