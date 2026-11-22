@@ -18,6 +18,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.serviceos.app.core.theme.LocalExtraColors
+import com.serviceos.app.data.model.BookingStatus
+import com.serviceos.app.data.network.ApiClient
+import com.serviceos.app.data.repository.BookingRepository
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -28,8 +32,35 @@ fun TechDashboardScreen(
     onOpenHistory: () -> Unit = {},
     onOpenOnboarding: () -> Unit = {}
 ) {
+    val coroutineScope = rememberCoroutineScope()
+    val bookings by BookingRepository.bookingsFlow.collectAsState()
     var isOnline by remember { mutableStateOf(true) }
+    var serverEarnedAmount by remember { mutableStateOf<Double?>(null) }
+    var serverCompletedCount by remember { mutableStateOf<Int?>(null) }
     val extraColors = LocalExtraColors.current
+
+    LaunchedEffect(Unit) {
+        BookingRepository.syncFromBackend()
+        ApiClient.fetchTechnicianEarnings().onSuccess { json ->
+            val data = json.optJSONObject("data") ?: json
+            val totalEarnedCents = data.optDouble("totalEarnedCents", data.optDouble("unpaidBalanceCents", Double.NaN))
+            if (!totalEarnedCents.isNaN()) {
+                serverEarnedAmount = totalEarnedCents / 100.0
+            }
+            val count = data.optInt("completedJobsCount", -1)
+            if (count >= 0) {
+                serverCompletedCount = count
+            }
+        }
+    }
+
+    val completedJobs = remember(bookings) {
+        bookings.filter { it.status == BookingStatus.COMPLETED }
+    }
+    val completedJobsDisplayCount = serverCompletedCount ?: completedJobs.size
+    val todayNetEarnings = remember(completedJobs, serverEarnedAmount) {
+        serverEarnedAmount ?: completedJobs.sumOf { it.totalAmount * 0.85 }
+    }
 
     Scaffold(
         topBar = {
@@ -110,7 +141,12 @@ fun TechDashboardScreen(
                     }
                     Switch(
                         checked = isOnline,
-                        onCheckedChange = { isOnline = it }
+                        onCheckedChange = {
+                            isOnline = it
+                            coroutineScope.launch {
+                                ApiClient.updateDutyStatus(if (it) "ONLINE" else "OFFLINE")
+                            }
+                        }
                     )
                 }
             }
@@ -146,7 +182,7 @@ fun TechDashboardScreen(
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "$0.00",
+                        text = ApiClient.formatCurrency(todayNetEarnings),
                         style = MaterialTheme.typography.headlineLarge.copy(
                             fontWeight = FontWeight.Black,
                             fontSize = 32.sp
@@ -155,7 +191,7 @@ fun TechDashboardScreen(
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "0 Completed Jobs Today • Verified Pro",
+                        text = "$completedJobsDisplayCount Completed Jobs • Verified Pro",
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontWeight = FontWeight.Bold,
                             color = extraColors.verified

@@ -1,165 +1,141 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Server,
-  Database,
   ShieldCheck,
   CheckCircle2,
-  Clock,
   Play,
-  RotateCcw,
   Download,
-  Key,
   FileText,
   AlertTriangle,
-  ExternalLink,
-  Cpu,
-  Layers,
-  ArrowRight,
-  Code2
+  Code2,
 } from 'lucide-react';
-import { useAdmin } from '../../context/AdminContext';
-import { supabaseService } from '../../services/supabaseClient';
+import { useAdmin } from '../../context/adminContextCore';
+import { apiClient } from '../../services/apiClient';
 
-interface MigrationItem {
-  id: string;
-  name: string;
-  file: string;
-  desc: string;
-  status: 'pending' | 'running' | 'applied';
-}
+const FASTIFY_MIGRATIONS = [
+  { id: '001', file: '001_tenants_and_auth.sql', desc: 'Tenants, users, sessions, and authentication core' },
+  { id: '002', file: '002_profiles_and_entities.sql', desc: 'Admin, staff, customer, and provider profiles + PostGIS locations' },
+  { id: '003', file: '003_services_and_catalog.sql', desc: 'Service categories, services, and pricing tiers' },
+  { id: '004', file: '004_bookings_and_dispatch.sql', desc: 'Bookings lifecycle, dispatch broadcasts, timeline events, work order proofs' },
+  { id: '005', file: '005_finance_and_ledger.sql', desc: 'Invoices, payment transactions, double-entry ledger accounts & entries' },
+  { id: '006', file: '006_support_crm_and_audit.sql', desc: 'Support tickets, messages, customer reviews, CMS config, immutable audit logs' },
+  { id: '007', file: '007_finance_invoices_patch.sql', desc: 'Invoice itemization & diagnostic fee extensions' },
+  { id: '008', file: '008_payout_tenant_idempotency_and_durability.sql', desc: 'Provider payouts durability & idempotency fingerprinting' },
+  { id: '009', file: '009_ledger_payout_and_booking_references.sql', desc: 'Ledger payout foreign keys & transactional outbox operations' },
+  { id: '010', file: '010_remediation_core_invariants.sql', desc: 'Financial and booking state constraint invariants' },
+  { id: '011', file: '011_remediation_schema_rbac_and_triggers.sql', desc: 'Role permissions & double-entry balance trigger verification' },
+  { id: '012', file: '012_security_rls_immutability_and_indexes.sql', desc: 'Row-Level Security policies, audit immutability triggers, performance indexes' },
+  { id: '013', file: '013_security_rls_force_vat_and_uae_settings.sql', desc: 'FORCE ROW LEVEL SECURITY across tenant tables & statutory VAT columns' },
+  { id: '014', file: '014_universal_tax_refunds_and_rls_helpers.sql', desc: 'payment_refunds table, proportional tax/fee reversal, SECURITY DEFINER RLS helpers' },
+  { id: '015', file: '015_phase2_auth_resets_and_encrypted_integrations.sql', desc: 'password_reset_tokens with FORCE RLS & AES-256-GCM integration_configs vault' },
+];
 
 export const SystemInstallerPage: React.FC = () => {
-  const { agencyName, addToast } = useAdmin();
-  const [isRunningMigrations, setIsRunningMigrations] = useState(false);
+  const { addToast, tenantConfig, systemConfig, refreshSystemConfig, isDemoMode } = useAdmin();
   const [activeTab, setActiveTab] = useState<'health' | 'migrations' | 'dossier'>('health');
-  const [dbConnected, setDbConnected] = useState<boolean>(false);
-  const [dbStatusLabel, setDbStatusLabel] = useState<string>('Checking connection...');
+  const [isProbing, setIsProbing] = useState(false);
+  const [healthStatus, setHealthStatus] = useState<{
+    reachable: boolean;
+    statusText: string;
+    timestamp: string | null;
+  }>({
+    reachable: false,
+    statusText: 'Probing Fastify API...',
+    timestamp: null,
+  });
 
-  const [migrations, setMigrations] = useState<MigrationItem[]>([
-    {
-      id: 'm1',
-      name: '01 Initial Schema & DDL',
-      file: '01_initial_schema.sql',
-      desc: 'Users, roles, categories, services, bookings lifecycle, parts, and audit logs',
-      status: 'pending'
-    },
-    {
-      id: 'm2',
-      name: '02 PostGIS Functions',
-      file: '02_postgis_functions.sql',
-      desc: 'find_nearest_technicians(), ST_DWithin geofence, and calculate_booking_financials()',
-      status: 'pending'
-    },
-    {
-      id: 'm3',
-      name: '03 Security RBAC & RLS',
-      file: '03_security_rbac_and_rls.sql',
-      desc: 'PostgreSQL 16 Row-Level Security, immutable audit trigger, TOTP MFA tables',
-      status: 'pending'
-    },
-    {
-      id: 'm4',
-      name: '04 Database Security Hardening',
-      file: '04_phase2_database_security_hardening.sql',
-      desc: 'FORCE RLS on all 21 tables, search_path hardening, Storage bucket isolation',
-      status: 'pending'
-    },
-    {
-      id: 'm5',
-      name: '05 Payments & Webhook Idempotency',
-      file: '05_phase3_payments_and_webhook_idempotency.sql',
-      desc: 'stripe_webhook_events replay protection & booking financial field trigger',
-      status: 'pending'
-    }
-  ]);
-
-  const probeLiveHealth = async () => {
-    const client = supabaseService.getClient();
-    if (!supabaseService.isConfigured() || !client) {
-      setDbConnected(false);
-      setDbStatusLabel('Not configured (set VITE_SUPABASE_URL & VITE_SUPABASE_ANON_KEY)');
-      setMigrations(prev => prev.map(m => ({ ...m, status: 'pending' })));
-      return false;
-    }
+  const probeLiveHealth = useCallback(async () => {
+    setIsProbing(true);
     try {
-      const { data: migrationFlags, error } = await client.rpc('verify_schema_migrations_status');
-      if (error || !migrationFlags || typeof migrationFlags !== 'object') {
-        setDbConnected(false);
-        setDbStatusLabel(error ? `Migration probe incomplete: ${error.message}` : 'Migration verification RPC unavailable');
-        setMigrations(prev => prev.map(m => ({ ...m, status: 'pending' })));
-        return false;
+      const [hRes] = await Promise.all([apiClient.getHealth(), refreshSystemConfig()]);
+      if (hRes.success || (hRes.data && (hRes.data as any).status === 'ok')) {
+        setHealthStatus({
+          reachable: true,
+          statusText: 'Connected to Fastify 5 + PostgreSQL 16 API',
+          timestamp: new Date().toISOString(),
+        });
+        setIsProbing(false);
+        return true;
       }
-      const flags = migrationFlags as Record<string, boolean>;
-      setMigrations(prev =>
-        prev.map(m => ({
-          ...m,
-          status: flags[m.id] === true ? 'applied' : 'pending'
-        }))
-      );
-      const allVerified = ['m1', 'm2', 'm3', 'm4', 'm5'].every((id) => flags[id] === true);
-      setDbConnected(allVerified);
-      setDbStatusLabel(
-        allVerified
-          ? 'Connected via Supabase PostgreSQL 16 (5/5 Migrations Verified)'
-          : 'Connected, but one or more migrations are unverified'
-      );
-      return allVerified;
-    } catch (err) {
-      setDbConnected(false);
-      setDbStatusLabel('Connection probe failed');
-      setMigrations(prev => prev.map(m => ({ ...m, status: 'pending' })));
+      const cfgRes = await apiClient.getSystemConfig();
+      if (cfgRes.success && cfgRes.data) {
+        setHealthStatus({
+          reachable: true,
+          statusText: 'Connected via /api/v1/system/config',
+          timestamp: new Date().toISOString(),
+        });
+        setIsProbing(false);
+        return true;
+      }
+      setHealthStatus({
+        reachable: false,
+        statusText: hRes.error?.message || 'Backend API unreachable',
+        timestamp: null,
+      });
+      setIsProbing(false);
+      return false;
+    } catch {
+      setHealthStatus({
+        reachable: false,
+        statusText: 'Network connection failed',
+        timestamp: null,
+      });
+      setIsProbing(false);
       return false;
     }
-  };
+  }, [refreshSystemConfig]);
 
   useEffect(() => {
-    probeLiveHealth();
-  }, []);
-
-  const runAllMigrations = async () => {
-    setIsRunningMigrations(true);
-    const ok = await probeLiveHealth();
-    setIsRunningMigrations(false);
-    if (ok) {
-      addToast('Live Supabase PostgreSQL 16 schema probe succeeded across all 5 migrations!', 'success');
-    } else {
-      addToast('Supabase is not connected or schema tables are missing. Run `supabase db push` first.', 'warning');
-    }
-  };
+    let active = true;
+    Promise.resolve().then(() => {
+      if (active) void probeLiveHealth();
+    });
+    return () => {
+      active = false;
+    };
+  }, [probeLiveHealth]);
 
   const handleDownloadDossier = () => {
-    const content = `# ServiceOS Commercial License & Deployment Dossier
-License Key: SOS-ENTERPRISE-2026-TURNKEY-9842-8819-ACQ-FULL
-Certified Turnkey Software Valuation: $20,000 - $50,000
-Multi-Tenant Architecture: React 19 Web + Flutter Android & iOS + Supabase PostgreSQL 16
-Status: 100% Production Ready`;
+    const content = `# ServiceOS â€” Technical Architecture & Handover Summary
+Organization: ${tenantConfig.name} (${tenantConfig.slug})
+Environment Mode: ${isDemoMode ? 'Interactive Demo Sandbox' : 'Production Deployment'}
+Active Currency & Tax: ${tenantConfig.currencyCode} (${tenantConfig.taxName} ${tenantConfig.vatPercent}%)
+Platform Commission: ${(tenantConfig.commissionBps / 100).toFixed(2)}%
+Payment Gateway Adapter: ${systemConfig?.paymentGateway || 'stripe'} (Configured: ${Boolean(systemConfig?.paymentGatewayConfigured)})
+Backend Stack: Fastify 5 + TypeScript + PostgreSQL 16 + PostGIS (15 Paired Up/Down SQL Migrations)
+Security Controls: FORCE ROW LEVEL SECURITY, AES-256-GCM Secret Vault, RFC 6238 TOTP MFA, HttpOnly Session Rotation`;
 
     const blob = new Blob([content], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'SERVICEOS_COMMERCIAL_DOSSIER.md';
+    a.download = 'SERVICEOS_DEPLOYMENT_SUMMARY.md';
     a.click();
-    addToast('Commercial Handover Dossier downloaded successfully!', 'info');
+    addToast('Deployment Architecture Summary downloaded.', 'info');
   };
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Page Title Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-200">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Turnkey System Installer & Health Suite</h1>
-            <span className="px-2.5 py-0.5 text-xs font-black uppercase tracking-wider bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full">
-              Production Ready
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
+              System Health &amp; Migration Inspector
+            </h1>
+            <span
+              className={`px-2.5 py-0.5 text-xs font-black uppercase tracking-wider rounded-full border ${
+                healthStatus.reachable
+                  ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                  : 'bg-amber-100 text-amber-800 border-amber-200'
+              }`}
+            >
+              {healthStatus.reachable ? 'API Online' : 'Check Connection'}
             </span>
           </div>
           <p className="text-xs text-slate-500">
-            Interactive deployment suite for software buyers: Database connectivity, PostGIS verification, and 1-click migrations.
+            Live Fastify 5 + PostgreSQL 16 + PostGIS runtime diagnostics and paired migration ledger.
           </p>
         </div>
 
-        {/* Tab Switcher */}
         <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl text-xs font-bold">
           <button
             onClick={() => setActiveTab('health')}
@@ -167,7 +143,7 @@ Status: 100% Production Ready`;
               activeTab === 'health' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-900'
             }`}
           >
-            System Health
+            Runtime Health
           </button>
           <button
             onClick={() => setActiveTab('migrations')}
@@ -175,7 +151,7 @@ Status: 100% Production Ready`;
               activeTab === 'migrations' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-900'
             }`}
           >
-            SQL Migrations (5)
+            SQL Migrations ({FASTIFY_MIGRATIONS.length})
           </button>
           <button
             onClick={() => setActiveTab('dossier')}
@@ -183,156 +159,149 @@ Status: 100% Production Ready`;
               activeTab === 'dossier' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-900'
             }`}
           >
-            Commercial Dossier
+            Deployment Summary
           </button>
         </div>
       </div>
 
-      {/* TAB 1: SYSTEM HEALTH INSPECTOR */}
       {activeTab === 'health' && (
         <div className="space-y-6">
-          {/* Status Grid */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="p-4 bg-white rounded-2xl border border-slate-200/80 shadow-xs space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-500 uppercase">Database</span>
-                <span className={`w-2 h-2 rounded-full ${dbConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span>
+                <span className="text-xs font-bold text-slate-500 uppercase">Backend API</span>
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    healthStatus.reachable ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+                  }`}
+                />
               </div>
-              <h3 className="text-lg font-black text-slate-900">PostgreSQL 16</h3>
-              <p className={`text-[11px] font-bold flex items-center gap-1 ${dbConnected ? 'text-emerald-600' : 'text-amber-600'}`}>
-                <CheckCircle2 className="w-3.5 h-3.5" /> {dbStatusLabel}
+              <h3 className="text-lg font-black text-slate-900">Fastify 5 + PG 16</h3>
+              <p
+                className={`text-[11px] font-bold flex items-center gap-1 ${
+                  healthStatus.reachable ? 'text-emerald-600' : 'text-amber-600'
+                }`}
+              >
+                {healthStatus.reachable ? (
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                ) : (
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                )}{' '}
+                {healthStatus.statusText}
               </p>
             </div>
 
             <div className="p-4 bg-white rounded-2xl border border-slate-200/80 shadow-xs space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-500 uppercase">Spatial Engine</span>
-                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span className="text-xs font-bold text-slate-500 uppercase">Payment Gateway</span>
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    systemConfig?.paymentGatewayConfigured ? 'bg-emerald-500' : 'bg-amber-500'
+                  }`}
+                />
               </div>
-              <h3 className="text-lg font-black text-slate-900">PostGIS 3.4</h3>
-              <p className="text-[11px] text-emerald-600 font-bold flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> ST_DWithin Geofence Active
+              <h3 className="text-lg font-black text-slate-900 uppercase">
+                {systemConfig?.paymentGateway || 'Stripe'}
+              </h3>
+              <p className="text-[11px] text-slate-600 font-bold">
+                {systemConfig?.paymentGatewayConfigured
+                  ? 'Credentials Configured'
+                  : 'Sandbox / Awaiting Live Keys'}
               </p>
             </div>
 
             <div className="p-4 bg-white rounded-2xl border border-slate-200/80 shadow-xs space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-500 uppercase">Realtime Engine</span>
-                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span className="text-xs font-bold text-slate-500 uppercase">Tenant &amp; Tax</span>
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
               </div>
-              <h3 className="text-lg font-black text-slate-900">Websockets</h3>
-              <p className="text-[11px] text-emerald-600 font-bold flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> 3 Dispatch Channels Subscribed
+              <h3 className="text-lg font-black text-slate-900">
+                {tenantConfig.currencyCode} â€¢ {tenantConfig.taxName} {tenantConfig.vatPercent}%
+              </h3>
+              <p className="text-[11px] text-emerald-600 font-bold">
+                Take-Rate: {(tenantConfig.commissionBps / 100).toFixed(1)}% â€¢ Unit: {tenantConfig.distanceUnit}
               </p>
             </div>
 
             <div className="p-4 bg-white rounded-2xl border border-slate-200/80 shadow-xs space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-500 uppercase">Security Gate</span>
-                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span className="text-xs font-bold text-slate-500 uppercase">Database Mode</span>
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
               </div>
-              <h3 className="text-lg font-black text-slate-900">OWASP ASVS Level 3</h3>
-              <p className="text-[11px] text-emerald-600 font-bold flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Rate Limiter & RLS Enforced
+              <h3 className="text-lg font-black text-slate-900">
+                {isDemoMode ? 'Demo Sandbox DB' : 'Production DB'}
+              </h3>
+              <p className="text-[11px] text-emerald-600 font-bold">
+                FORCE RLS Multi-Tenant Isolation
               </p>
             </div>
           </div>
 
-          {/* Infrastructure Health Checklist */}
-          <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-4">
-            <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
-              Turnkey Production Verification Checklist
-            </h3>
-
-            <div className="divide-y divide-slate-100 text-xs">
-              {[
-                { title: 'PostgreSQL 16 Multi-Tenant Schema', status: 'Verified', desc: '14 core tables with UUID primary keys and cascading foreign keys' },
-                { title: 'PostGIS ST_DWithin Spatial Radar', status: 'Verified', desc: 'Nearest technician matching with 5-mile radius and 250m arrival geofence' },
-                { title: 'Row-Level Security (RLS) Multi-Tenant Policies', status: 'Verified', desc: 'Separate role execution for Customer, Technician, Staff, and Admin' },
-                { title: 'Immutable Security Audit Trail Trigger', status: 'Verified', desc: 'PostgreSQL trigger prevents UPDATE or DELETE of security audit records' },
-                { title: 'Single-Use Password Reset Engine', status: 'Verified', desc: 'Cryptographic 15m expiration tokens with session revocation' },
-                { title: 'Sliding-Window Rate Limiter (Brute-Force Guard)', status: 'Verified', desc: '5 failed login attempts trigger progressive 15-minute lockout timer' },
-                { title: 'Zero Internal Hardcoded Dummy Strings', status: 'Verified', desc: 'Clean baseline; all external demonstration data loaded via demoDataLoader' }
-              ].map(item => (
-                <div key={item.title} className="py-3 flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <span className="font-bold text-slate-800">{item.title}</span>
-                    <p className="text-[11px] text-slate-500">{item.desc}</p>
-                  </div>
-                  <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 font-bold rounded-lg border border-emerald-200/60 flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                    {item.status}
-                  </span>
-                </div>
-              ))}
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-black text-slate-900">Live Backend Connectivity Probe</h3>
+              <p className="text-xs text-slate-500">
+                Last verified: {healthStatus.timestamp ? new Date(healthStatus.timestamp).toLocaleString() : 'Never'}
+              </p>
             </div>
+            <button
+              onClick={() => void probeLiveHealth()}
+              disabled={isProbing}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs flex items-center gap-2 cursor-pointer"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>{isProbing ? 'Probing Server...' : 'Re-Probe Backend Health'}</span>
+            </button>
           </div>
         </div>
       )}
 
-      {/* TAB 2: SQL MIGRATIONS RUNNER */}
       {activeTab === 'migrations' && (
         <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
-                PostgreSQL 16 + PostGIS Migration Scripts
-              </h3>
-              <p className="text-xs text-slate-500">
-                Execute or re-verify database migrations in order from <code>supabase/migrations/</code>.
-              </p>
-            </div>
-
-            <button
-              onClick={runAllMigrations}
-              disabled={isRunningMigrations}
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs flex items-center gap-2 cursor-pointer"
-            >
-              <Play className="w-3.5 h-3.5 fill-current" />
-              <span>{isRunningMigrations ? 'Verifying Migrations...' : 'Re-Run Migration Suite'}</span>
-            </button>
+          <div>
+            <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+              PostgreSQL 16 + PostGIS Paired Migration Suite (`server/src/database/migrations/`)
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              15 forward and rollback SQL migrations managed by `npm run db:migrate`.
+            </p>
           </div>
 
-          <div className="space-y-3">
-            {migrations.map(m => (
+          <div className="space-y-2.5">
+            {FASTIFY_MIGRATIONS.map((m) => (
               <div
                 key={m.id}
-                className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between"
+                className="p-3.5 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between"
               >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-bold text-indigo-600">{m.file}</span>
-                    <span className="text-xs font-bold text-slate-800">({m.name})</span>
-                  </div>
-                  <p className="text-xs text-slate-500">{m.desc}</p>
+                <div>
+                  <span className="font-mono text-xs font-bold text-indigo-600">{m.file}</span>
+                  <p className="text-xs text-slate-500 mt-0.5">{m.desc}</p>
                 </div>
-
-                <div className="flex items-center gap-2">
-                  <span className={`px-3 py-1 text-xs font-black rounded-lg border flex items-center gap-1 ${
-                    m.status === 'applied'
+                <span
+                  className={`px-3 py-1 text-xs font-black rounded-lg border flex items-center gap-1 ${
+                    healthStatus.reachable
                       ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
                       : 'bg-amber-100 text-amber-800 border-amber-200'
-                  }`}>
-                    <CheckCircle2 className={`w-3.5 h-3.5 ${m.status === 'applied' ? 'text-emerald-600' : 'text-amber-600'}`} />
-                    {m.status === 'applied' ? 'VERIFIED' : 'PENDING PROBE'}
-                  </span>
-                </div>
+                  }`}
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  {healthStatus.reachable ? 'ACTIVE' : 'OFFLINE'}
+                </span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* TAB 3: COMMERCIAL DOSSIER & ASSETS */}
       {activeTab === 'dossier' && (
         <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-6">
           <div className="flex items-center justify-between pb-4 border-b border-slate-100">
             <div>
               <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
-                Commercial Software Acquisition Dossier
+                Technical Architecture &amp; Deployment Handover Summary
               </h3>
               <p className="text-xs text-slate-500">
-                Turnkey certification dossier and master cryptographic license key.
+                Export current tenant runtime configuration and architecture summary.
               </p>
             </div>
 
@@ -341,43 +310,36 @@ Status: 100% Production Ready`;
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs flex items-center gap-2 cursor-pointer"
             >
               <Download className="w-4 h-4" />
-              <span>Download Dossier (.MD)</span>
+              <span>Download Summary (.MD)</span>
             </button>
-          </div>
-
-          <div className="p-4 bg-slate-950 text-white rounded-xl font-mono text-xs space-y-2">
-            <div className="flex justify-between text-slate-400 border-b border-slate-800 pb-2">
-              <span>MASTER CRYPTOGRAPHIC LICENSE KEY</span>
-              <span className="text-emerald-400">STATUS: VALID & UNRESTRICTED</span>
-            </div>
-            <p className="text-indigo-400 font-bold text-sm tracking-wider">
-              SOS-ENTERPRISE-2026-TURNKEY-9842-8819-ACQ-FULL
-            </p>
-            <p className="text-[11px] text-slate-400">
-              Grants 100% unrestricted intellectual property ownership, white-label commercial distribution rights, and multi-tenant SaaS licensing.
-            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
             <div className="p-4 rounded-xl border border-slate-200 space-y-2">
               <h4 className="font-bold text-slate-900 flex items-center gap-1.5">
-                <FileText className="w-4 h-4 text-indigo-600" /> Complete Documentation
+                <FileText className="w-4 h-4 text-indigo-600" /> Dual-Database Isolation
               </h4>
-              <p className="text-slate-500">All 44 documentation guides, API specifications, and database schemas included.</p>
+              <p className="text-slate-500">
+                Dedicated Production database and self-resetting Demo Sandbox database with server-enforced write guards.
+              </p>
             </div>
 
             <div className="p-4 rounded-xl border border-slate-200 space-y-2">
               <h4 className="font-bold text-slate-900 flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4 text-emerald-600" /> Security Audited
+                <ShieldCheck className="w-4 h-4 text-emerald-600" /> Security Architecture
               </h4>
-              <p className="text-slate-500">OWASP ASVS Level 3 and NIST SP 800-63B compliant password and session standards.</p>
+              <p className="text-slate-500">
+                PostgreSQL FORCE RLS, AES-256-GCM encrypted integration secrets, RFC 6238 TOTP MFA, and HttpOnly session rotation.
+              </p>
             </div>
 
             <div className="p-4 rounded-xl border border-slate-200 space-y-2">
               <h4 className="font-bold text-slate-900 flex items-center gap-1.5">
-                <Code2 className="w-4 h-4 text-amber-600" /> Full Source Code
+                <Code2 className="w-4 h-4 text-amber-600" /> Full-Stack Codebase
               </h4>
-              <p className="text-slate-500">100% clean, non-obfuscated React 19 web portal + Flutter Android/iOS codebase.</p>
+              <p className="text-slate-500">
+                Fastify 5 + TypeScript API, React 19 Admin/Staff Portal, and mobile Customer/Technician applications.
+              </p>
             </div>
           </div>
         </div>

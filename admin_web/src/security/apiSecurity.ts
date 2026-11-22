@@ -47,9 +47,9 @@ const XSS_PATTERNS = [
 ];
 
 const PATH_TRAVERSAL_PATTERNS = [
-  /\.\.[\/\\]/,
-  /%2e%2e[\/\\]/i,
-  /%252e%252e[\/\\]/i
+  /\.\.[/\\]/,
+  /%2e%2e[/\\]/i,
+  /%252e%252e[/\\]/i
 ];
 
 export interface ThreatScanResult {

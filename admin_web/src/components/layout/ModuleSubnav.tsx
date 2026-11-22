@@ -1,5 +1,5 @@
 import React from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { MODULES_8 } from '../../data/pagesMaster';
 import { STAFF_MODULES } from '../../data/staffPagesMaster';
 

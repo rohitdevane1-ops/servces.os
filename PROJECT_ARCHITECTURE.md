@@ -1,8 +1,8 @@
 # ServicePro OS — Enterprise Technical Architecture Specification
 
-> **Document Version**: 2.0.0 (Enterprise Rebuild Release)  
+> **Document Version**: 3.0.0 (Universal Turnkey & Dual-DB Release)  
 > **Target Audience**: Technical Due Diligence Teams, Lead Software Architects, Systems Integrators  
-> **System Classification**: Multi-Tenant On-Demand Service Dispatch & General Ledger Platform  
+> **System Classification**: Multi-Tenant On-Demand Service Dispatch, PostGIS Spatial Radar & Double-Entry General Ledger Platform  
 
 ---
 
@@ -11,28 +11,29 @@
 ```mermaid
 flowchart TD
     subgraph Client Tier
-        Web["Admin & Staff Web Portal\n(React 19 + TypeScript + Tailwind)"]
+        Web["Admin & Staff Web Portal\n(React 19 + TypeScript + Tailwind + RTL/LTR)"]
         FlutterApp["Flutter Mobile App\n(iOS & Android / Riverpod)"]
-        AndroidApp["Native Android App\n(Kotlin + Jetpack Compose)"]
+        AndroidApp["Native Android App\n(Kotlin + Jetpack Compose Material 3)"]
     end
 
     subgraph Security & API Gateway
-        NginxProxy["Reverse Proxy & SSL Termination\n(Nginx / Cloudflare)"]
-        FastifyGateway["Fastify 5 REST API Server\n(Helmet + RateLimit + CORS + JWT)"]
+        NginxProxy["Nginx Reverse Proxy\n(^~ /api/ Priority + CSP + Gzip)"]
+        FastifyGateway["Fastify 5 REST API Server\n(Helmet + RateLimit + CORS + JWT + DemoGuard)"]
     end
 
     subgraph Core Domain Services
-        AuthModule["Auth & RBAC Service\n(bcryptjs + SHA-256 + TOTP MFA)"]
-        DispatchModule["Spatial Dispatch Engine\n(PostGIS 15-Mile Radar + Timed Broadcast)"]
-        BookingStateMachine["Booking Lifecycle State Machine\n(PIN Verification + Dual Photo Proofs)"]
-        LedgerEngine["Double-Entry General Ledger\n(Debit/Credit Enforced Balance)"]
-        SupportModule["Support Desk & Moderation\n(Threaded CRM + Reviews)"]
+        AuthModule["Auth, RBAC & MFA Service\n(bcryptjs + SHA-256 + AES-256-GCM TOTP + Anti-Enum Reset)"]
+        DispatchModule["Spatial Dispatch Engine\n(PostGIS ST_DWithin Radar + 60s Broadcast + 500m Geofence)"]
+        BookingStateMachine["Booking & Outbox State Machine\n(SKIP LOCKED Outbox + 4-Digit Safety PIN + Photo Proofs)"]
+        LedgerEngine["Double-Entry General Ledger & Refunds\n(Accounts 1010/2010/2020/2030/4010 + Proportional Reversal)"]
+        SystemUploadsModule["System Config, Vault & Signed Uploads\n(HMAC-SHA256 Signed Media + AES-256-GCM Integrations)"]
     end
 
     subgraph Data & Storage Persistence
-        PostgresDB[("PostgreSQL 16 + PostGIS\n(Spatial GIST Indexing)")]
-        RedisCache[("Redis 7 In-Memory Cache\n(Ephemeral Broadcasts)")]
-        StorageBucket[("Object Storage\n(S3 / Supabase Storage)")]
+        ProdPostgres[("Production PostgreSQL 16 + PostGIS\n(FORCE ROW LEVEL SECURITY / DATABASE_URL)")]
+        DemoPostgres[("Isolated Demo Sandbox PostgreSQL 16\n(APP_DEMO_MODE=true / DEMO_DATABASE_URL)")]
+        RedisCache[("Redis 7 In-Memory Cache\n(Rate Limiting & Ephemeral State)")]
+        UploadsVolume[("Signed Media Storage Volume\n(/app/uploads + HMAC URL Verification)")]
     end
 
     Web -->|HTTPS / JSON| NginxProxy
@@ -44,96 +45,96 @@ flowchart TD
     FastifyGateway --> DispatchModule
     FastifyGateway --> BookingStateMachine
     FastifyGateway --> LedgerEngine
-    FastifyGateway --> SupportModule
+    FastifyGateway --> SystemUploadsModule
 
-    DispatchModule --> PostgresDB
-    BookingStateMachine --> PostgresDB
-    LedgerEngine --> PostgresDB
-    SupportModule --> PostgresDB
+    AuthModule --> ProdPostgres
+    DispatchModule --> ProdPostgres
+    BookingStateMachine --> ProdPostgres
+    LedgerEngine --> ProdPostgres
+    SystemUploadsModule --> ProdPostgres
+    SystemUploadsModule --> UploadsVolume
+    FastifyGateway -.->|When APP_DEMO_MODE=true| DemoPostgres
     DispatchModule -.-> RedisCache
-    BookingStateMachine -.-> StorageBucket
 ```
 
 ---
 
-## 2. Database Domain Entity Model (20 Core Entities)
+## 2. Database Migration Architecture (15 Paired Up/Down Migrations)
 
-The database schema is partitioned into 6 structured migration scripts with exact rollback pairs:
+The PostgreSQL 16 + PostGIS schema is partitioned into **15 forward migrations (`001`–`015`)** with **15 matching `.down.sql` rollback scripts** in `server/src/database/migrations/`:
 
 1. **`001_tenants_and_auth.sql`**:
-   - `tenants`: Multi-tenant boundary with unique subdomain, branding, currency, commission basis points (`default_platform_commission_bps`), and active flags.
-   - `users`: Core authentication identity (`email`, `phone_number`, `password_hash`, `role`, `mfa_enabled`, `is_active`).
-   - `user_sessions`: Refresh token rotation store with SHA-256 token hashing, client IP, and device fingerprints.
-   - `user_mfa_credentials`: RFC 6238 TOTP secrets and recovery codes.
-   - `permissions` & `role_permissions`: Granular operation-level RBAC matrix.
-
+   - `tenants`: Multi-tenant boundary with subdomain `slug`, `custom_domain`, branding, currency, commission basis points (`default_platform_commission_bps`), and active flags.
+   - `users`, `user_sessions`, `user_mfa_credentials`, `permissions`, `role_permissions`.
 2. **`002_profiles_and_entities.sql`**:
-   - `admin_profiles` & `staff_profiles`: Operator metadata, assigned territory, permissions.
-   - `customer_profiles`: Default billing address, courtesy credit, Stripe customer identifier.
-   - `provider_profiles`: Trade licenses, vehicle details, hourly rate, Stripe Connect Express payout account.
-   - `provider_locations`: PostGIS `GEOGRAPHY(Point, 4326)` with GIST spatial index for real-time fleet radar search.
-   - `provider_shifts`: Working shift schedules by day of week.
-   - `customer_addresses`: Geocoded customer service locations with PostGIS spatial indexing.
-
+   - `admin_profiles`, `staff_profiles`, `customer_profiles`, `provider_profiles`.
+   - `provider_locations` & `customer_addresses`: PostGIS `GEOGRAPHY(Point, 4326)` with GIST spatial indexing.
+   - `provider_shifts`: Day-of-week shift schedules.
 3. **`003_services_and_catalog.sql`**:
-   - `service_categories`: Active trade verticals (Plumbing, Electrical, HVAC, etc.) with SVG icons and banners.
-   - `services`: Base pricing, estimated durations, emergency priority multipliers.
-   - `service_pricing_tiers`: Standard, Urgent, and Emergency multiplier schedules.
-
+   - `service_categories`, `services`, `service_pricing_tiers` (`STANDARD`, `URGENT`, `EMERGENCY`).
 4. **`004_bookings_and_dispatch.sql`**:
-   - `bookings`: State machine controlling lifecycle (`REQUESTED` -> `BROADCASTING` -> `ASSIGNED` -> `EN_ROUTE` -> `ON_SITE` -> `COMPLETED`).
-   - `dispatch_broadcasts`: 60-second timed dispatch offers to nearby technicians with transactional race-condition lock.
-   - `booking_timeline_events`: Immutable audit trail for every status transition.
-   - `work_order_proofs`: Before/after photographic evidence, diagnostic checklist, and customer cryptographic signature.
-
+   - `bookings`, `dispatch_broadcasts`, `booking_timeline_events`, `work_order_proofs`.
 5. **`005_finance_and_ledger.sql`**:
-   - `invoices`: Itemized financial breakdown (`labor_subtotal_cents`, `parts_subtotal_cents`, `tax_total_cents`, `discount_cents`).
-   - `invoice_items`: Line item audit rows.
-   - `payment_transactions`: Stripe pre-authorization hold and capture records with unique idempotency keys.
-   - `webhook_events`: Inbound webhook idempotency tracking.
-   - `ledger_accounts`: 5-category chart of accounts (`ASSET`, `LIABILITY`, `EQUITY`, `REVENUE`, `EXPENSE`).
-   - `ledger_entries`: Strict double-entry journal requiring different debit and credit accounts.
-   - `provider_payouts`: Stripe Connect transfer tracking.
-
+   - `invoices`, `invoice_items`, `payment_transactions`, `webhook_events`, `ledger_accounts`, `ledger_entries`, `provider_payouts`.
 6. **`006_support_crm_and_audit.sql`**:
-   - `support_tickets`: Customer support inquiry tickets with priority levels.
-   - `ticket_messages`: Real-time conversation thread records.
-   - `customer_reviews`: 1–5 star ratings, comments, and admin moderation flags.
-   - `notification_logs`: Delivery tracking for email and SMS notifications.
-   - `audit_logs`: Immutable security audit log tracking administrative modifications.
-   - `tenant_cms_configs`: Dynamic white-label branding, hero banner copy, and promo coupons.
-   - `installer_provision_logs`: Tamper-proof log sealing the `/installer` provisioning endpoint after initial deployment.
+   - `support_tickets`, `ticket_messages`, `customer_reviews`, `notification_logs`, `audit_logs`, `tenant_cms_configs`, `installer_provision_logs`.
+7. **`007_finance_invoices_patch.sql`**:
+   - Adds `invoices.updated_at` and expands `payment_transactions` state check (`VOIDED`, `DISCREPANCY_QUARANTINED`), with data-loss guardrails in `007.down.sql`.
+8. **`008_payout_tenant_idempotency_and_durability.sql`**:
+   - Enforces compound `UNIQUE (tenant_id, idempotency_key)` and request fingerprinting on `provider_payouts`.
+9. **`009_ledger_payout_and_booking_references.sql`**:
+   - Adds `payout_id`, `booking_id`, and `posting_type` with unique partial indexes (`uq_ledger_payout_posting`, `uq_ledger_tx_posting`) to eliminate text-matching ledger deduplication.
+10. **`010_payment_outbox_and_state_hardening.sql`**:
+    - Durable payment outbox (`payment_outbox`) with `FOR UPDATE SKIP LOCKED` lease worker, atomic PIN attempt counters, and strict booking status constraints.
+11. **`011_remediation_schema_rbac_and_triggers.sql`**:
+    - Canonical role normalization (`ADMIN`, `STAFF`, `TECHNICIAN`, `CUSTOMER`) and automatic `updated_at` triggers.
+12. **`012_security_rls_immutability_and_indexes.sql`**:
+    - Append-only immutability trigger on `ledger_entries` (`prevent_ledger_entry_mutation`) and tenant Row-Level Security policies.
+13. **`013_security_rls_force_vat_and_uae_settings.sql`**:
+    - Enables `FORCE ROW LEVEL SECURITY` across all tenant-scoped tables, adds regional tax/locale metadata on `tenants`, and seeds Account `2030` (`Tax / VAT Payable Liability`).
+14. **`014_universal_tax_refunds_and_rls_helpers.sql`**:
+    - Adds `payment_refunds` table with durable state machine (`PROCESSING` -> `SUCCEEDED` / `FAILED`), `refunded_amount_cents` tracking, and `SECURITY DEFINER` RLS auth helpers (`app_auth_login_lookup`, `app_auth_session_lookup`, `app_resolve_booking_tenant`).
+15. **`015_phase2_auth_resets_and_encrypted_integrations.sql`**:
+    - Adds `password_reset_tokens` (SHA-256 token hashes with `SECURITY DEFINER` anti-enumeration lifecycle helpers) and expands `integration_configs` with AES-256-GCM encrypted third-party credential vault columns plus `public_settings` JSONB.
 
 ---
 
-## 3. Financial Engine & Double-Entry Accounting Architecture
+## 3. Financial Engine, Pre-Tax Commission & Double-Entry Ledger
 
-To eliminate rounding leakage, ServicePro OS enforces integer cent calculations (`BIGINT`) across all financial tables.
+To eliminate floating-point rounding leakage, ServicePro OS stores all monetary quantities as 64-bit integer cents (`BIGINT`) and serializes them safely across REST responses.
 
-### Transaction Posting Lifecycle
+### Universal Pre-Tax Commission & Account `2030` Tax Accounting
+
+Consider a completed booking with a pre-tax subtotal of `10,000` cents (`100.00`), a `5%` VAT rate (`500` bps = `500` cents tax), a gross invoice total of `10,500` cents (`105.00`), and a `15%` platform commission (`1500` bps on pre-tax subtotal = `1,500` cents commission, `8,500` cents technician net payout):
 
 ```
-Customer Pre-Auth ($150.00):
-   Debit:   1010 Operating Bank Account (Asset)        +$150.00
-   Credit:  2010 Customer Escrow Liability (Liability) +$150.00
+1. Customer Payment Capture (Gross = 10,500 cents):
+   Debit:   1010 Operating Bank Account (Asset)           +10,500
+   Credit:  2010 Customer Escrow Liability (Liability)    +10,500
 
-Job Completion (15% Platform Commission = $22.50, Technician Payout = $127.50):
-   Debit:   2010 Customer Escrow Liability (Liability) -$150.00
-   Credit:  4010 Platform Commission Revenue (Revenue) +$22.50
-   Credit:  2020 Technician Payable (Liability)        +$127.50
+2. Job Completion Settlement (Pre-Tax Split + Account 2030 VAT Isolation):
+   Debit:   2010 Customer Escrow Liability (Liability)    -10,500
+   Credit:  2030 Tax / VAT Payable Liability (Liability)     +500
+   Credit:  4010 Platform Commission Revenue (Revenue)     +1,500
+   Credit:  2020 Technician Payable (Liability)            +8,500
 
-Technician Payout via Stripe Connect:
-   Debit:   2020 Technician Payable (Liability)        -$127.50
-   Credit:  1010 Operating Bank Account (Asset)        -$127.50
+3. Technician Payout Disbursal:
+   Debit:   2020 Technician Payable (Liability)            -8,500
+   Credit:  1010 Operating Bank Account (Asset)            -8,500
 ```
+
+When a full or partial refund (`POST /api/v1/finances/refunds`) is executed:
+- If the job is still in escrow (pre-completion), the refund debits `2010` and credits `1010`.
+- If the job was already settled, the refund proportionally reverses `2030` (Tax Payable), `4010` (Platform Commission Revenue), and `2020` (Technician Payable) against `1010` (Operating Bank) using deterministic idempotent `posting_type` keys (`REFUND_SETTLED_TAX:<refundId>`, `REFUND_SETTLED_REV:<refundId>`, `REFUND_SETTLED_PAYABLE:<refundId>`).
 
 ---
 
-## 4. Security & Compliance Architecture
+## 4. Security & Multi-Tenant Isolation Architecture
 
-- **OWASP ASVS v4.0.3 Alignment**:
-  - Passwords hashed using `bcrypt` (work factor 10).
-  - Access tokens expire in 15 minutes; refresh tokens use SHA-256 storage and one-time rotation.
-  - RFC 6238 TOTP Multi-Factor Authentication.
-  - Strict input validation using Zod schemas on all Fastify endpoints.
-  - Cross-Tenant data isolation enforced at the database query level with `tenant_id` context binding.
+- **Non-Superuser `FORCE ROW LEVEL SECURITY`**:
+  - Every request runs inside an `AsyncLocalStorage` tenant context (`tenantContextStorage`) that sets `SET LOCAL app.current_tenant_id` on checked-out pool connections, preventing cross-tenant data leakage even under `NOBYPASSRLS` database roles.
+- **Cryptographic Secret Storage**:
+  - Passwords hashed with `bcryptjs` (cost 10).
+  - Access tokens expire in 15m; refresh tokens use SHA-256 hashing with rotation and reuse detection.
+  - TOTP MFA secrets (`user_mfa_credentials`) and third-party API keys (`integration_configs`) are encrypted at rest using AES-256-GCM (`APP_ENCRYPTION_KEY`).
+  - Uploaded job proof images and brand logos are served via expiring HMAC-SHA256 signed URLs (`/api/v1/uploads/:tenantId/:filename?exp=...&sig=...`) with `X-Content-Type-Options: nosniff`.

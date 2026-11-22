@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/constants/asset_constants.dart';
 import '../../../../data/models/service_model.dart';
@@ -6,12 +7,14 @@ import '../../../../data/models/service_model.dart';
 class ServiceDetailScreen extends StatefulWidget {
   final ServiceItemModel service;
   final VoidCallback onProceedToBooking;
+  final void Function(double totalPrice, String tierTitle)? onConfigureBooking;
   final VoidCallback onBack;
 
   const ServiceDetailScreen({
     super.key,
     required this.service,
     required this.onProceedToBooking,
+    this.onConfigureBooking,
     required this.onBack,
   });
 
@@ -283,7 +286,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Pre-Authorized Total', style: TextStyle(fontSize: 11, color: textSecondary)),
-                  Text('\$${totalPrice.toStringAsFixed(2)}', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: textPrimary)),
+                  Text(ApiClient.instance.formatCurrency(totalPrice), style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: textPrimary)),
                 ],
               ),
               ElevatedButton(
@@ -293,7 +296,15 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen> {
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                 ),
-                onPressed: widget.onProceedToBooking,
+                onPressed: () {
+                  if (widget.onConfigureBooking != null) {
+                    final tierTitle = (tiers[_selectedTierIndex]['title'] as String) +
+                        (_includeAddon ? ' + Preventative Add-on' : '');
+                    widget.onConfigureBooking!(totalPrice, tierTitle);
+                  } else {
+                    widget.onProceedToBooking();
+                  }
+                },
                 child: const Row(
                   children: [
                     Text('Configure Booking', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),

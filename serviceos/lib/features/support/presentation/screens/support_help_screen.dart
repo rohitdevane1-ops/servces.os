@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 
 /// Screen C40, C41, C42, C43, C44, C45: Support Hub, Emergency Hotline, Tickets, Promos & Legal
@@ -32,6 +33,30 @@ class _SupportHelpScreenState extends State<SupportHelpScreen>
       vsync: this,
       initialIndex: widget.initialTabIndex,
     );
+    _loadTickets();
+  }
+
+  Future<void> _loadTickets() async {
+    try {
+      final list = await ApiClient.instance.fetchTickets();
+      if (mounted && list.isNotEmpty) {
+        setState(() {
+          _tickets
+            ..clear()
+            ..addAll(list.map((r) {
+              final m = Map<String, dynamic>.from(r as Map);
+              return {
+                'id': (m['ticketReference'] ?? m['id'] ?? 'TKT').toString(),
+                'subject': (m['subject'] ?? 'Support Inquiry').toString(),
+                'category': (m['category'] ?? 'General Support').toString(),
+                'status': (m['status'] ?? 'OPEN').toString(),
+                'date': (m['createdAt'] ?? 'Recent').toString(),
+                'lastMsg': (m['initialMessage'] ?? 'Queued for support review').toString(),
+              };
+            }));
+        });
+      }
+    } catch (_) {}
   }
 
   @override
@@ -605,21 +630,31 @@ class _SupportHelpScreenState extends State<SupportHelpScreen>
                 minimumSize: const Size.fromHeight(48),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
-              onPressed: () {
+              onPressed: () async {
                 final subj = subjectCtrl.text.trim();
                 final desc = descCtrl.text.trim();
                 if (subj.isEmpty) return;
-                setState(() {
-                  _tickets.insert(0, {
-                    'id': 'TKT-${1000 + _tickets.length + 1}',
-                    'subject': subj,
-                    'category': 'Support Inquiry',
-                    'status': 'IN REVIEW',
-                    'date': 'Just now',
-                    'lastMsg': desc.isNotEmpty ? desc : 'Ticket submitted for dispatcher review.',
+                try {
+                  await ApiClient.instance.openSupportTicket(
+                    subject: subj,
+                    initialMessage: desc.isNotEmpty ? desc : subj,
+                  );
+                } catch (_) {}
+                await _loadTickets();
+                if (!mounted) return;
+                if (_tickets.isEmpty || _tickets.first['subject'] != subj) {
+                  setState(() {
+                    _tickets.insert(0, {
+                      'id': 'TKT-${1000 + _tickets.length + 1}',
+                      'subject': subj,
+                      'category': 'Support Inquiry',
+                      'status': 'OPEN',
+                      'date': 'Just now',
+                      'lastMsg': desc.isNotEmpty ? desc : 'Ticket submitted for dispatcher review.',
+                    });
                   });
-                });
-                Navigator.pop(ctx);
+                }
+                if (ctx.mounted) Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Support ticket created and queued for support review.')),
                 );

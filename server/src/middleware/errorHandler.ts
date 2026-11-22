@@ -54,6 +54,56 @@ export function errorHandler(error: FastifyError, request: FastifyRequest, reply
     );
   }
 
+  // Preserve all other 4xx client errors (400 Bad Request, 409 Conflict, 413 Payload Too Large, 415, 422, etc.)
+  if (statusCode >= 400 && statusCode < 500) {
+    const codeMap: Record<number, string> = {
+      400: 'BAD_REQUEST',
+      405: 'METHOD_NOT_ALLOWED',
+      409: 'CONFLICT',
+      413: 'PAYLOAD_TOO_LARGE',
+      415: 'UNSUPPORTED_MEDIA_TYPE',
+      422: 'UNPROCESSABLE_ENTITY',
+      423: 'LOCKED',
+    };
+    return reply.status(statusCode).send(
+      errorResponse(codeMap[statusCode] || 'CLIENT_ERROR', error.message || 'Invalid request.', requestId)
+    );
+  }
+
+  // Preserve explicit 501 / 503 operational status codes (e.g. GatewayOperationNotSupportedError)
+  if (statusCode === 501 || statusCode === 503) {
+    return reply.status(statusCode).send(
+      errorResponse(
+        (error as any).code || (statusCode === 501 ? 'NOT_IMPLEMENTED' : 'SERVICE_UNAVAILABLE'),
+        error.message || 'Service unavailable.',
+        requestId
+      )
+    );
+  }
+
+  // Map common PostgreSQL input/constraint errors to proper 4xx codes instead of 500
+  const pgCode = (error as any)?.code;
+  if (pgCode === '22P02' || pgCode === '22007') {
+    return reply.status(400).send(
+      errorResponse('INVALID_IDENTIFIER', 'Invalid identifier or date format provided.', requestId)
+    );
+  }
+  if (pgCode === '23505') {
+    return reply.status(409).send(
+      errorResponse('DUPLICATE_RESOURCE', 'A resource with the provided unique key already exists.', requestId)
+    );
+  }
+  if (pgCode === '23503') {
+    return reply.status(400).send(
+      errorResponse('INVALID_REFERENCE', 'A referenced resource does not exist or cannot be modified due to existing records.', requestId)
+    );
+  }
+  if (pgCode === '23514') {
+    return reply.status(400).send(
+      errorResponse('CONSTRAINT_VIOLATION', 'The provided values violate a domain constraint.', requestId)
+    );
+  }
+
   // 4. Uncaught Internal Server Errors
   request.log.error(error);
   return reply.status(500).send(

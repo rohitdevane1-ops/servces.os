@@ -20,19 +20,27 @@ import com.serviceos.app.ui.components.ServiceCard
 @Composable
 fun CategoryFeedScreen(
     categoryName: String = "Plumbing Services",
+    initialCategoryId: String? = ServiceRepository.selectedCategory?.id,
     onBack: () -> Unit = {},
     onServiceClick: (ServiceItem) -> Unit = {}
 ) {
-    var selectedId by remember { mutableStateOf<String?>("plumb") }
-    val categories = remember { ServiceRepository.categories }
-    val services = remember { ServiceRepository.featuredServices }
+    val categories by ServiceRepository.categoriesFlow.collectAsState()
+    val services by ServiceRepository.featuredServicesFlow.collectAsState()
+    var selectedId by remember(initialCategoryId) {
+        mutableStateOf(initialCategoryId ?: categories.firstOrNull()?.id)
+    }
+    val selectedCategory = categories.find { it.id == selectedId }
+    val filteredServices = remember(services, selectedId) {
+        if (selectedId.isNullOrBlank()) services
+        else services.filter { it.categoryId == selectedId }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Text(
-                        text = categoryName,
+                        text = selectedCategory?.name ?: categoryName,
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 },
@@ -42,8 +50,8 @@ fun CategoryFeedScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = {}) {
-                        Icon(Icons.Default.FilterList, contentDescription = "Filter")
+                    IconButton(onClick = { selectedId = null }) {
+                        Icon(Icons.Default.FilterList, contentDescription = "Show All")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -64,17 +72,34 @@ fun CategoryFeedScreen(
                 CategoryRow(
                     categories = categories,
                     selectedCategoryId = selectedId,
-                    onCategorySelected = { selectedId = it.id }
+                    onCategorySelected = { selectedId = if (selectedId == it.id) null else it.id }
                 )
             }
 
-            items(services) { service ->
-                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    ServiceCard(
-                        service = service,
-                        onBookClick = { onServiceClick(service) },
-                        onClick = { onServiceClick(service) }
-                    )
+            if (filteredServices.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(32.dp),
+                        contentAlignment = androidx.compose.ui.Alignment.Center
+                    ) {
+                        Text(
+                            text = "No active services listed in this category yet.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+            } else {
+                items(filteredServices) { service ->
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        ServiceCard(
+                            service = service,
+                            onBookClick = { onServiceClick(service) },
+                            onClick = { onServiceClick(service) }
+                        )
+                    }
                 }
             }
 

@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.serviceos.app.core.theme.LocalExtraColors
 import com.serviceos.app.data.model.ServiceItem
+import com.serviceos.app.data.network.ApiClient
 
 /**
  * High-Capacity, Spacious Service Card
@@ -261,7 +262,7 @@ fun ServiceCard(
                         )
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
-                                text = "$${service.basePrice.toInt()}",
+                                text = ApiClient.formatCurrency(service.basePrice),
                                 style = MaterialTheme.typography.headlineMedium.copy(
                                     fontWeight = FontWeight.Black,
                                     fontSize = 24.sp

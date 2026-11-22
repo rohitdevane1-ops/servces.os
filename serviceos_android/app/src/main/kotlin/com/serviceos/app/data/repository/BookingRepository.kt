@@ -6,31 +6,34 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.serviceos.app.data.model.Booking
 import com.serviceos.app.data.model.BookingStatus
-import kotlinx.coroutines.Dispatchers
+import com.serviceos.app.data.network.ApiClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
 
 object BookingRepository {
     private const val PREFS_NAME = "serviceos_bookings_prefs"
     private const val KEY_BOOKINGS_JSON = "saved_bookings_v1"
-    private const val KEY_SUPABASE_URL = "supabase_url"
-    private const val KEY_SUPABASE_ANON_KEY = "supabase_anon_key"
-    private const val KEY_ACCESS_TOKEN = "supabase_access_token"
 
     private var prefs: SharedPreferences? = null
     private val _bookings = MutableStateFlow<List<Booking>>(emptyList())
     val bookingsFlow: StateFlow<List<Booking>> = _bookings.asStateFlow()
 
+    private val _selectedBooking = MutableStateFlow<Booking?>(null)
+    val selectedBookingFlow: StateFlow<Booking?> = _selectedBooking.asStateFlow()
+
     val sampleBookings: List<Booking>
         get() = _bookings.value
+
+    val activeBooking: Booking?
+        get() = _selectedBooking.value ?: _bookings.value.firstOrNull()
+
+    fun selectBooking(booking: Booking) {
+        _selectedBooking.value = booking
+    }
 
     @Synchronized
     fun init(context: Context) {
@@ -38,7 +41,6 @@ object BookingRepository {
             val masterKey = MasterKey.Builder(context.applicationContext)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
-            // Fail closed: enforce AES-256 encrypted storage, no plaintext fallback
             prefs = EncryptedSharedPreferences.create(
                 context.applicationContext,
                 PREFS_NAME,
@@ -50,69 +52,57 @@ object BookingRepository {
         }
     }
 
-    fun configureSupabase(url: String, anonKey: String, accessToken: String? = null) {
-        prefs?.edit()
-            ?.putString(KEY_SUPABASE_URL, url.trim())
-            ?.putString(KEY_SUPABASE_ANON_KEY, anonKey.trim())
-            ?.apply {
-                if (accessToken != null) {
-                    putString(KEY_ACCESS_TOKEN, accessToken.trim())
-                }
-            }
-            ?.apply()
+    fun parseServerBookingsJson(arr: JSONArray): List<Booking> {
+        val list = mutableListOf<Booking>()
+        for (i in 0 until arr.length()) {
+            val row = arr.optJSONObject(i) ?: continue
+            list.add(parseServerBookingObject(row))
+        }
+        return list
     }
 
-    fun setAuthToken(accessToken: String?) {
-        prefs?.edit()?.apply {
-            if (accessToken.isNullOrBlank()) {
-                remove(KEY_ACCESS_TOKEN)
-            } else {
-                putString(KEY_ACCESS_TOKEN, accessToken.trim())
-            }
-        }?.apply()
-    }
+    fun parseServerBookingObject(row: JSONObject): Booking {
+        val quotedCents = row.optString("quotedPriceCents")
+            .ifBlank { row.optString("quoted_price_cents", "0") }
+            .toDoubleOrNull() ?: row.optDouble("quotedPriceCents", 0.0)
+        val finalCents = row.optString("finalPriceCents")
+            .ifBlank { row.optString("final_price_cents", "0") }
+            .toDoubleOrNull() ?: quotedCents
 
-    private fun bearerToken(anonKey: String): String {
-        val jwt = prefs?.getString(KEY_ACCESS_TOKEN, null)
-        return if (!jwt.isNullOrBlank()) jwt else anonKey
-    }
+        val baseAmount = if (quotedCents > 0.0) quotedCents / 100.0 else row.optDouble("baseAmount", 129.0)
+        val totalAmount = if (finalCents > 0.0) finalCents / 100.0 else (baseAmount * 1.05)
+        val taxAmount = (totalAmount - baseAmount).coerceAtLeast(0.0)
+        val statusRaw = row.optString("status", "REQUESTED").uppercase()
+        val parsedStatus = runCatching { BookingStatus.valueOf(statusRaw) }.getOrDefault(BookingStatus.REQUESTED)
 
-    fun isCloudConfigured(): Boolean {
-        val url = prefs?.getString(KEY_SUPABASE_URL, "") ?: ""
-        val key = prefs?.getString(KEY_SUPABASE_ANON_KEY, "") ?: ""
-        return url.startsWith("http") && !url.contains("your-project") && key.isNotEmpty()
+        return Booking(
+            id = row.optString("id", row.optString("bookingId", "")),
+            reference = row.optString("bookingReference", row.optString("booking_reference", "SO-10000")),
+            serviceTitle = row.optString("serviceName", row.optString("serviceTitle", "Service Order")),
+            categoryName = row.optString("categoryName", "Home Service"),
+            technicianName = row.optString("providerName", row.optString("technicianName", "Assigned Pro")),
+            technicianAvatar = "",
+            technicianRating = 4.95,
+            customerAddress = row.optString("addressText", row.optString("customerAddress", "")),
+            scheduledTime = row.optString("scheduledStart", row.optString("scheduledTime", "Scheduled")),
+            baseAmount = baseAmount,
+            extraPartsAmount = row.optDouble("extraPartsAmount", 0.0),
+            taxAmount = taxAmount,
+            totalAmount = totalAmount,
+            status = parsedStatus,
+            safetyPin = row.optString("customerSafetyPin", row.optString("safetyPin", ""))
+        )
     }
 
     private fun loadFromPreferences() {
         val raw = prefs?.getString(KEY_BOOKINGS_JSON, null) ?: return
         try {
             val arr = JSONArray(raw)
-            val parsed = mutableListOf<Booking>()
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                parsed.add(
-                    Booking(
-                        id = obj.optString("id", ""),
-                        reference = obj.optString("reference", "SO-10000"),
-                        serviceTitle = obj.optString("serviceTitle", "Service Order"),
-                        categoryName = obj.optString("categoryName", "Home Service"),
-                        technicianName = obj.optString("technicianName", "Assigned Pro"),
-                        technicianAvatar = obj.optString("technicianAvatar", ""),
-                        technicianRating = obj.optDouble("technicianRating", 4.95),
-                        customerAddress = obj.optString("customerAddress", ""),
-                        scheduledTime = obj.optString("scheduledTime", "Today"),
-                        baseAmount = obj.optDouble("baseAmount", 129.0),
-                        extraPartsAmount = obj.optDouble("extraPartsAmount", 0.0),
-                        taxAmount = obj.optDouble("taxAmount", 9.03),
-                        totalAmount = obj.optDouble("totalAmount", 138.03),
-                        status = runCatching {
-                            BookingStatus.valueOf(obj.optString("status", "REQUESTED"))
-                        }.getOrDefault(BookingStatus.REQUESTED),
-                        safetyPin = ""
-                    )
-                )
-            }
+            val parsed = parseServerBookingsJson(arr)
             _bookings.value = parsed
+            if (_selectedBooking.value == null && parsed.isNotEmpty()) {
+                _selectedBooking.value = parsed.first()
+            }
         } catch (_: Exception) {
             _bookings.value = emptyList()
         }
@@ -125,7 +115,7 @@ object BookingRepository {
         for (b in current) {
             val obj = JSONObject()
             obj.put("id", b.id)
-            obj.put("reference", b.reference)
+            obj.put("bookingReference", b.reference)
             obj.put("serviceTitle", b.serviceTitle)
             obj.put("categoryName", b.categoryName)
             obj.put("technicianName", b.technicianName)
@@ -138,6 +128,7 @@ object BookingRepository {
             obj.put("taxAmount", b.taxAmount)
             obj.put("totalAmount", b.totalAmount)
             obj.put("status", b.status.name)
+            obj.put("safetyPin", b.safetyPin)
             arr.put(obj)
         }
         prefs?.edit()?.putString(KEY_BOOKINGS_JSON, arr.toString())?.apply()
@@ -145,6 +136,7 @@ object BookingRepository {
 
     fun addBooking(booking: Booking) {
         _bookings.update { listOf(booking) + it }
+        _selectedBooking.value = booking
         saveToPreferences()
     }
 
@@ -154,104 +146,68 @@ object BookingRepository {
                 if (it.id == bookingId || it.reference == bookingId) it.copy(status = newStatus) else it
             }
         }
+        _selectedBooking.value = _bookings.value.firstOrNull { it.id == bookingId || it.reference == bookingId }
+            ?: _selectedBooking.value
         saveToPreferences()
     }
 
-    suspend fun syncFromSupabase(): Boolean = withContext(Dispatchers.IO) {
-        if (!isCloudConfigured()) return@withContext false
-        val baseUrl = prefs?.getString(KEY_SUPABASE_URL, "")?.trimEnd('/') ?: return@withContext false
-        val anonKey = prefs?.getString(KEY_SUPABASE_ANON_KEY, "") ?: return@withContext false
-        val authJwt = prefs?.getString(KEY_ACCESS_TOKEN, null)
-        if (authJwt.isNullOrBlank()) return@withContext false
-
-        try {
-            val endpoint = URL("$baseUrl/rest/v1/bookings?select=*,services(name)&order=created_at.desc")
-            val conn = (endpoint.openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                setRequestProperty("apikey", anonKey)
-                setRequestProperty("Authorization", "Bearer ${bearerToken(anonKey)}")
-                setRequestProperty("Accept", "application/json")
-                connectTimeout = 8000
-                readTimeout = 8000
-            }
-            if (conn.responseCode in 200..299) {
-                val body = conn.inputStream.bufferedReader().use { it.readText() }
-                val arr = JSONArray(body)
-                val remoteList = mutableListOf<Booking>()
-                for (i in 0 until arr.length()) {
-                    val row = arr.getJSONObject(i)
-                    val svc = row.optJSONObject("services")
-                    val totalCents = row.optDouble("total_authorized_cents", 14900.0)
-                    val laborCents = row.optDouble("labor_cost_cents", totalCents)
-                    val partsCents = row.optDouble("parts_total_cents", 0.0)
-                    val taxCents = row.optDouble("tax_amount_cents", 0.0)
-                    val statusStr = row.optString("status", "REQUESTED")
-
-                    remoteList.add(
-                        Booking(
-                            id = row.optString("id", ""),
-                            reference = row.optString("booking_reference", "SO-10000"),
-                            serviceTitle = svc?.optString("name", "Service Order") ?: "Service Order",
-                            categoryName = "Home Service",
-                            technicianName = "Assigned Pro",
-                            technicianAvatar = "",
-                            technicianRating = 4.95,
-                            customerAddress = row.optString("address_text", ""),
-                            scheduledTime = row.optString("scheduled_start", "Today"),
-                            baseAmount = laborCents / 100.0,
-                            extraPartsAmount = partsCents / 100.0,
-                            taxAmount = taxCents / 100.0,
-                            totalAmount = totalCents / 100.0,
-                            status = runCatching { BookingStatus.valueOf(statusStr) }.getOrDefault(BookingStatus.REQUESTED),
-                            safetyPin = row.optString("safety_pin", "")
-                        )
-                    )
-                }
-                val remoteIds = remoteList.map { it.id }.toSet()
-                val remoteRefs = remoteList.map { it.reference }.toSet()
-                _bookings.update { current ->
-                    val unsyncedLocal = current.filter { it.id !in remoteIds && it.reference !in remoteRefs }
-                    unsyncedLocal + remoteList
-                }
-                saveToPreferences()
-                return@withContext true
-            }
-            false
-        } catch (_: Exception) {
-            false
+    suspend fun syncFromBackend(): Boolean {
+        val res = ApiClient.fetchBookings()
+        val arr = res.getOrNull() ?: return false
+        val parsed = parseServerBookingsJson(arr)
+        _bookings.value = parsed
+        if (parsed.isNotEmpty()) {
+            _selectedBooking.value = parsed.first()
         }
+        saveToPreferences()
+        return true
     }
 
-    suspend fun releaseEscrowRemote(bookingId: String, pinCode: String): Boolean = withContext(Dispatchers.IO) {
-        if (!isCloudConfigured()) return@withContext false
-        val baseUrl = prefs?.getString(KEY_SUPABASE_URL, "")?.trimEnd('/') ?: return@withContext false
-        val anonKey = prefs?.getString(KEY_SUPABASE_ANON_KEY, "") ?: return@withContext false
-        val authJwt = prefs?.getString(KEY_ACCESS_TOKEN, null)
-        if (authJwt.isNullOrBlank()) return@withContext false
-
-        try {
-            val endpoint = URL("$baseUrl/rest/v1/rpc/release_escrow_to_technician")
-            val conn = (endpoint.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
-                setRequestProperty("apikey", anonKey)
-                setRequestProperty("Authorization", "Bearer ${bearerToken(anonKey)}")
-                setRequestProperty("Content-Type", "application/json")
-                connectTimeout = 8000
-                readTimeout = 8000
-            }
-            val payload = JSONObject().apply {
-                put("p_booking_id", bookingId)
-                put("p_pin_code", pinCode)
-            }
-            OutputStreamWriter(conn.outputStream).use { it.write(payload.toString()) }
-            val ok = conn.responseCode in 200..299
-            if (ok) {
-                updateStatus(bookingId, BookingStatus.COMPLETED)
-            }
-            ok
-        } catch (_: Exception) {
-            false
+    suspend fun createAndAuthorizeBooking(
+        serviceId: String,
+        serviceTitle: String,
+        categoryName: String,
+        addressText: String,
+        baseAmount: Double,
+        isEmergency: Boolean
+    ): Result<Booking> {
+        val payload = JSONObject().apply {
+            put("serviceId", serviceId)
+            put("addressText", addressText)
+            put("latitude", 25.1972)
+            put("longitude", 55.2744)
+            put("priority", if (isEmergency) "EMERGENCY" else "STANDARD")
         }
+        val createRes = ApiClient.createBooking(payload)
+        val resJson = createRes.getOrElse { return Result.failure(it) }
+        val data = resJson.optJSONObject("data") ?: resJson
+        val bookingId = data.optString("bookingId", data.optString("id", ""))
+        if (bookingId.isBlank()) {
+            return Result.failure(Exception("Server did not return a valid booking ID."))
+        }
+        val confirmRes = ApiClient.waitForPaymentIntentAndConfirm(bookingId)
+        if (confirmRes.isFailure) {
+            return Result.failure(confirmRes.exceptionOrNull() ?: Exception("Escrow authorization failed"))
+        }
+        val tax = baseAmount * (ApiClient.vatPercent / 100.0)
+        val created = Booking(
+            id = bookingId,
+            reference = data.optString("bookingReference", bookingId),
+            serviceTitle = serviceTitle,
+            categoryName = categoryName,
+            technicianName = "Assigned Service Specialist",
+            technicianAvatar = "",
+            technicianRating = 4.95,
+            customerAddress = addressText,
+            scheduledTime = "Today",
+            baseAmount = baseAmount,
+            extraPartsAmount = 0.0,
+            taxAmount = tax,
+            totalAmount = baseAmount + tax,
+            status = BookingStatus.REQUESTED,
+            safetyPin = data.optString("customerSafetyPin", data.optString("safetyPin", ""))
+        )
+        addBooking(created)
+        return Result.success(created)
     }
 }

@@ -13,27 +13,49 @@ export const INSECURE_DEFAULTS = [
   'ChangeMe_ProductionJwtSecretKey_Min32Chars!',
   'ChangeMe_ProductionRefreshSecretKey_Min32Chars!',
   'ServiceProBootstrapToken2026!',
+  'ReplaceWithSecureJwtSecretKeyMin32CharactersLong2026!',
+  'ReplaceWithSecureJwtRefreshSecretKeyMin32CharactersLong2026!',
+  'ReplaceWithTurnkeyInstallerBootstrapSecret2026!',
   // Publicly known default APP_ENCRYPTION_KEY (valid 64-hex, so the format check alone is not enough)
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 ];
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  PORT: z.string().transform(v => parseInt(v, 10)).default('3000'),
+  PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default('0.0.0.0'),
   APP_BASE_URL: z.string().url().default('http://localhost:3000'),
   CORS_ORIGIN: z.string().default('http://localhost:5173,http://localhost:80,http://localhost:3000'),
   
-  // Database Pool
+  // Database Pool (Production & Optional Separate Demo Sandbox DB)
   DATABASE_URL: z.string().default('postgresql://postgres:postgres@localhost:5432/servicepro_os'),
-  DB_POOL_MAX: z.string().transform(v => parseInt(v, 10)).default('20'),
+  DEMO_DATABASE_URL: z.string().optional(),
+  DB_POOL_MAX: z.coerce.number().int().positive().default(20),
+  DB_SSL: z.string().optional(),
+
+  // Dual-Environment Demo Sandbox Toggle (Single Codebase)
+  APP_DEMO_MODE: z.string().default('false'),
+
+  // Universal Multi-Country Defaults & Payment Gateway Abstraction
+  PAYMENT_GATEWAY: z.enum(['stripe', 'paytabs', 'telr']).default('stripe'),
+  PAYTABS_PROFILE_ID: z.string().optional(),
+  PAYTABS_SERVER_KEY: z.string().optional(),
+  PAYTABS_REGION: z.string().default('ARE'),
+  TELR_STORE_ID: z.string().optional(),
+  TELR_AUTH_KEY: z.string().optional(),
+  DEFAULT_TAX_RATE_BPS: z.coerce.number().int().min(0).max(10000).default(500),
+  DEFAULT_CURRENCY_CODE: z.string().trim().length(3).default('AED'),
+  DEFAULT_COUNTRY_CODE: z.string().trim().length(2).default('AE'),
+  DEFAULT_TAX_NAME: z.string().trim().min(1).max(40).default('VAT'),
+  DEFAULT_DISTANCE_UNIT: z.enum(['km', 'mi']).default('km'),
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60000).default(500),
   
   // JWT Cryptographic Secrets (Supports both JWT_SECRET and JWT_ACCESS_SECRET)
   JWT_SECRET: z.string().min(32).default('servicepro_os_super_secure_jwt_access_secret_key_minimum_32_characters_long_for_entropy'),
   JWT_ACCESS_SECRET: z.string().min(32).optional(),
   JWT_REFRESH_SECRET: z.string().min(32).default('servicepro_os_super_secure_jwt_refresh_secret_key_minimum_32_characters_long_for_entropy'),
-  JWT_ACCESS_EXPIRY_SECONDS: z.string().transform(v => parseInt(v, 10)).default('900'), // 15 mins
-  JWT_REFRESH_EXPIRY_DAYS: z.string().transform(v => parseInt(v, 10)).default('30'), // 30 days
+  JWT_ACCESS_EXPIRY_SECONDS: z.coerce.number().int().positive().default(900), // 15 mins
+  JWT_REFRESH_EXPIRY_DAYS: z.coerce.number().int().positive().default(30), // 30 days
   
   // Sensitive Data Encryption at Rest (AES-256-GCM - 32 bytes hex)
   APP_ENCRYPTION_KEY: z.string().default('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'),
@@ -63,6 +85,11 @@ const envSchema = z.object({
   TRUST_PROXY: z.string().default('false'),
   // Payment outbox worker lifecycle
   OUTBOX_WORKER_ENABLED: z.string().default('true'),
+
+  // Arrival geofence radius & signed media uploads
+  ARRIVAL_GEOFENCE_RADIUS_METERS: z.coerce.number().int().min(50).max(50000).default(500),
+  UPLOAD_STORAGE_DIR: z.string().optional(),
+  UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().min(60).max(604800).default(86400),
 });
 
 export type TrustProxySetting = boolean | string | string[] | ((address: string, hop: number) => boolean);
@@ -139,6 +166,24 @@ if (validated.NODE_ENV === 'production') {
   }
   if (validated.STRIPE_SECRET_KEY && (!validated.STRIPE_WEBHOOK_SECRET || validated.STRIPE_WEBHOOK_SECRET.trim() === '')) {
     throw new Error('[Security Exception] Refusing to start in production with STRIPE_SECRET_KEY without STRIPE_WEBHOOK_SECRET configured');
+  }
+}
+
+if (
+  validated.DEMO_DATABASE_URL &&
+  validated.DEMO_DATABASE_URL.trim() !== '' &&
+  validated.DATABASE_URL &&
+  validated.DEMO_DATABASE_URL.trim() === validated.DATABASE_URL.trim()
+) {
+  throw new Error('[Configuration Error] DEMO_DATABASE_URL must point to an isolated database and MUST NOT equal DATABASE_URL.');
+}
+
+if (validated.APP_DEMO_MODE === 'true') {
+  if (validated.STRIPE_SECRET_KEY && /^(sk|rk)_live_/i.test(validated.STRIPE_SECRET_KEY.trim())) {
+    throw new Error('[Security Exception] Refusing to start with APP_DEMO_MODE=true and a live Stripe key (sk_live_/rk_live_).');
+  }
+  if (validated.NODE_ENV === 'production' && (!validated.DEMO_DATABASE_URL || validated.DEMO_DATABASE_URL.trim() === '')) {
+    throw new Error('[Security Exception] Refusing to start in production with APP_DEMO_MODE=true without an isolated DEMO_DATABASE_URL configured.');
   }
 }
 

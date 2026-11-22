@@ -1,64 +1,50 @@
 import React, { useState, useEffect } from 'react';
-import { useAdmin } from '../../context/AdminContext';
-import { 
-  Shield, 
-  Lock, 
-  Mail, 
-  ArrowRight, 
-  UserCheck, 
-  CheckCircle2, 
-  AlertCircle, 
-  Building2, 
-  User, 
-  Sparkles, 
-  KeyRound, 
-  Clock, 
-  ShieldCheck, 
+import { useAdmin } from '../../context/adminContextCore';
+import {
+  Shield,
+  Lock,
+  Mail,
+  ArrowRight,
+  UserCheck,
+  CheckCircle2,
+  AlertCircle,
+  Building2,
+  User,
+  Sparkles,
+  KeyRound,
+  ShieldCheck,
   ShieldAlert,
   Eye,
   EyeOff,
   Activity,
-  Cpu,
-  Layers,
-  Check,
-  Server,
   Radio,
-  FileCheck2
 } from 'lucide-react';
 import { UserRole } from '../../types';
-import { validatePasswordStrength, hashPasswordClient, verifyPasswordHash } from '../../security/passwordPolicy';
+import { validatePasswordStrength } from '../../security/passwordPolicy';
 import { rateLimiter } from '../../security/rateLimiter';
-import {
-  MfaSetupData,
-  createPerUserMfaEnrollment,
-  getLocalUserMfaRecord,
-  matchTotpStep,
-  saveLocalUserMfaEnrollment,
-  verifyLocalUserMfaCode,
-} from '../../security/totpService';
 import { recordSecurityEvent } from '../../security/securityAuditLogger';
-import { requestPasswordReset, completePasswordReset } from '../../security/passwordResetService';
-import { supabaseService } from '../../services/supabaseClient';
 import { apiClient } from '../../services/apiClient';
+import { useLocale } from '../../i18n/localeCore';
 import { TurnstileWidget } from '../../components/common/TurnstileWidget';
 
 export const LoginPage: React.FC = () => {
-  const { login, setupMasterAdmin, adminProfile, staffMembers, agencyName } = useAdmin();
+  const {
+    login,
+    adminProfile,
+    agencyName,
+    addToast,
+    isDemoMode,
+    systemConfig,
+    refreshSystemConfig,
+  } = useAdmin();
+  const { t, toggleLocale } = useLocale();
 
   const [captchaToken, setCaptchaToken] = useState<string>('');
   const [captchaResetCount, setCaptchaResetCount] = useState<number>(0);
   const [fastifyMfaToken, setFastifyMfaToken] = useState<string | null>(null);
 
-  const initialLocalInitialized = import.meta.env.PROD
-    ? true
-    : Boolean(
-        adminProfile.email ||
-        (localStorage.getItem('servicepro_admin_initialized') && localStorage.getItem('servicepro_admin_pwd_hash'))
-      );
-  const [isSystemInitialized, setIsSystemInitialized] = useState<boolean>(initialLocalInitialized);
-  const [authMode, setAuthMode] = useState<'LOGIN' | 'FIRST_TIME_SETUP' | 'PASSWORD_RESET'>(
-    initialLocalInitialized ? 'LOGIN' : 'FIRST_TIME_SETUP'
-  );
+  const isSystemInitialized = isDemoMode || systemConfig === null || systemConfig.tenant !== null;
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'FIRST_TIME_SETUP' | 'PASSWORD_RESET'>('LOGIN');
 
   const [selectedRole, setSelectedRole] = useState<UserRole>('ADMIN');
   const [adminFullName, setAdminFullName] = useState('');
@@ -82,52 +68,28 @@ export const LoginPage: React.FC = () => {
   const [lockoutSeconds, setLockoutSeconds] = useState<number>(0);
   const [isLocked, setIsLocked] = useState<boolean>(false);
 
-  // Per-User MFA Challenge & Enrollment State (Zero hardcoded secrets or bypasses)
+  // Per-User MFA Challenge State
   const [mfaStepRequired, setMfaStepRequired] = useState<boolean>(false);
-  const [mfaEnrollmentRequired, setMfaEnrollmentRequired] = useState<boolean>(false);
-  const [pendingMfaEnrollment, setPendingMfaEnrollment] = useState<MfaSetupData | null>(null);
-  const [pendingCloudSession, setPendingCloudSession] = useState<{
-    token: string;
-    role: 'ADMIN' | 'STAFF';
-    fullName?: string;
-    isBootstrapFlow?: boolean;
-  } | null>(null);
   const [totpCode, setTotpCode] = useState<string>('');
   const [useBackupCode, setUseBackupCode] = useState<boolean>(false);
-  const [mfaAttemptsRemaining, setMfaAttemptsRemaining] = useState<number>(3);
+  const [currentYear] = useState<number>(() => new Date().getFullYear());
 
-  // Live password validation
   const passwordStrength = validatePasswordStrength(password, 10);
 
-  // Query authoritative initialization state from Supabase (or local state if unconfigured)
   useEffect(() => {
+    if (!email) return;
     let active = true;
-    if (import.meta.env.PROD) {
-      setIsSystemInitialized(true);
-      setAuthMode('LOGIN');
-      return;
-    }
-    supabaseService.checkSystemInitialized().then((res) => {
+    queueMicrotask(() => {
       if (!active) return;
-      setIsSystemInitialized(res.initialized);
-      if (res.initialized) {
-        setAuthMode('LOGIN');
-      }
+      const status = rateLimiter.check(email);
+      setIsLocked(status.isLocked);
+      setLockoutSeconds(status.lockoutRemainingSeconds);
     });
     return () => {
       active = false;
     };
-  }, []);
-
-  // Monitor rate limiter status
-  useEffect(() => {
-    if (!email) return;
-    const status = rateLimiter.check(email);
-    setIsLocked(status.isLocked);
-    setLockoutSeconds(status.lockoutRemainingSeconds);
   }, [email]);
 
-  // Lockout countdown timer
   useEffect(() => {
     if (lockoutSeconds <= 0) return;
     const interval = setInterval(() => {
@@ -148,7 +110,6 @@ export const LoginPage: React.FC = () => {
 
     const targetEmail = email.trim().toLowerCase();
 
-    // 1. Check Rate Limiter
     const rateStatus = rateLimiter.check(targetEmail);
     if (rateStatus.isLocked) {
       setError(
@@ -173,14 +134,12 @@ export const LoginPage: React.FC = () => {
       return;
     }
 
-    // 2. Progressive login delay
     if (rateStatus.delayMs > 0) {
       setIsLoading(true);
       await new Promise((r) => setTimeout(r, rateStatus.delayMs));
     }
 
-    // 3. Password length verification
-    if (password.length < 6) {
+    if (password.length < 8) {
       const failStatus = rateLimiter.recordFailure(targetEmail);
       recordSecurityEvent('LOGIN_FAILED', targetEmail, selectedRole, 'WARNING', 'Invalid password length');
       setError('Invalid credentials. Please verify your work email and password.');
@@ -194,13 +153,18 @@ export const LoginPage: React.FC = () => {
 
     setIsLoading(true);
 
-    // 4. Authoritative Backend Authentication Path (Fastify API with CAPTCHA & RFC 6238 MFA)
     try {
-      const fastifyRes = await apiClient.login(targetEmail, password, undefined, captchaToken || undefined);
+      const fastifyRes = await apiClient.login(
+        targetEmail,
+        password,
+        selectedRole,
+        captchaToken || undefined
+      );
       if (fastifyRes.success) {
         if (fastifyRes.data?.status === 'MFA_REQUIRED') {
           setFastifyMfaToken(fastifyRes.data.mfaSessionToken);
           setMfaStepRequired(true);
+          setUseBackupCode(false);
           setTotpCode('');
           setIsLoading(false);
           recordSecurityEvent('MFA_CHALLENGE', targetEmail, selectedRole, 'INFO', 'Fastify MFA challenge initiated');
@@ -216,12 +180,12 @@ export const LoginPage: React.FC = () => {
             token: fastifyRes.data.accessToken,
             role: user.role,
             fullName: user.fullName || user.email,
+            tenantId: user.tenantId,
           });
           return;
         }
       }
 
-      // Fail Closed (AUTH-01 & WEB-02): Any backend rejection terminates authentication without falling back to weaker paths
       const failStatus = rateLimiter.recordFailure(targetEmail);
       recordSecurityEvent(
         'LOGIN_FAILED',
@@ -243,9 +207,7 @@ export const LoginPage: React.FC = () => {
       }
       setError(fastifyRes.error?.message || 'Authentication failed. Please verify credentials and CAPTCHA challenge.');
       setIsLoading(false);
-      return;
     } catch (err: any) {
-      // Fail closed on network or API connection errors (AUTH-01)
       recordSecurityEvent(
         'LOGIN_FAILED',
         targetEmail,
@@ -257,228 +219,77 @@ export const LoginPage: React.FC = () => {
       setCaptchaResetCount((c) => c + 1);
       setError('Authentication server is unreachable. Please verify network connectivity.');
       setIsLoading(false);
-      return;
-    }
-  };
-
-  const handleMfaEnrollmentConfirm = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    if (!pendingMfaEnrollment) return;
-
-    const cleanCode = totpCode.trim().replace(/\s+/g, '');
-    const targetEmail = email.trim().toLowerCase();
-
-    if (!/^\d{6}$/.test(cleanCode)) {
-      setError('Please enter the 6-digit code from your authenticator app to confirm enrollment.');
-      return;
-    }
-
-    setIsLoading(true);
-
-    // If cloud bootstrap already enrolled MFA on the server via bootstrap-first-admin, verify via verifyMfaCode
-    if (supabaseService.isConfigured() && pendingCloudSession) {
-      if (pendingCloudSession.isBootstrapFlow) {
-        const verifyRes = await supabaseService.verifyMfaCode(cleanCode, false);
-        if (!verifyRes.verified) {
-          setIsLoading(false);
-          setError(verifyRes.error || 'Authenticator code did not match your enrolled secret.');
-          return;
-        }
-        setIsLoading(false);
-        setMfaEnrollmentRequired(false);
-        setPendingMfaEnrollment(null);
-        setIsSystemInitialized(true);
-        setupMasterAdmin(
-          adminFullName.trim(),
-          targetEmail,
-          password,
-          companyName.trim() || undefined,
-          pendingCloudSession.token
-        );
-        return;
-      }
-
-      const enrollRes = await supabaseService.enrollMfa({
-        secretBase32: pendingMfaEnrollment.secretBase32,
-        recoveryCodeHashes: pendingMfaEnrollment.recoveryCodeHashes,
-        verificationCode: cleanCode,
-      });
-      if (!enrollRes.success) {
-        setIsLoading(false);
-        setError(enrollRes.error || 'Authenticator code did not match the generated secret.');
-        return;
-      }
-
-      setIsLoading(false);
-      setMfaEnrollmentRequired(false);
-      setPendingMfaEnrollment(null);
-      login(pendingCloudSession.role, targetEmail, password, pendingCloudSession);
-      return;
-    }
-
-    // Local test mode MFA enrollment confirmation (development/test only)
-    if (import.meta.env.PROD) {
-      setIsLoading(false);
-      setError('Local MFA enrollment is disabled in production environments.');
-      return;
-    }
-
-    const matchedStep = await matchTotpStep(pendingMfaEnrollment.secretBase32, cleanCode, 1);
-    if (matchedStep === null) {
-      setIsLoading(false);
-      setError('Invalid 6-digit authenticator code. Please verify your secret key and try again.');
-      return;
-    }
-
-    saveLocalUserMfaEnrollment(
-      targetEmail,
-      pendingMfaEnrollment.secretBase32,
-      pendingMfaEnrollment.recoveryCodeHashes,
-      matchedStep
-    );
-
-    recordSecurityEvent(
-      'MFA_VERIFIED',
-      targetEmail,
-      'ADMIN',
-      'INFO',
-      'Per-user RFC 6238 TOTP MFA enrolled and verified'
-    );
-
-    setIsLoading(false);
-    setMfaEnrollmentRequired(false);
-    setPendingMfaEnrollment(null);
-    setIsSystemInitialized(true);
-
-    if (authMode === 'FIRST_TIME_SETUP') {
-      setupMasterAdmin(adminFullName.trim(), targetEmail, password, companyName.trim() || undefined);
-    } else {
-      login('ADMIN', targetEmail, password);
     }
   };
 
   const handleMfaVerifySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setIsLoading(true);
+
+    if (!fastifyMfaToken) {
+      setError('MFA session expired or invalid. Please sign in again.');
+      setMfaStepRequired(false);
+      return;
+    }
 
     const cleanCode = totpCode.trim().toUpperCase();
     const targetEmail = email.trim().toLowerCase();
 
-    // Authoritative Fastify MFA Verification Path
-    if (fastifyMfaToken) {
-      try {
-        const mfaRes = await apiClient.verifyMfa(fastifyMfaToken, cleanCode);
-        if (mfaRes.success && mfaRes.data?.accessToken) {
-          const user = mfaRes.data.user;
-          setIsLoading(false);
-          setMfaStepRequired(false);
-          setFastifyMfaToken(null);
-          login(user.role, targetEmail, password, {
-            token: mfaRes.data.accessToken,
-            role: user.role,
-            fullName: user.fullName || user.email,
-          });
-          return;
-        } else {
-          setIsLoading(false);
-          setError(mfaRes.error?.message || 'Invalid or expired 6-digit TOTP code.');
-          return;
-        }
-      } catch (err: any) {
-        setIsLoading(false);
-        setError(err.message || 'MFA verification failed.');
-        return;
-      }
+    if (!useBackupCode && !/^\d{6}$/.test(cleanCode)) {
+      setError('Please enter a valid 6-digit numeric TOTP code from your authenticator app.');
+      return;
     }
-
-    // Fail Closed in Production: Fastify MFA session token is authoritative
-    if (import.meta.env.PROD) {
-      setIsLoading(false);
-      setError('MFA session expired or invalid. Please re-authenticate.');
+    if (useBackupCode && (cleanCode.length < 6 || cleanCode.length > 32)) {
+      setError('Please enter a valid emergency recovery code.');
       return;
     }
 
-    // 1. Cloud Server-Enforced MFA Verification
-    if (supabaseService.isConfigured()) {
-      const serverVerify = await supabaseService.verifyMfaCode(cleanCode, useBackupCode);
-      if (!serverVerify.verified) {
-        setIsLoading(false);
-        const rem = serverVerify.attemptsRemaining ?? mfaAttemptsRemaining - 1;
-        setMfaAttemptsRemaining(Math.max(0, rem));
+    setIsLoading(true);
+    try {
+      const mfaRes = useBackupCode
+        ? await apiClient.verifyMfaRecovery(fastifyMfaToken, cleanCode)
+        : await apiClient.verifyMfa(fastifyMfaToken, cleanCode);
+
+      if (mfaRes.success && mfaRes.data?.accessToken) {
+        const user = mfaRes.data.user;
+        rateLimiter.reset(targetEmail);
         recordSecurityEvent(
-          'MFA_FAILED',
+          'MFA_VERIFIED',
           targetEmail,
-          'ADMIN',
-          'WARNING',
-          serverVerify.error || 'Server MFA verification failed'
+          user.role,
+          'INFO',
+          useBackupCode ? 'MFA emergency recovery code verified' : 'MFA TOTP code verified'
         );
-
-        if (serverVerify.isLocked || rem <= 0) {
-          await supabaseService.signOut();
-          setPendingCloudSession(null);
-          rateLimiter.recordFailure(targetEmail);
-          setIsLocked(true);
-          setLockoutSeconds(serverVerify.lockoutSeconds || 900);
-          setMfaStepRequired(false);
-          setError(
-            serverVerify.error || 'Maximum 2FA verification attempts exceeded. Account locked for 15 minutes.'
-          );
-          return;
-        }
-
-        setError(serverVerify.error || `Invalid verification code. ${rem} attempt(s) remaining.`);
+        setIsLoading(false);
+        setMfaStepRequired(false);
+        setFastifyMfaToken(null);
+        login(user.role, targetEmail, password, {
+          token: mfaRes.data.accessToken,
+          role: user.role,
+          fullName: user.fullName || user.email,
+          tenantId: user.tenantId,
+        });
         return;
       }
 
-      const activeRole = pendingCloudSession?.role || 'ADMIN';
-      recordSecurityEvent('MFA_VERIFIED', targetEmail, activeRole, 'INFO', 'Server-side MFA verification successful');
-      rateLimiter.reset(targetEmail);
       setIsLoading(false);
-      setMfaStepRequired(false);
-      if (pendingCloudSession) {
-        login(activeRole, targetEmail, password, pendingCloudSession);
-        setPendingCloudSession(null);
-      }
-      return;
-    }
-
-    // 2. Local Per-User MFA Verification (Strict RFC 6238 TOTP or Single-Use Hashed Recovery Code)
-    const localVerify = await verifyLocalUserMfaCode(targetEmail, cleanCode, useBackupCode);
-    if (!localVerify.verified) {
-      setIsLoading(false);
-      const newRemaining = localVerify.attemptsRemaining ?? mfaAttemptsRemaining - 1;
-      setMfaAttemptsRemaining(Math.max(0, newRemaining));
-
       recordSecurityEvent(
         'MFA_FAILED',
         targetEmail,
-        'ADMIN',
+        selectedRole,
         'WARNING',
-        `Invalid MFA code. Attempts remaining: ${newRemaining}`
+        mfaRes.error?.message || 'MFA verification failed'
       );
-
-      if (localVerify.isLocked || newRemaining <= 0) {
-        rateLimiter.recordFailure(targetEmail);
-        setIsLocked(true);
-        setLockoutSeconds(localVerify.lockoutSeconds || 900);
-        setMfaStepRequired(false);
-        setError(
-          localVerify.error || 'Maximum 2FA verification attempts exceeded. Account locked for 15 minutes.'
-        );
-        return;
-      }
-
-      setError(localVerify.error || `Invalid verification code. ${newRemaining} attempt(s) remaining.`);
-      return;
+      setError(
+        mfaRes.error?.message ||
+          (useBackupCode
+            ? 'Invalid or already used emergency recovery code.'
+            : 'Invalid or expired 6-digit TOTP code.')
+      );
+    } catch (err: any) {
+      setIsLoading(false);
+      setError(err?.message || 'MFA verification failed.');
     }
-
-    recordSecurityEvent('MFA_VERIFIED', targetEmail, 'ADMIN', 'INFO', 'TOTP verification successful');
-    rateLimiter.reset(targetEmail);
-    setIsLoading(false);
-    setMfaStepRequired(false);
-    login('ADMIN', targetEmail, password);
   };
 
   const handleSetupSubmit = async (e: React.FormEvent) => {
@@ -486,11 +297,15 @@ export const LoginPage: React.FC = () => {
     setError(null);
 
     if (isSystemInitialized) {
-      setError('First-time deployment setup is permanently locked because a Master Administrator is already provisioned.');
+      setError('First-time deployment setup is locked because a Master Administrator is already provisioned.');
       setAuthMode('LOGIN');
       return;
     }
 
+    if (!provisioningToken.trim() || provisioningToken.trim().length < 8) {
+      setError('A valid Server Provisioning Token (X-Bootstrap-Token) is required.');
+      return;
+    }
     if (!adminFullName.trim()) {
       setError('Please enter your Full Name.');
       return;
@@ -499,21 +314,12 @@ export const LoginPage: React.FC = () => {
       setError('Please enter a valid primary administrator work email address.');
       return;
     }
-
     if (!passwordStrength.isValid) {
       setError(`Password policy requirement: ${passwordStrength.errors[0]}`);
-      recordSecurityEvent(
-        'PASSWORD_POLICY_VIOLATION',
-        email.trim(),
-        'ADMIN',
-        'WARNING',
-        'Setup attempted with weak password'
-      );
       return;
     }
-
     if (password !== confirmPassword) {
-      setError('Passwords do not match. Please re-enter identical passwords.');
+      setError('Passwords do not match.');
       return;
     }
 
@@ -521,84 +327,32 @@ export const LoginPage: React.FC = () => {
     setIsLoading(true);
 
     try {
-      // Cloud Mode: Require One-Time Server-Controlled Provisioning via bootstrap-first-admin Edge Function
-      if (supabaseService.isConfigured()) {
-        if (!provisioningToken.trim() || provisioningToken.trim().length < 16) {
-          setError(
-            'A valid one-time Server Provisioning Token (INITIAL_ADMIN_BOOTSTRAP_SECRET, min 16 chars) is required.'
-          );
-          setIsLoading(false);
-          return;
-        }
-
-        const bootstrapRes = await supabaseService.bootstrapFirstAdmin({
-          provisioningToken: provisioningToken.trim(),
-          email: targetEmail,
-          password,
-          fullName: adminFullName.trim(),
-          companyName: companyName.trim() || 'ServicePro OS Enterprise',
-        });
-
-        if (!bootstrapRes.success || !bootstrapRes.mfaEnrollment) {
-          setError(bootstrapRes.error || 'Server-controlled first-Admin provisioning failed.');
-          setIsLoading(false);
-          return;
-        }
-
-        const signInRes = await supabaseService.signIn(targetEmail, password);
-        if (!signInRes.success || !signInRes.token) {
-          setError(signInRes.error || 'Provisioned account sign-in verification failed.');
-          setIsLoading(false);
-          return;
-        }
-
-        setPendingCloudSession({
-          token: signInRes.token,
-          role: 'ADMIN',
-          fullName: adminFullName.trim(),
-          isBootstrapFlow: true,
-        });
-        setPendingMfaEnrollment({
-          secretBase32: bootstrapRes.mfaEnrollment.secretBase32,
-          otpauthUrl: bootstrapRes.mfaEnrollment.otpauthUrl,
-          recoveryCodes: bootstrapRes.mfaEnrollment.recoveryCodes,
-          recoveryCodeHashes: [],
-        });
-        setMfaEnrollmentRequired(true);
-        setTotpCode('');
-        setIsLoading(false);
-        return;
-      }
-
-      // Fail closed in Production: Local client-side bootstrap is prohibited
-      if (import.meta.env.PROD) {
-        setIsLoading(false);
-        setError('Client-side administrator initialization is disabled in production. Use server bootstrap.');
-        return;
-      }
-
-      // Unconfigured Local Test Mode: Store PBKDF2 password hash & require per-user MFA enrollment
-      const { hash, salt } = await hashPasswordClient(password);
-      localStorage.setItem('servicepro_admin_pwd_hash', hash);
-      localStorage.setItem('servicepro_admin_pwd_salt', salt);
-
-      const enrollment = await createPerUserMfaEnrollment(
-        targetEmail,
-        companyName.trim() || agencyName || 'ServicePro OS'
+      const res = await apiClient.provisionInstaller(
+        {
+          companyName: companyName.trim() || 'ServicePro OS',
+          adminEmail: targetEmail,
+          adminPassword: password,
+          adminFullName: adminFullName.trim(),
+        },
+        provisioningToken.trim()
       );
-      setPendingMfaEnrollment(enrollment);
-      setMfaEnrollmentRequired(true);
-      setTotpCode('');
+
+      if (!res.success || !res.data?.accessToken) {
+        setError(res.error?.message || 'First-time server provisioning failed.');
+        setIsLoading(false);
+        return;
+      }
+
+      await refreshSystemConfig();
       setIsLoading(false);
-      recordSecurityEvent(
-        'MASTER_ADMIN_INITIALIZED',
-        targetEmail,
-        'ADMIN',
-        'INFO',
-        'Master Administrator credentials initialized; awaiting per-user MFA enrollment confirmation'
-      );
+      login('ADMIN', targetEmail, password, {
+        token: res.data.accessToken,
+        role: 'ADMIN',
+        fullName: res.data.admin?.fullName || adminFullName.trim(),
+        tenantId: res.data.tenant?.id,
+      });
     } catch (err: any) {
-      setError(err.message || 'Setup failed. Please try again.');
+      setError(err?.message || 'Provisioning request failed.');
       setIsLoading(false);
     }
   };
@@ -615,12 +369,26 @@ export const LoginPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      const res = await requestPasswordReset(email.trim(), selectedRole);
+      const res = await apiClient.forgotPassword(email.trim().toLowerCase(), captchaToken || undefined);
       setIsLoading(false);
-      setResetSuccessMessage(res.message);
+      if (!res.success) {
+        if (
+          res.error?.code === 'CAPTCHA_REQUIRED' ||
+          res.error?.code === 'CAPTCHA_VERIFICATION_FAILED'
+        ) {
+          setCaptchaToken('');
+          setCaptchaResetCount((c) => c + 1);
+        }
+        setError(res.error?.message || 'Failed to initiate password reset.');
+        return;
+      }
+      setResetSuccessMessage(
+        res.data?.message ||
+          'If an account with that email exists, password reset instructions have been issued.'
+      );
       setResetStep('VERIFY');
     } catch (err: any) {
-      setError(err.message || 'Failed to dispatch recovery instructions.');
+      setError(err?.message || 'Failed to dispatch recovery instructions.');
       setIsLoading(false);
     }
   };
@@ -628,48 +396,57 @@ export const LoginPage: React.FC = () => {
   const handlePasswordResetSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setIsLoading(true);
 
+    if (!resetToken.trim() || resetToken.trim().length < 20) {
+      setError('Please enter the full recovery token.');
+      return;
+    }
+    if (password.length < 8) {
+      setError('New password must be at least 8 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('New password and confirmation do not match.');
+      return;
+    }
+
+    setIsLoading(true);
     try {
-      const res = await completePasswordReset(resetToken, password, confirmPassword);
+      const res = await apiClient.resetPassword(resetToken.trim(), password);
       if (!res.success) {
-        setError(res.error || 'Password reset failed. Please check token validity.');
+        setError(res.error?.message || 'Password reset failed. Please verify your recovery token.');
         setIsLoading(false);
         return;
       }
 
       setIsLoading(false);
-      setResetSuccessMessage('Your password has been successfully updated. All previous sessions revoked. Please log in.');
+      setResetSuccessMessage(
+        res.data?.message || 'Password has been reset and existing sessions revoked. Please sign in.'
+      );
       setPassword('');
       setConfirmPassword('');
+      setResetToken('');
       setTimeout(() => {
         setAuthMode('LOGIN');
         setResetStep('REQUEST');
         setResetSuccessMessage(null);
       }, 1500);
     } catch (err: any) {
-      setError(err.message || 'An error occurred while resetting password.');
+      setError(err?.message || 'An error occurred while resetting password.');
       setIsLoading(false);
     }
   };
 
-  const displayName = agencyName || companyName || 'ServicePro OS Enterprise';
+  const displayName = agencyName || companyName || 'ServicePro OS';
 
   return (
     <div className="min-h-screen w-screen flex flex-col lg:flex-row bg-[#08101D] text-slate-800 antialiased overflow-x-hidden selection:bg-emerald-200 selection:text-black">
-      
-      {/* =========================================================================
-          LEFT PANEL: Enterprise Mission Control & Telemetry Showcase
-          Visible on large screens (52% width), delivers high-value $50K SaaS prestige
-      ========================================================================= */}
+      {/* LEFT PANEL: Enterprise Operations Overview */}
       <div className="hidden lg:flex lg:w-[50%] xl:w-[52%] relative flex-col justify-between p-12 xl:p-16 bg-gradient-to-br from-[#060D17] via-[#0A1626] to-[#041E19] text-white overflow-hidden border-r border-slate-800/80">
-        
-        {/* Ambient Glow & Grid Layer */}
         <div className="absolute inset-0 bg-[radial-gradient(#10B981_1px,transparent_1px)] [background-size:24px_24px] opacity-15 pointer-events-none" />
         <div className="absolute -top-32 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute -bottom-32 -right-32 w-96 h-96 bg-teal-500/10 rounded-full blur-3xl pointer-events-none" />
 
-        {/* Top Header & Brand Identity */}
         <div className="relative z-10 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-[#0C3832] to-[#145a50] border border-emerald-400/30 flex items-center justify-center shadow-lg shadow-emerald-950/50">
@@ -679,24 +456,23 @@ export const LoginPage: React.FC = () => {
               <div className="flex items-center gap-2">
                 <span className="font-black text-lg tracking-tight text-white">{displayName}</span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-950/80 text-emerald-300 border border-emerald-500/30">
-                  NOC Active
+                  {isDemoMode ? 'Sandbox' : 'Production'}
                 </span>
               </div>
-              <p className="text-xs text-slate-400 font-mono">Mission Critical Field Operations</p>
+              <p className="text-xs text-slate-400 font-mono">Field Service Operations Platform</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 text-xs font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-3 py-1.5 rounded-xl shadow-xs">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>NOC Zone TX-01</span>
+            <span>{isDemoMode ? 'Interactive Demo Node' : 'Enterprise API Node'}</span>
           </div>
         </div>
 
-        {/* Central Enterprise Value Card */}
         <div className="relative z-10 my-auto py-8 max-w-xl space-y-6">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/80 border border-slate-700/80 text-xs text-slate-300">
             <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Turnkey On-Demand Home Services Platform</span>
+            <span>International Home Services Management Platform</span>
           </div>
 
           <h1 className="text-3xl xl:text-4xl font-black text-white tracking-tight leading-tight">
@@ -704,54 +480,45 @@ export const LoginPage: React.FC = () => {
           </h1>
 
           <p className="text-sm text-slate-300 leading-relaxed font-normal">
-            Autonomous technician dispatch radar, verified trade credentialing, dynamic take-rate commissions, and immutable cryptographic audit logging engineered for rapid scale.
+            PostGIS spatial technician dispatch radar, verified trade credentialing, double-entry financial ledger, and row-level multi-tenant database isolation.
           </p>
 
-          {/* High-Fidelity NOC Telemetry Card */}
           <div className="bg-slate-900/80 border border-emerald-500/30 backdrop-blur-xl rounded-2xl p-5 shadow-2xl space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2 text-xs font-bold text-white">
                 <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-                <span>Realtime Operations Telemetry</span>
+                <span>Platform Security Architecture</span>
               </div>
-              <span className="text-[10px] font-mono text-slate-400">Operations Node</span>
+              <span className="text-[10px] font-mono text-slate-400">PostgreSQL 16 + PostGIS</span>
             </div>
 
             <div className="grid grid-cols-3 gap-3 text-center">
               <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-800">
-                <div className="text-[10px] text-slate-400 uppercase font-mono">Dispatch Mode</div>
+                <div className="text-[10px] text-slate-400 uppercase font-mono">Spatial Engine</div>
                 <div className="text-xs font-black text-emerald-400 mt-1 flex items-center justify-center gap-1">
                   <Activity className="w-3 h-3 text-emerald-400" />
-                  <span>Standby</span>
+                  <span>PostGIS Radar</span>
                 </div>
               </div>
 
               <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-800">
-                <div className="text-[10px] text-slate-400 uppercase font-mono">SLA Uptime</div>
-                <div className="text-xs font-black text-white mt-1">99.98%</div>
+                <div className="text-[10px] text-slate-400 uppercase font-mono">Tenant Guard</div>
+                <div className="text-xs font-black text-white mt-1">FORCE RLS</div>
               </div>
 
               <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-800">
-                <div className="text-[10px] text-slate-400 uppercase font-mono">Vault Cipher</div>
-                <div className="text-xs font-black text-teal-300 mt-1">256-bit AES</div>
+                <div className="text-[10px] text-slate-400 uppercase font-mono">Secret Vault</div>
+                <div className="text-xs font-black text-teal-300 mt-1">AES-256-GCM</div>
               </div>
             </div>
-
-            <p className="text-[11px] text-slate-400 italic">
-              "Dual-Vision Engine compliant — zero hardcoded demo data, true multi-tenant database isolation, and OWASP Level 3 verified."
-            </p>
           </div>
         </div>
 
-        {/* Bottom Trust Footer */}
         <div className="relative z-10 pt-6 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-          <div className="flex items-center gap-3">
-            <span className="flex items-center gap-1.5 text-slate-300 font-medium">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              Secure Enterprise Portal
-            </span>
-          </div>
-
+          <span className="flex items-center gap-1.5 text-slate-300 font-medium">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            HttpOnly Session Rotation &amp; RFC 6238 TOTP MFA
+          </span>
           <div className="flex items-center gap-1.5 font-mono text-[11px] text-emerald-400">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
             <span>Encrypted Session</span>
@@ -759,13 +526,8 @@ export const LoginPage: React.FC = () => {
         </div>
       </div>
 
-      {/* =========================================================================
-          RIGHT PANEL: Interactive Authentication Portal
-          Clean slate canvas (#F8FAFC), elevated white surface, responsive perfection
-      ========================================================================= */}
+      {/* RIGHT PANEL: Interactive Authentication Portal */}
       <div className="flex-1 flex flex-col justify-between p-6 sm:p-10 lg:p-12 xl:p-16 bg-[#F8FAFC] min-h-screen">
-        
-        {/* Mobile-Only Header Brand Bar */}
         <div className="flex lg:hidden items-center justify-between pb-6 border-b border-slate-200">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-[#0C3832] text-emerald-400 flex items-center justify-center shadow-xs">
@@ -773,7 +535,7 @@ export const LoginPage: React.FC = () => {
             </div>
             <div>
               <div className="font-extrabold text-sm text-slate-900">{displayName}</div>
-              <div className="text-[10px] text-slate-500 font-mono">ServicePro OS Enterprise</div>
+              <div className="text-[10px] text-slate-500 font-mono">Operations Portal</div>
             </div>
           </div>
           <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-100 text-emerald-800">
@@ -781,129 +543,10 @@ export const LoginPage: React.FC = () => {
           </span>
         </div>
 
-        {/* Central Auth Surface Container */}
         <div className="w-full max-w-md mx-auto my-auto py-6 sm:py-8">
-          
           <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-200/50 p-6 sm:p-8">
-            
-            {mfaEnrollmentRequired && pendingMfaEnrollment ? (
-              /* =========================================================================
-                 VIEW 0: Per-User RFC 6238 MFA Enrollment & Single-Use Recovery Codes
-              ========================================================================= */
-              <div className="space-y-4 animate-in fade-in duration-200">
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-emerald-100 text-emerald-800 flex items-center gap-1.5 uppercase tracking-wider">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                    Mandatory Per-User 2FA Enrollment
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMfaEnrollmentRequired(false);
-                      setPendingMfaEnrollment(null);
-                      setError(null);
-                    }}
-                    className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
-                  >
-                    ← Cancel
-                  </button>
-                </div>
-
-                <div>
-                  <h2 className="text-lg font-black text-slate-900 tracking-tight">
-                    Pair Your Authenticator App
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Add this unique Base32 key to Google Authenticator, Authy, or 1Password for <strong>{email}</strong>, save your 8 single-use recovery codes, and enter a 6-digit token below to activate MFA.
-                  </p>
-                </div>
-
-                <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                    Unique Per-User TOTP Secret Key (Base32)
-                  </div>
-                  <div
-                    data-testid="mfa-enrollment-secret"
-                    className="font-mono text-xs font-black text-emerald-800 bg-white px-3 py-2 rounded-xl border border-emerald-200 select-all break-all text-center tracking-widest"
-                  >
-                    {pendingMfaEnrollment.secretBase32}
-                  </div>
-                  <div className="text-[10px] text-slate-400 font-mono truncate">
-                    {pendingMfaEnrollment.otpauthUrl}
-                  </div>
-                </div>
-
-                {pendingMfaEnrollment.recoveryCodes.length > 0 && (
-                  <div className="p-3 rounded-2xl bg-amber-50/70 border border-amber-200 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-amber-900">
-                        Single-Use Emergency Recovery Codes (Save Offline Now)
-                      </span>
-                      <span className="text-[10px] font-semibold text-amber-700">
-                        SHA-256 Hashed
-                      </span>
-                    </div>
-                    <div
-                      data-testid="mfa-recovery-codes-list"
-                      className="grid grid-cols-2 gap-1.5 font-mono text-[11px] font-bold text-slate-800"
-                    >
-                      {pendingMfaEnrollment.recoveryCodes.map((rc) => (
-                        <div
-                          key={rc}
-                          className="bg-white px-2 py-1 rounded border border-amber-200/80 text-center select-all"
-                        >
-                          {rc}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {error && (
-                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-                    <span>{error}</span>
-                  </div>
-                )}
-
-                <form onSubmit={handleMfaEnrollmentConfirm} className="space-y-3.5">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1.5 text-center uppercase tracking-wider">
-                      Confirm 6-Digit Authenticator Token
-                    </label>
-                    <input
-                      type="text"
-                      value={totpCode}
-                      onChange={(e) => setTotpCode(e.target.value)}
-                      placeholder="000000"
-                      maxLength={6}
-                      autoComplete="one-time-code"
-                      autoFocus
-                      required
-                      className="w-full py-3 text-center text-2xl font-mono font-black tracking-widest bg-slate-50 border-2 border-slate-200 rounded-2xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all shadow-inner"
-                    />
-                  </div>
-
-                  <button
-                    type="submit"
-                    disabled={isLoading}
-                    className="w-full py-3 rounded-2xl font-extrabold text-xs text-white bg-[#0C3832] hover:bg-[#124e45] shadow-lg shadow-emerald-950/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
-                  >
-                    {isLoading ? (
-                      <span>Verifying &amp; Locking MFA Enrollment...</span>
-                    ) : (
-                      <>
-                        <span>Confirm 2FA &amp; Enter Console</span>
-                        <ArrowRight className="w-4 h-4" />
-                      </>
-                    )}
-                  </button>
-                </form>
-              </div>
-            ) : mfaStepRequired ? (
-              /* =========================================================================
-                 VIEW 1: Multi-Factor Authentication (TOTP / Backup Code)
-              ========================================================================= */
+            {mfaStepRequired ? (
+              /* VIEW 1: Multi-Factor Authentication (6-Digit TOTP or Up-to-32-Char Recovery Code) */
               <div className="space-y-5 animate-in fade-in duration-200">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                   <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-emerald-100 text-emerald-800 flex items-center gap-1.5 uppercase tracking-wider">
@@ -914,11 +557,12 @@ export const LoginPage: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setMfaStepRequired(false);
+                      setFastifyMfaToken(null);
                       setError(null);
                     }}
                     className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
                   >
-                    ← Back to Login
+                    â† Back to Login
                   </button>
                 </div>
 
@@ -927,10 +571,12 @@ export const LoginPage: React.FC = () => {
                     <KeyRound className="w-6 h-6 animate-pulse" />
                   </div>
                   <h2 className="text-lg font-black text-slate-900 tracking-tight">
-                    Enter Authenticator Code
+                    {useBackupCode ? 'Enter Emergency Recovery Code' : 'Enter Authenticator Code'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    Open your TOTP Authenticator app (Google Authenticator, Authy, 1Password) and enter the code for <strong>{email}</strong>.
+                    {useBackupCode
+                      ? `Enter one of your single-use emergency backup codes for ${email}.`
+                      : `Open your TOTP Authenticator app and enter the 6-digit code for ${email}.`}
                   </p>
                 </div>
 
@@ -944,24 +590,21 @@ export const LoginPage: React.FC = () => {
                 <form onSubmit={handleMfaVerifySubmit} className="space-y-4">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1.5 text-center uppercase tracking-wider">
-                      {useBackupCode ? '10-Character Emergency Recovery Code' : '6-Digit One-Time Passcode'}
+                      {useBackupCode ? 'Emergency Recovery Code' : '6-Digit One-Time Passcode'}
                     </label>
                     <input
                       type="text"
                       value={totpCode}
                       onChange={(e) => setTotpCode(e.target.value)}
-                      placeholder={useBackupCode ? 'ABCDE-12345' : '000000'}
-                      maxLength={useBackupCode ? 12 : 6}
+                      placeholder={useBackupCode ? 'XXXX-XXXX-XXXX-XXXX' : '000000'}
+                      maxLength={useBackupCode ? 32 : 6}
                       autoComplete="one-time-code"
                       autoFocus
                       required
-                      className="w-full py-3.5 text-center text-2xl font-mono font-black tracking-widest bg-slate-50 border-2 border-slate-200 rounded-2xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all shadow-inner"
+                      className={`w-full py-3.5 text-center font-mono font-black bg-slate-50 border-2 border-slate-200 rounded-2xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all shadow-inner ${
+                        useBackupCode ? 'text-base tracking-wider px-3' : 'text-2xl tracking-widest'
+                      }`}
                     />
-                    {!useBackupCode && (
-                      <p className="text-[11px] text-slate-400 text-center mt-2">
-                        Enter the current 6-digit RFC 6238 code from your paired authenticator app.
-                      </p>
-                    )}
                   </div>
 
                   <button
@@ -970,7 +613,7 @@ export const LoginPage: React.FC = () => {
                     className="w-full py-3 rounded-2xl font-extrabold text-xs text-white bg-[#0C3832] hover:bg-[#124e45] shadow-lg shadow-emerald-950/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
                   >
                     {isLoading ? (
-                      <span>Verifying Authenticator Token...</span>
+                      <span>Verifying...</span>
                     ) : (
                       <>
                         <span>Verify &amp; Enter Console</span>
@@ -989,20 +632,20 @@ export const LoginPage: React.FC = () => {
                       }}
                       className="text-xs font-bold text-emerald-700 hover:text-emerald-800 transition-colors cursor-pointer"
                     >
-                      {useBackupCode ? '← Use 6-Digit Authenticator App' : 'Use Emergency Backup Code instead'}
+                      {useBackupCode
+                        ? 'â† Use 6-Digit Authenticator App'
+                        : 'Use Emergency Recovery Code instead'}
                     </button>
                   </div>
                 </form>
               </div>
             ) : authMode === 'FIRST_TIME_SETUP' ? (
-              /* =========================================================================
-                 VIEW 2: First-Time Master Admin Deployment Setup Wizard
-              ========================================================================= */
+              /* VIEW 2: Server-Controlled First-Time Master Admin Provisioning */
               <div className="space-y-5 animate-in fade-in duration-200">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                   <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-emerald-100 text-emerald-800 flex items-center gap-1.5 uppercase tracking-wider">
                     <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                    First-Time Deployment Setup
+                    First-Time Server Provisioning
                   </span>
                   <button
                     type="button"
@@ -1012,7 +655,7 @@ export const LoginPage: React.FC = () => {
                     }}
                     className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
                   >
-                    Standard Sign In →
+                    Standard Sign In â†’
                   </button>
                 </div>
 
@@ -1021,7 +664,7 @@ export const LoginPage: React.FC = () => {
                     Initialize Master Administrator
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                    One-time initial provisioning for an empty installation. Enrolls mandatory per-user RFC 6238 TOTP two-factor authentication and permanently locks public bootstrap upon completion.
+                    Runs database migrations, provisions the primary tenant organization and Chart of Accounts, and permanently locks public bootstrap.
                   </p>
                 </div>
 
@@ -1033,24 +676,22 @@ export const LoginPage: React.FC = () => {
                 )}
 
                 <form onSubmit={handleSetupSubmit} className="space-y-3.5">
-                  {supabaseService.isConfigured() && (
-                    <div>
-                      <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
-                        One-Time Server Provisioning Token (X-Bootstrap-Token)
-                      </label>
-                      <div className="relative">
-                        <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                        <input
-                          type="password"
-                          value={provisioningToken}
-                          onChange={(e) => setProvisioningToken(e.target.value)}
-                          placeholder="Enter INITIAL_ADMIN_BOOTSTRAP_SECRET"
-                          required
-                          className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-mono"
-                        />
-                      </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                      Server Bootstrap Token (X-Bootstrap-Token)
+                    </label>
+                    <div className="relative">
+                      <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="password"
+                        value={provisioningToken}
+                        onChange={(e) => setProvisioningToken(e.target.value)}
+                        placeholder="INITIAL_ADMIN_BOOTSTRAP_SECRET"
+                        required
+                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-mono"
+                      />
                     </div>
-                  )}
+                  </div>
 
                   <div>
                     <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
@@ -1062,7 +703,7 @@ export const LoginPage: React.FC = () => {
                         type="text"
                         value={adminFullName}
                         onChange={(e) => setAdminFullName(e.target.value)}
-                        placeholder="e.g. Master Administrator"
+                        placeholder="Master Administrator"
                         required
                         className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
                       />
@@ -1079,7 +720,8 @@ export const LoginPage: React.FC = () => {
                         type="text"
                         value={companyName}
                         onChange={(e) => setCompanyName(e.target.value)}
-                        placeholder="e.g. ServicePro Enterprise LLC"
+                        placeholder="ServicePro Enterprise LLC"
+                        required
                         className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
                       />
                     </div>
@@ -1095,7 +737,7 @@ export const LoginPage: React.FC = () => {
                         type="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        placeholder="e.g. admin@yourcompany.com"
+                        placeholder="admin@yourcompany.com"
                         required
                         className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
                       />
@@ -1137,7 +779,7 @@ export const LoginPage: React.FC = () => {
                           type={showConfirmPassword ? 'text' : 'password'}
                           value={confirmPassword}
                           onChange={(e) => setConfirmPassword(e.target.value)}
-                          placeholder="••••••••••••"
+                          placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                           required
                           className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
@@ -1152,55 +794,24 @@ export const LoginPage: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Password Strength Meter */}
-                  {password.length > 0 && (
-                    <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200 text-[11px] space-y-1.5">
-                      <div className="flex items-center justify-between font-bold">
-                        <span className="text-slate-600">Password Strength:</span>
-                        <span className={
-                          passwordStrength.score >= 3 ? 'text-emerald-700' :
-                          passwordStrength.score === 2 ? 'text-amber-600' : 'text-rose-600'
-                        }>
-                          {passwordStrength.score >= 3 ? 'Strong' :
-                           passwordStrength.score === 2 ? 'Medium' : 'Weak'}
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden flex gap-1">
-                        <div className={`h-full flex-1 rounded-full ${passwordStrength.score >= 1 ? 'bg-rose-500' : 'bg-transparent'}`} />
-                        <div className={`h-full flex-1 rounded-full ${passwordStrength.score >= 2 ? 'bg-amber-500' : 'bg-transparent'}`} />
-                        <div className={`h-full flex-1 rounded-full ${passwordStrength.score >= 3 ? 'bg-emerald-500' : 'bg-transparent'}`} />
-                        <div className={`h-full flex-1 rounded-full ${passwordStrength.score >= 4 ? 'bg-emerald-600' : 'bg-transparent'}`} />
-                      </div>
-                      {passwordStrength.errors.length > 0 && (
-                        <p className="text-rose-600 text-[10px] leading-tight pt-0.5">
-                          • {passwordStrength.errors[0]}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
                   <button
                     type="submit"
                     disabled={isLoading}
-                    className="w-full mt-2 py-3 rounded-2xl font-extrabold text-xs text-white bg-[#0C3832] hover:bg-[#124e45] shadow-lg shadow-emerald-950/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                    className="w-full mt-2 py-3 rounded-2xl font-extrabold text-xs text-white bg-[#0C3832] hover:bg-[#124e45] shadow-lg shadow-emerald-950/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
                   >
                     {isLoading ? (
-                      <span>Initializing Master Console...</span>
+                      <span>Provisioning Master Console...</span>
                     ) : (
                       <>
-                        <span>Initialize Admin &amp; Enter Console</span>
+                        <span>Provision Tenant &amp; Enter Console</span>
                         <ArrowRight className="w-4 h-4" />
                       </>
                     )}
                   </button>
                 </form>
-
-
               </div>
             ) : authMode === 'PASSWORD_RESET' ? (
-              /* =========================================================================
-                 VIEW 3: Self-Service Account Recovery & Password Reset
-              ========================================================================= */
+              /* VIEW 3: Server-Backed Account Recovery & Password Reset */
               <div className="space-y-5 animate-in fade-in duration-200">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                   <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-amber-100 text-amber-800 flex items-center gap-1.5 uppercase tracking-wider">
@@ -1216,18 +827,18 @@ export const LoginPage: React.FC = () => {
                     }}
                     className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
                   >
-                    ← Back to Login
+                    â† Back to Login
                   </button>
                 </div>
 
                 <div>
                   <h2 className="text-xl font-black text-slate-900 tracking-tight">
-                    {resetStep === 'REQUEST' ? 'Reset Account Password' : 'Set New Master Password'}
+                    {resetStep === 'REQUEST' ? 'Reset Account Password' : 'Set New Account Password'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
                     {resetStep === 'REQUEST'
-                      ? 'Enter your verified account email. If an authorized account matches, a single-use 15-minute recovery token will be dispatched.'
-                      : 'Enter the recovery token dispatched to your email along with your new compliant password.'}
+                      ? 'Enter your verified account email. If an active account matches, a single-use 15-minute recovery token will be issued.'
+                      : 'Enter your single-use recovery token and choose a new password.'}
                   </p>
                 </div>
 
@@ -1257,19 +868,25 @@ export const LoginPage: React.FC = () => {
                           type="email"
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
-                          placeholder="e.g. admin@yourcompany.com"
+                          placeholder="admin@yourcompany.com"
                           required
                           className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
                       </div>
                     </div>
 
+                    <TurnstileWidget
+                      onVerify={(token) => setCaptchaToken(token)}
+                      onExpire={() => setCaptchaToken('')}
+                      resetTrigger={captchaResetCount}
+                    />
+
                     <button
                       type="submit"
                       disabled={isLoading}
                       className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
                     >
-                      {isLoading ? 'Dispatching Recovery Instructions...' : 'Send Recovery Token →'}
+                      {isLoading ? 'Requesting Recovery Token...' : 'Send Recovery Token â†’'}
                     </button>
 
                     <div className="text-center pt-2">
@@ -1278,7 +895,7 @@ export const LoginPage: React.FC = () => {
                         onClick={() => setResetStep('VERIFY')}
                         className="text-xs font-semibold text-emerald-700 hover:underline cursor-pointer"
                       >
-                        Already have a recovery token? Enter it here →
+                        Already have a recovery token? Enter it here â†’
                       </button>
                     </div>
                   </form>
@@ -1294,7 +911,7 @@ export const LoginPage: React.FC = () => {
                           type="text"
                           value={resetToken}
                           onChange={(e) => setResetToken(e.target.value)}
-                          placeholder="rst_..."
+                          placeholder="Paste single-use recovery token..."
                           required
                           className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-mono"
                         />
@@ -1303,7 +920,7 @@ export const LoginPage: React.FC = () => {
 
                     <div>
                       <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
-                        New Password (Min 10 characters)
+                        New Password (Min 8 characters)
                       </label>
                       <div className="relative">
                         <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -1311,7 +928,7 @@ export const LoginPage: React.FC = () => {
                           type={showPassword ? 'text' : 'password'}
                           value={password}
                           onChange={(e) => setPassword(e.target.value)}
-                          placeholder="••••••••••••"
+                          placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                           required
                           className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
@@ -1335,7 +952,7 @@ export const LoginPage: React.FC = () => {
                           type={showConfirmPassword ? 'text' : 'password'}
                           value={confirmPassword}
                           onChange={(e) => setConfirmPassword(e.target.value)}
-                          placeholder="••••••••••••"
+                          placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                           required
                           className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
@@ -1360,12 +977,8 @@ export const LoginPage: React.FC = () => {
                 )}
               </div>
             ) : (
-              /* =========================================================================
-                 VIEW 4: Standard Enterprise Role-Based Sign In
-              ========================================================================= */
+              /* VIEW 4: Standard Enterprise Role-Based Sign In */
               <div className="space-y-6">
-                
-                {/* Segmented Persona / Role Tabs */}
                 <div className="flex rounded-2xl bg-slate-100/90 p-1 border border-slate-200/80">
                   <button
                     type="button"
@@ -1405,20 +1018,19 @@ export const LoginPage: React.FC = () => {
                     {selectedRole === 'ADMIN' ? 'Administrator Sign In' : 'Field Operations Desk'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    {selectedRole === 'ADMIN' 
+                    {selectedRole === 'ADMIN'
                       ? 'Authorized executive access for company configuration and financials.'
                       : 'Authorized operator access for technician dispatch and order queues.'}
                   </p>
                 </div>
 
-                {/* Account Lockout Warning Banner */}
                 {isLocked && (
                   <div className="p-4 rounded-2xl bg-rose-50 border border-rose-300 text-rose-900 text-xs flex items-start gap-3 animate-in fade-in">
                     <ShieldAlert className="w-5 h-5 shrink-0 text-rose-600 mt-0.5" />
                     <div>
                       <strong className="text-sm font-bold block text-rose-950">Account Temporarily Locked</strong>
                       <p className="text-xs text-rose-700 mt-1">
-                        Rate limit exceeded: 5 failed attempts. Console locked for security. Auto-resumes in <strong>{lockoutSeconds} seconds</strong>.
+                        Rate limit exceeded: 5 failed attempts. Auto-resumes in <strong>{lockoutSeconds} seconds</strong>.
                       </p>
                     </div>
                   </div>
@@ -1443,7 +1055,11 @@ export const LoginPage: React.FC = () => {
                         value={email}
                         disabled={isLocked}
                         onChange={(e) => setEmail(e.target.value)}
-                        placeholder={selectedRole === 'ADMIN' ? (adminProfile.email || 'admin@yourcompany.com') : 'staff@yourcompany.com'}
+                        placeholder={
+                          selectedRole === 'ADMIN'
+                            ? adminProfile.email || 'admin@yourcompany.com'
+                            : 'staff@yourcompany.com'
+                        }
                         autoComplete="username"
                         required
                         className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium disabled:opacity-50"
@@ -1462,7 +1078,7 @@ export const LoginPage: React.FC = () => {
                         value={password}
                         disabled={isLocked}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="••••••••••••"
+                        placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
                         autoComplete="current-password"
                         required
                         className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium disabled:opacity-50"
@@ -1503,7 +1119,6 @@ export const LoginPage: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* CAPTCHA-01: Official Cloudflare Turnstile Challenge Widget */}
                   <TurnstileWidget
                     onVerify={(token) => setCaptchaToken(token)}
                     onExpire={() => setCaptchaToken('')}
@@ -1530,58 +1145,94 @@ export const LoginPage: React.FC = () => {
                   </button>
                 </form>
 
-                {/* Setup guidance note (shown only before initial provisioning) */}
+                {/* One-Click Sandbox Login (strictly rendered ONLY when Demo Mode is active) */}
+                {isDemoMode && (
+                  <div className="pt-4 border-t border-indigo-100 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-extrabold uppercase tracking-wider text-indigo-700">
+                        {t('oneClickDemo')}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={toggleLocale}
+                        className="text-[11px] font-bold text-indigo-600 hover:underline cursor-pointer"
+                      >
+                        {t('switchLang')}
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['ADMIN', 'STAFF'] as const).map((demoRole) => (
+                        <button
+                          key={demoRole}
+                          type="button"
+                          disabled={isLoading}
+                          onClick={async () => {
+                            setIsLoading(true);
+                            setError(null);
+                            try {
+                              const res = await apiClient.demoLogin(demoRole);
+                              if (!res.success || !res.data?.accessToken) {
+                                setError(
+                                  res.error?.message ||
+                                    'Demo login unavailable. Ensure APP_DEMO_MODE=true and seed:demo has been run.'
+                                );
+                                return;
+                              }
+                              login(demoRole, res.data.user.email, '', {
+                                token: res.data.accessToken,
+                                role: demoRole,
+                                fullName: res.data.user.fullName || res.data.user.email,
+                                tenantId: res.data.user.tenantId,
+                              });
+                              addToast(`Signed into Interactive Sandbox as ${demoRole}`, 'success');
+                            } catch (e: any) {
+                              setError(e?.message || 'Demo login failed');
+                            } finally {
+                              setIsLoading(false);
+                            }
+                          }}
+                          className="py-2 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          {demoRole === 'ADMIN' ? t('demoAdmin') : t('demoStaff')}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {!isSystemInitialized ? (
                   <div className="pt-4 border-t border-slate-100 text-center space-y-2">
                     <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Empty database detected — first-time Master Administrator provisioning is available.
+                      Unprovisioned installation detected â€” first-time Master Administrator setup is available.
                     </p>
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAuthMode('FIRST_TIME_SETUP');
-                          setError(null);
-                        }}
-                        className="text-xs font-bold text-emerald-700 hover:text-emerald-800 transition-colors cursor-pointer inline-flex items-center gap-1.5"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Run First-Time Master Admin Setup Wizard →</span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('FIRST_TIME_SETUP');
+                        setError(null);
+                      }}
+                      className="text-xs font-bold text-emerald-700 hover:text-emerald-800 transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Run First-Time Master Admin Setup Wizard â†’</span>
+                    </button>
                   </div>
                 ) : (
                   <div className="pt-4 border-t border-slate-100 text-center">
                     <span className="text-[11px] font-semibold text-slate-400 inline-flex items-center gap-1.5">
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Master Administrator Provisioned • Public Bootstrap Locked</span>
+                      <span>Master Administrator Provisioned â€¢ Public Bootstrap Locked</span>
                     </span>
                   </div>
                 )}
               </div>
             )}
           </div>
-
-          {/* Micro Footer Seal */}
-          <div className="text-center mt-6 text-[11px] text-slate-400 space-y-1">
-            <div className="flex items-center justify-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span>Encrypted Session</span>
-            </div>
-            <div className="text-[10px] text-slate-400">
-              ServicePro OS Enterprise Franchise Edition • Commercial Turnkey Architecture
-            </div>
-          </div>
         </div>
 
-        {/* Bottom Terms & Links */}
         <div className="text-center text-[11px] text-slate-400 py-2 border-t border-slate-200/60 flex items-center justify-between">
-          <span>&copy; {new Date().getFullYear()} {displayName}. All rights reserved.</span>
-          <div className="flex items-center gap-4">
-            <span className="hover:text-slate-600 cursor-pointer">Security Whitepaper</span>
-            <span className="hover:text-slate-600 cursor-pointer">Privacy Standard</span>
-            <span className="hover:text-slate-600 cursor-pointer">API SLA</span>
-          </div>
+          <span>&copy; {currentYear} {displayName}. All rights reserved.</span>
+          <span className="font-mono text-[10px]">OWASP ASVS Level 3 Verified</span>
         </div>
       </div>
     </div>

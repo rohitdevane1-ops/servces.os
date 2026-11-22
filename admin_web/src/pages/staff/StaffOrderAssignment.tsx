@@ -1,16 +1,10 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
   UserCheck, 
   Search, 
   MapPin, 
-  Star, 
-  Briefcase, 
-  Clock, 
   ShieldCheck, 
-  CheckCircle2, 
-  AlertTriangle,
-  ArrowRight,
   Phone
 } from 'lucide-react';
 import { Booking } from '../../types';
@@ -20,8 +14,7 @@ export const StaffOrderAssignment: React.FC = () => {
     bookings, 
     technicians, 
     assignTechnician, 
-    addToast,
-    openAssignModal
+    addToast
   } = useAdmin();
 
   const pendingBookings = bookings.filter(b => b.status === 'Pending');
@@ -143,7 +136,7 @@ export const StaffOrderAssignment: React.FC = () => {
                 </div>
                 <div className="text-sm font-black flex items-center gap-2 mt-0.5">
                   <span>{selectedBooking.jobNo}</span>
-                  <span>•</span>
+                  <span>â€¢</span>
                   <span>{selectedBooking.serviceName}</span>
                 </div>
                 <div className="text-xs text-emerald-100/80 mt-0.5">
@@ -223,7 +216,7 @@ export const StaffOrderAssignment: React.FC = () => {
                             <ShieldCheck className="w-4 h-4 text-emerald-600" />
                           </div>
                           <div className="text-xs text-slate-500 font-medium mt-0.5">
-                            {tech.specialization} Pro • ★ {tech.rating}
+                            {tech.specialization} Pro â€¢ â˜… {tech.rating}
                           </div>
                         </div>
                       </div>

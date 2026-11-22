@@ -35,6 +35,28 @@ fun LoginScreen(
     var mfaSessionToken by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
+    var isDemoMode by remember { mutableStateOf(ApiClient.isDemoMode) }
+
+    LaunchedEffect(Unit) {
+        ApiClient.fetchSystemConfig().onSuccess {
+            isDemoMode = ApiClient.isDemoMode
+        }
+    }
+
+    fun handleDemoLogin(role: String) {
+        errorMessage = null
+        isLoading = true
+        coroutineScope.launch {
+            val result = ApiClient.demoLogin(role)
+            isLoading = false
+            result.onSuccess {
+                val resolvedRole = ApiClient.getUserRole() ?: role
+                onLoginSuccess(resolvedRole)
+            }.onFailure { err ->
+                errorMessage = err.message ?: "Demo sandbox login unavailable."
+            }
+        }
+    }
 
     fun handleLogin() {
         val trimmedEmail = email.trim()
@@ -266,6 +288,34 @@ fun LoginScreen(
                 }
 
                 if (step == 1) {
+                    if (isDemoMode) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { handleDemoLogin("CUSTOMER") },
+                                enabled = !isLoading,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                            ) {
+                                Text("Demo Customer")
+                            }
+                            OutlinedButton(
+                                onClick = { handleDemoLogin("TECHNICIAN") },
+                                enabled = !isLoading,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                            ) {
+                                Text("Demo Technician")
+                            }
+                        }
+                    }
+
                     OutlinedButton(
                         onClick = { handleRestoreSavedSession() },
                         enabled = !isLoading,

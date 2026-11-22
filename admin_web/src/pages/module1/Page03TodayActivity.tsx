@@ -1,15 +1,12 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { downloadCSV } from '../../utils/exportUtils';
 import { 
   Clock, 
   CheckCircle2, 
-  AlertCircle, 
   DollarSign, 
   UserCheck, 
-  Filter, 
   Download, 
-  MapPin, 
   RefreshCw,
   Search,
   ExternalLink
@@ -67,7 +64,7 @@ export const Page03TodayActivity: React.FC = () => {
         time: b.scheduleTime || 'Today',
         category: cat,
         title: `${b.serviceName} (${b.status})`,
-        description: `Customer: ${b.customerName} • Assigned: ${b.technicianName} • ${b.customerAddress || 'On-site'}`,
+        description: `Customer: ${b.customerName} â€¢ Assigned: ${b.technicianName} â€¢ ${b.customerAddress || 'On-site'}`,
         actor: b.technicianName || 'Central Dispatch',
         actorRole: b.technicianName !== 'Unassigned' ? 'Field Pro' : 'Dispatcher',
         jobNo: b.jobNo.replace('#', ''),

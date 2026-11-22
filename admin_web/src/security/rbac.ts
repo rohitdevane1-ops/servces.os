@@ -95,13 +95,13 @@ export function isRouteAuthorized(role: UserRole, routePath: string): { authoriz
   return { authorized: true };
 }
 
-export function canAccessPage(role: UserRole, pageId: number): boolean {
+export function canAccessPage(role: UserRole, _pageId: number): boolean {
   if (role === 'ADMIN') return true;
   // Staff cannot access Admin Pages 1-36
   return false;
 }
 
-export function canAccessStaffPage(role: UserRole, staffPageId: number): boolean {
+export function canAccessStaffPage(_role: UserRole, _staffPageId: number): boolean {
   // Both Admin and Staff can access operational staff desk pages
   return true;
 }

@@ -159,7 +159,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Verify Clean Environment Template
+      - name: Verify Clean Environment Template & Run Release Validators
         run: |
           test -f .env.example
           test -f docker-compose.yml
@@ -167,7 +167,9 @@ jobs:
           test -f PROJECT_ARCHITECTURE.md
           test -f INSTALLATION_GUIDE.md
           test -f API_DOCUMENTATION.md
-          echo "All commercial deployment dossiers and configuration templates present."
+          node scripts/validate_migrations.cjs
+          node scripts/validate_dart_codebase.cjs
+          echo "All commercial deployment dossiers, SQL migrations, and mobile codebase validators passed."
 
       - name: Backend Dependency Vulnerability Audit
         run: |
@@ -178,3 +180,27 @@ jobs:
         run: |
           cd admin_web
           npm audit --omit=dev --audit-level=high
+
+  # ============================================================================
+  # 5. FLUTTER MOBILE APPLICATION STATIC ANALYSIS
+  # ============================================================================
+  flutter-analyze:
+    name: Flutter Mobile Static Analysis (serviceos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install Packages & Analyze Dart Code
+        run: |
+          cd serviceos
+          flutter pub get
+          flutter analyze --no-fatal-infos

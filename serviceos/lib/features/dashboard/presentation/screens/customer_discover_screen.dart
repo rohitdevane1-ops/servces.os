@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../data/models/service_model.dart';
 import '../../../../data/repositories/service_repository.dart';
@@ -257,10 +258,10 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildNavItem(Icons.explore_rounded, 'Discover', true, primaryBrand, textSecondary),
-              _buildNavItem(Icons.calendar_month_rounded, 'Bookings', false, primaryBrand, textSecondary),
-              _buildNavItem(Icons.chat_bubble_outline_rounded, 'Messages', false, primaryBrand, textSecondary),
-              _buildNavItem(Icons.person_outline_rounded, 'Profile', false, primaryBrand, textSecondary),
+              _buildNavItem(Icons.explore_rounded, 'Discover', true, primaryBrand, textSecondary, () {}),
+              _buildNavItem(Icons.calendar_month_rounded, 'Bookings', false, primaryBrand, textSecondary, () => context.push('/customer/my-bookings')),
+              _buildNavItem(Icons.chat_bubble_outline_rounded, 'Messages', false, primaryBrand, textSecondary, () => context.push('/common/chat')),
+              _buildNavItem(Icons.person_outline_rounded, 'Profile', false, primaryBrand, textSecondary, () => context.push('/customer/profile')),
             ],
           ),
         ),
@@ -268,21 +269,28 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
     );
   }
 
-  Widget _buildNavItem(IconData icon, String label, bool isActive, Color activeColor, Color inactiveColor) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 22, color: isActive ? activeColor : inactiveColor),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-            color: isActive ? activeColor : inactiveColor,
-          ),
+  Widget _buildNavItem(IconData icon, String label, bool isActive, Color activeColor, Color inactiveColor, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 22, color: isActive ? activeColor : inactiveColor),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                color: isActive ? activeColor : inactiveColor,
+              ),
+            ),
+          ],
         ),
-      ],
+      ),
     );
   }
 
@@ -356,7 +364,10 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  onPressed: () => Navigator.pop(ctx),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    context.push('/customer/booking-wizard', extra: service);
+                  },
                   child: const Text(
                     'Proceed to Scheduling & Dispatch',
                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),

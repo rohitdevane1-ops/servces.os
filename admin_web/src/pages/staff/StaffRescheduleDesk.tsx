@@ -1,53 +1,50 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
-import { 
-  CalendarRange, 
-  Clock, 
-  Calendar, 
-  CheckCircle2, 
-  AlertCircle, 
-  ArrowRight,
-  Phone
-} from 'lucide-react';
+import { useAdmin } from '../../context/adminContextCore';
+import { buildScheduledStartIso } from '../../utils/formatters';
+import { CalendarRange } from 'lucide-react';
 import { Booking } from '../../types';
 
 export const StaffRescheduleDesk: React.FC = () => {
-  const { bookings, addToast, rescheduleBooking } = useAdmin();
-  const scheduledOrders = bookings.filter(b => b.status === 'Scheduled' || b.status === 'Pending');
+  const { bookings, rescheduleBooking } = useAdmin();
+  const scheduledOrders = bookings.filter((b) => b.status === 'Scheduled' || b.status === 'Pending');
   const [selectedOrder, setSelectedOrder] = useState<Booking | null>(
     scheduledOrders.length > 0 ? scheduledOrders[0] : null
   );
-  const [newDate, setNewDate] = useState('Nov 16, 2026');
+  const [newDate, setNewDate] = useState(() => {
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    return tomorrow.toISOString().slice(0, 10);
+  });
+  const [minDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [newSlot, setNewSlot] = useState('02:00 PM - 04:00 PM');
   const [reason, setReason] = useState('Customer Out of Town');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleReschedule = (e: React.FormEvent) => {
+  const handleReschedule = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedOrder) return;
-
-    rescheduleBooking(selectedOrder.id, newDate, newSlot, reason);
+    setIsSubmitting(true);
+    const iso = buildScheduledStartIso(newDate, newSlot);
+    await rescheduleBooking(selectedOrder.id, iso, reason);
+    setIsSubmitting(false);
   };
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-black text-slate-900 tracking-tight">Order Rescheduling Desk</h1>
         <p className="text-xs text-slate-500 mt-1">
-          Adjust appointment dates and time slots with automated technician calendar sync.
+          Adjust appointment dates and time slots with live PostgreSQL booking persistence.
         </p>
       </div>
 
-      {/* Grid: Select Order (1 col) + Reschedule Form (2 cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column: Orders List */}
         <div className="bg-white rounded-2xl p-4.5 border border-slate-200/80 shadow-xs flex flex-col h-full">
           <h2 className="text-xs font-black text-slate-900 uppercase tracking-wide mb-3 pb-2 border-b border-slate-100">
             Orders Available for Reschedule
           </h2>
 
           <div className="space-y-2.5 overflow-y-auto max-h-[500px] thin-scrollbar pr-1">
-            {scheduledOrders.map(order => {
+            {scheduledOrders.map((order) => {
               const isSelected = selectedOrder?.id === order.id;
               return (
                 <div
@@ -71,7 +68,6 @@ export const StaffRescheduleDesk: React.FC = () => {
           </div>
         </div>
 
-        {/* Right 2 Columns: Reschedule Form */}
         <div className="lg:col-span-2 bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs">
           {selectedOrder ? (
             <form onSubmit={handleReschedule} className="space-y-4">
@@ -80,10 +76,13 @@ export const StaffRescheduleDesk: React.FC = () => {
                   Selected Booking for Slot Change
                 </span>
                 <div className="text-sm font-black text-slate-900 mt-0.5">
-                  {selectedOrder.jobNo} • {selectedOrder.serviceName}
+                  {selectedOrder.jobNo} â€¢ {selectedOrder.serviceName}
                 </div>
                 <div className="text-xs text-slate-600 mt-0.5">
-                  Current Schedule: <span className="font-bold text-slate-800">{selectedOrder.scheduleDate} at {selectedOrder.scheduleTime}</span>
+                  Current Schedule:{' '}
+                  <span className="font-bold text-slate-800">
+                    {selectedOrder.scheduleDate} at {selectedOrder.scheduleTime}
+                  </span>
                 </div>
               </div>
 
@@ -94,6 +93,7 @@ export const StaffRescheduleDesk: React.FC = () => {
                 <input
                   type="date"
                   value={newDate}
+                  min={minDate}
                   onChange={(e) => setNewDate(e.target.value)}
                   className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-emerald-600"
                 />
@@ -124,7 +124,7 @@ export const StaffRescheduleDesk: React.FC = () => {
                   onChange={(e) => setReason(e.target.value)}
                   className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-emerald-600"
                 >
-                  <option value="Customer Out of Town">Customer requested delay — Out of town</option>
+                  <option value="Customer Out of Town">Customer requested delay â€” Out of town</option>
                   <option value="Technician Shift Overlap">Technician previous job ran over SLA</option>
                   <option value="Customer Special Access Slot">Customer requested gated society morning slot</option>
                   <option value="Inclement Weather">Severe Weather Conditions / Rain</option>
@@ -133,15 +133,16 @@ export const StaffRescheduleDesk: React.FC = () => {
 
               <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between">
                 <span className="text-[11px] text-slate-400">
-                  Technician {selectedOrder.technicianName} will receive calendar update.
+                  Technician {selectedOrder.technicianName} will receive schedule update.
                 </span>
 
                 <button
                   type="submit"
-                  className="px-5 py-2.5 bg-[#0C3832] hover:bg-[#124e45] text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer"
+                  disabled={isSubmitting}
+                  className="px-5 py-2.5 bg-[#0C3832] hover:bg-[#124e45] disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer"
                 >
                   <CalendarRange className="w-4 h-4 text-amber-300" />
-                  <span>Confirm Slot Reschedule</span>
+                  <span>{isSubmitting ? 'Updating...' : 'Confirm Slot Reschedule'}</span>
                 </button>
               </div>
             </form>

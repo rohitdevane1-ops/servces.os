@@ -28,6 +28,43 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _mfaSessionToken;
   String? _errorMessage;
 
+  bool _isDemoMode = ApiClient.instance.isDemoMode;
+
+  @override
+  void initState() {
+    super.initState();
+    ApiClient.instance.fetchSystemConfig().then((_) {
+      if (mounted) {
+        setState(() => _isDemoMode = ApiClient.instance.isDemoMode);
+      }
+    });
+  }
+
+  Future<void> _handleDemoLogin(String role) async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final res = await ApiClient.instance.demoLogin(role);
+      if (!mounted) return;
+      if (res['success'] == true) {
+        widget.onLoginSuccess?.call();
+      } else {
+        setState(() {
+          _errorMessage = res['error']?['message']?.toString() ?? 'Demo login unavailable';
+          _isLoading = false;
+        });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = 'Demo sandbox login unavailable on this server.';
+        _isLoading = false;
+      });
+    }
+  }
+
   @override
   void dispose() {
     _emailController.dispose();
@@ -63,7 +100,7 @@ class _LoginScreenState extends State<LoginScreen> {
       final res = await ApiClient.instance.login(email, password);
       if (!mounted) return;
 
-      if (res['success'] == true) {
+                if (res['success'] == true) {
         final data = res['data'] as Map<String, dynamic>? ?? {};
         if (data['status'] == 'MFA_REQUIRED') {
           setState(() {
@@ -72,6 +109,17 @@ class _LoginScreenState extends State<LoginScreen> {
             _isLoading = false;
           });
           _totpFocusNodes[0].requestFocus();
+          return;
+        }
+
+        final userRole = (data['user']?['role'] ?? '').toString().toUpperCase();
+        if (userRole != 'CUSTOMER' && userRole != 'TECHNICIAN') {
+          await ApiClient.instance.logout();
+          if (!mounted) return;
+          setState(() {
+            _errorMessage = 'Mobile app supports Customer and Technician accounts only. Please use the Admin Web Portal.';
+            _isLoading = false;
+          });
           return;
         }
 
@@ -131,6 +179,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _handleRestoreSavedSession() async {
     final refresh = await ApiClient.instance.getRefreshToken();
+    if (!mounted) return;
     if (refresh == null || refresh.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No saved session found. Please sign in with email and password first.')),
@@ -477,6 +526,51 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
 
               const SizedBox(height: 16),
+
+              if (_isDemoMode && !_isMfaStep) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF10B981).withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFF10B981).withOpacity(0.35)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'DEMO SANDBOX QUICK ACCESS',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF10B981),
+                          letterSpacing: 0.6,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _isLoading ? null : () => _handleDemoLogin('CUSTOMER'),
+                              child: const Text('Demo Customer', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _isLoading ? null : () => _handleDemoLogin('TECHNICIAN'),
+                              child: const Text('Demo Technician', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
 
               Center(
                 child: TextButton(

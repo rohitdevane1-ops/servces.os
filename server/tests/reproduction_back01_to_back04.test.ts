@@ -97,8 +97,8 @@ describe('Financial Integrity Reproduction & Verification Suite (BACK-01 through
     // Balance calculation must check all active and confirmed states
     assert.match(
       financesSrc,
-      /status\s+IN\s*\([^)]*TRANSFER_CONFIRMED[^)]*\)/,
-      'DEFECT BACK-04: Payout balance query must recognize TRANSFER_CONFIRMED state'
+      /status\s+IN\s*\([^)]*'PROCESSING'[^)]*'PENDING_PROVIDER_CONFIRMATION'[^)]*\)/,
+      'DEFECT BACK-04: Payout balance query must recognize PROCESSING and PENDING_PROVIDER_CONFIRMATION states'
     );
 
     assert.match(

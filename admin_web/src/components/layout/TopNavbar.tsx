@@ -1,25 +1,20 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useAdmin } from '../../context/AdminContext';
-import { scanUntrustedInput } from '../../security/apiSecurity';
+import { useAdmin } from '../../context/adminContextCore';
+import { useLocale } from '../../i18n/localeCore';
 import { 
   Menu, 
   Search, 
   Bell, 
   Plus, 
-  ShieldCheck,
   User,
-  Users,
   Settings,
-  ArrowRightLeft,
   LogOut,
   ChevronDown,
-  CheckCircle2,
   Lock,
   Smartphone,
   Radio,
   Palette,
-  Server,
-  Sparkles
+  Server
 } from 'lucide-react';
 
 export const TopNavbar: React.FC = () => {
@@ -35,22 +30,19 @@ export const TopNavbar: React.FC = () => {
     navigateToStaffPage,
     userProfile,
     openProfileModal,
-    openUserDossier,
     navigateToFacebookProfile,
     lockSession,
     incidents,
     isDemoMode,
-    enableDemoMode,
-    disableDemoMode,
     setIsMobileSimulatorOpen,
     setIsDispatchSimulatorOpen,
     setIsWhiteLabelModalOpen
   } = useAdmin();
 
+  const { locale, toggleLocale, t } = useLocale();
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown on outside click
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
@@ -82,15 +74,7 @@ export const TopNavbar: React.FC = () => {
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => {
-              const val = e.target.value;
-              const scan = scanUntrustedInput(val, 'global_search_bar');
-              if (scan.hasThreat) {
-                addToast(`Security Warning: Intercepted potential ${scan.threatType} attempt. Payload blocked.`, 'error');
-                return;
-              }
-              setSearchQuery(val);
-            }}
+            onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={
               currentRole === 'ADMIN' 
                 ? "Search across all bookings, technicians, customers, invoices..."
@@ -103,47 +87,47 @@ export const TopNavbar: React.FC = () => {
 
       {/* 2. Right: Action Buttons & Clean Profile Menu */}
       <div className="flex items-center gap-2.5">
-        {/* Commercial Showcase Pitch Mode Toggle */}
+        {/* Bilingual English (LTR) / Arabic (RTL) Switcher */}
         <button
-          onClick={() => {
-            if (isDemoMode) {
-              disableDemoMode();
-            } else {
-              enableDemoMode();
-            }
-          }}
-          className={`px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 border transition-all cursor-pointer shadow-2xs ${
-            isDemoMode
-              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 hover:bg-emerald-500/20'
-              : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200'
-          }`}
-          title={isDemoMode ? "Currently in Showcase Pitch Mode. Click to wipe clean." : "Currently in Clean Production Mode. Click to load demonstration fixtures."}
+          onClick={toggleLocale}
+          className="px-2.5 py-1.5 rounded-xl font-bold text-xs border border-indigo-200 bg-indigo-50/70 text-indigo-700 hover:bg-indigo-100 transition-all cursor-pointer"
+          title={locale === 'en' ? 'Switch to Arabic (RTL)' : 'Switch to English (LTR)'}
         >
-          <span className={`w-2 h-2 rounded-full ${isDemoMode ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`}></span>
-          <span className="hidden sm:inline font-extrabold text-[11px]">
-            {isDemoMode ? 'Pitch Demo Active' : 'Clean Production'}
-          </span>
+          {t('switchLang')}
         </button>
 
-        {/* Live Mobile Simulator Trigger */}
-        <button
-          onClick={() => setIsMobileSimulatorOpen(true)}
-          className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 font-bold text-xs rounded-xl shadow-2xs transition-all flex items-center gap-1 cursor-pointer"
-          title="Open In-Browser Live Flutter Mobile Simulator"
-        >
-          <Smartphone className="w-3.5 h-3.5" />
-          <span className="hidden md:inline text-[11px]">Mobile Apps</span>
-        </button>
+        {/* Demo Sandbox Indicators & Simulators — strictly visible ONLY when connected to the Demo Sandbox */}
+        {isDemoMode && currentRole === 'ADMIN' && (
+          <>
+            <div
+              className="px-3 py-1.5 rounded-xl font-bold text-xs flex items-center gap-1.5 border bg-emerald-500/10 border-emerald-500/30 text-emerald-700 shadow-2xs"
+              title="Connected to Isolated Demo Sandbox Database"
+            >
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span className="hidden sm:inline font-extrabold text-[11px]">
+                DEMO SANDBOX
+              </span>
+            </div>
 
-        {/* Live Tri-Party Dispatch Simulator */}
-        <button
-          onClick={() => setIsDispatchSimulatorOpen(true)}
-          className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/80 font-bold text-xs rounded-xl shadow-2xs transition-all flex items-center gap-1 cursor-pointer"
-          title="Open Tri-Party Live Dispatch & Escrow Simulator"
-        >
-          <Radio className="w-3.5 h-3.5" />
-          <span className="hidden lg:inline text-[11px]">Radar Sim</span>
-        </button>
+            <button
+              onClick={() => setIsMobileSimulatorOpen(true)}
+              className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200/80 font-bold text-xs rounded-xl shadow-2xs transition-all flex items-center gap-1 cursor-pointer"
+              title="Open In-Browser Live Flutter Mobile Simulator"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span className="hidden md:inline text-[11px]">Mobile Apps</span>
+            </button>
+
+            <button
+              onClick={() => setIsDispatchSimulatorOpen(true)}
+              className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200/80 font-bold text-xs rounded-xl shadow-2xs transition-all flex items-center gap-1 cursor-pointer"
+              title="Open Tri-Party Live Dispatch & Escrow Simulator"
+            >
+              <Radio className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline text-[11px]">Radar Sim</span>
+            </button>
+          </>
+        )}
 
         {/* Create Booking CTA */}
         <button
@@ -239,7 +223,6 @@ export const TopNavbar: React.FC = () => {
 
               {/* Profile Actions */}
               <div className="p-1 space-y-1 text-xs">
-                {/* 1. Full Screen Operator Profile */}
                 <button
                   onClick={() => {
                     setIsDropdownOpen(false);
@@ -267,31 +250,32 @@ export const TopNavbar: React.FC = () => {
                   <span>Edit Profile &amp; Security</span>
                 </button>
 
-                <button
-                  onClick={() => {
-                    setIsDropdownOpen(false);
-                    setIsWhiteLabelModalOpen(true);
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-indigo-700 hover:text-indigo-900 hover:bg-indigo-50 font-semibold transition-colors cursor-pointer text-left"
-                >
-                  <Palette className="w-4 h-4 text-indigo-600" />
-                  <span>White-Label &amp; Currency</span>
-                </button>
+                {currentRole === 'ADMIN' && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setIsDropdownOpen(false);
+                        setIsWhiteLabelModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-indigo-700 hover:text-indigo-900 hover:bg-indigo-50 font-semibold transition-colors cursor-pointer text-left"
+                    >
+                      <Palette className="w-4 h-4 text-indigo-600" />
+                      <span>White-Label &amp; Currency</span>
+                    </button>
 
-                <button
-                  onClick={() => {
-                    setIsDropdownOpen(false);
-                    if (currentRole === 'ADMIN') {
-                      navigateToPage(38);
-                    }
-                    window.location.hash = '#/installer';
-                    addToast('Opening System Health & Installer Suite', 'info');
-                  }}
-                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-slate-700 hover:text-slate-900 hover:bg-slate-100 font-semibold transition-colors cursor-pointer text-left"
-                >
-                  <Server className="w-4 h-4 text-emerald-600" />
-                  <span>System Installer &amp; Health</span>
-                </button>
+                    <button
+                      onClick={() => {
+                        setIsDropdownOpen(false);
+                        window.location.hash = '#/installer';
+                        addToast('Opening System Health & Installer Suite', 'info');
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-slate-700 hover:text-slate-900 hover:bg-slate-100 font-semibold transition-colors cursor-pointer text-left"
+                    >
+                      <Server className="w-4 h-4 text-emerald-600" />
+                      <span>System Installer &amp; Health</span>
+                    </button>
+                  </>
+                )}
 
                 <button
                   onClick={() => {

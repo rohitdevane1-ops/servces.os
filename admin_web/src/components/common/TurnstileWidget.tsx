@@ -28,7 +28,6 @@ interface TurnstileWidgetProps {
   resetTrigger?: number;
 }
 
-// Cloudflare official test sitekey (always passes in non-production/testing)
 const CLOUDFLARE_TEST_SITEKEY = '1x00000000000000000000AA';
 
 export const TurnstileWidget: React.FC<TurnstileWidgetProps> = ({
@@ -40,26 +39,32 @@ export const TurnstileWidget: React.FC<TurnstileWidgetProps> = ({
   const widgetIdRef = useRef<string | null>(null);
   const [status, setStatus] = useState<'LOADING' | 'READY' | 'VERIFIED' | 'ERROR'>('LOADING');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
 
   const siteKey =
     (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined)?.trim() ||
     (import.meta.env.DEV ? CLOUDFLARE_TEST_SITEKEY : '');
 
-  if (import.meta.env.PROD && !siteKey) {
-    throw new Error('Missing VITE_TURNSTILE_SITE_KEY for production');
-  }
+  const isMissingProdKey = Boolean(import.meta.env.PROD && !siteKey);
+  const onVerifyRef = useRef(onVerify);
+  const onExpireRef = useRef(onExpire);
 
   useEffect(() => {
+    onVerifyRef.current = onVerify;
+    onExpireRef.current = onExpire;
+  }, [onVerify, onExpire]);
+
+  useEffect(() => {
+    if (isMissingProdKey) return;
     let isMounted = true;
 
     function renderWidget() {
       if (!isMounted || !containerRef.current || !window.turnstile) return;
 
-      // Clean up previous widget instance if exists
       if (widgetIdRef.current) {
         try {
           window.turnstile.remove(widgetIdRef.current);
-        } catch (_) {}
+        } catch {}
         widgetIdRef.current = null;
       }
 
@@ -72,34 +77,34 @@ export const TurnstileWidget: React.FC<TurnstileWidgetProps> = ({
             if (!isMounted) return;
             setStatus('VERIFIED');
             setErrorMessage(null);
-            onVerify(token);
+            onVerifyRef.current(token);
           },
           'expired-callback': () => {
             if (!isMounted) return;
             setStatus('READY');
-            if (onExpire) onExpire();
+            if (onExpireRef.current) onExpireRef.current();
           },
           'error-callback': (code: string) => {
             if (!isMounted) return;
             setStatus('ERROR');
             setErrorMessage(`Turnstile challenge error (${code}). Please retry.`);
-            if (onExpire) onExpire();
+            if (onExpireRef.current) onExpireRef.current();
           },
         });
         widgetIdRef.current = id;
         setStatus('READY');
-      } catch (err: any) {
+      } catch {
         if (!isMounted) return;
         setStatus('ERROR');
         setErrorMessage('Failed to initialize verification challenge.');
       }
     }
 
-    // Check if Turnstile script is already loaded
     if (window.turnstile) {
-      renderWidget();
+      queueMicrotask(() => {
+        if (isMounted) renderWidget();
+      });
     } else {
-      // Load script dynamically
       const existingScript = document.getElementById('cf-turnstile-script');
       if (!existingScript) {
         const script = document.createElement('script');
@@ -127,20 +132,37 @@ export const TurnstileWidget: React.FC<TurnstileWidgetProps> = ({
       if (widgetIdRef.current && window.turnstile) {
         try {
           window.turnstile.remove(widgetIdRef.current);
-        } catch (_) {}
+        } catch {}
       }
     };
-  }, [siteKey]);
+  }, [siteKey, isMissingProdKey, retryAttempt]);
 
-  // Reset widget when resetTrigger changes
   useEffect(() => {
     if (resetTrigger > 0 && widgetIdRef.current && window.turnstile) {
       try {
         window.turnstile.reset(widgetIdRef.current);
-        setStatus('READY');
-      } catch (_) {}
+        queueMicrotask(() => setStatus('READY'));
+      } catch {}
     }
   }, [resetTrigger]);
+
+  const handleRetry = () => {
+    setStatus('LOADING');
+    setErrorMessage(null);
+    const failedScript = document.getElementById('cf-turnstile-script');
+    if (failedScript && !window.turnstile) {
+      failedScript.remove();
+    }
+    setRetryAttempt(prev => prev + 1);
+  };
+
+  if (isMissingProdKey) {
+    return (
+      <div className="p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-700 font-semibold">
+        Turnstile CAPTCHA is not configured (<code className="font-mono">VITE_TURNSTILE_SITE_KEY</code> missing).
+      </div>
+    );
+  }
 
   return (
     <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-2xl">
@@ -160,7 +182,6 @@ export const TurnstileWidget: React.FC<TurnstileWidgetProps> = ({
         </span>
       </div>
 
-      {/* Turnstile Container */}
       <div ref={containerRef} className="min-h-[65px] flex items-center justify-center" />
 
       {status === 'LOADING' && (
@@ -170,9 +191,21 @@ export const TurnstileWidget: React.FC<TurnstileWidgetProps> = ({
         </div>
       )}
 
-      {status === 'ERROR' && errorMessage && (
-        <div className="text-[11px] font-semibold text-rose-600 mt-1 text-center">
-          {errorMessage}
+      {status === 'ERROR' && (
+        <div className="mt-1 flex flex-col items-center gap-2">
+          {errorMessage && (
+            <div className="text-[11px] font-semibold text-rose-600 text-center">
+              {errorMessage}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={handleRetry}
+            className="px-3 py-1 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-[11px] font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer shadow-2xs"
+          >
+            <RefreshCw className="w-3 h-3" />
+            <span>Retry Verification</span>
+          </button>
         </div>
       )}
     </div>

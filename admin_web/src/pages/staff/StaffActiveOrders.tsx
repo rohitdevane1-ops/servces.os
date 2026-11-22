@@ -1,19 +1,14 @@
 import React from 'react';
-import { useAdmin } from '../../context/AdminContext';
-import { 
-  Clock, 
-  MapPin, 
-  Phone, 
-  ShieldCheck, 
-  CheckCircle2, 
-  AlertTriangle, 
-  Package, 
-  ArrowRight,
-  UserCheck
+import { useAdmin } from '../../context/adminContextCore';
+import {
+  Clock,
+  Phone,
+  ShieldCheck,
+  CheckCircle2,
 } from 'lucide-react';
 
 export const StaffActiveOrders: React.FC = () => {
-  const { bookings, technicians, updateBookingStatus, addToast, navigateToStaffPage } = useAdmin();
+  const { bookings, updateBookingStatus, addToast, navigateToStaffPage, formatCurrency } = useAdmin();
 
   const activeOrders = bookings.filter(b => b.status === 'In Progress');
 
@@ -74,7 +69,7 @@ export const StaffActiveOrders: React.FC = () => {
                   </div>
 
                   <div className="text-right">
-                    <span className="text-base font-black text-slate-900">${order.estimate}</span>
+                    <span className="text-base font-black text-slate-900">{formatCurrency(order.estimate)}</span>
                     <div className="text-[10px] text-slate-400">Order Value</div>
                   </div>
                 </div>
@@ -108,7 +103,7 @@ export const StaffActiveOrders: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                      <span>Scheduled time: {order.scheduleTime} • Service: {order.serviceName}</span>
+                      <span>Scheduled time: {order.scheduleTime} â€¢ Service: {order.serviceName}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
@@ -137,10 +132,7 @@ export const StaffActiveOrders: React.FC = () => {
                 </button>
 
                 <button
-                  onClick={() => {
-                    updateBookingStatus(order.id, 'Completed');
-                    addToast(`Order ${order.jobNo} marked completed! Ready for staff verification.`, 'success');
-                  }}
+                  onClick={() => void updateBookingStatus(order.id, 'Completed')}
                   className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" />

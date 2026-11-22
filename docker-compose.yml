@@ -23,6 +23,26 @@ services:
     networks:
       - servicepro_network
 
+  # 1b. Optional Separate Demo Sandbox PostgreSQL 16 + PostGIS Database (2-DB Architecture)
+  # Launch with: docker compose --profile demo up -d
+  postgres_demo:
+    profiles: ["demo"]
+    image: postgis/postgis:16-3.4-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: "${DEMO_POSTGRES_DB:-servicepro_demo}"
+      POSTGRES_USER: "${POSTGRES_USER:-servicepro_admin}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Error: POSTGRES_PASSWORD must be configured in environment}"
+    volumes:
+      - postgres_demo_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-servicepro_admin} -d ${DEMO_POSTGRES_DB:-servicepro_demo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - servicepro_network
+
   # 2. Redis 7 In-Memory Cache & Ephemeral Dispatch State
   redis:
     image: redis:7-alpine
@@ -68,8 +88,19 @@ services:
     environment:
       NODE_ENV: "production"
       PORT: "3000"
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-servicepro_admin}:${POSTGRES_PASSWORD:?Error: POSTGRES_PASSWORD must be configured in environment}@postgres:5432/${POSTGRES_DB:-servicepro}"
-      REDIS_URL: "${REDIS_PASSWORD:+redis://:${REDIS_PASSWORD}@}redis:6379"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://${POSTGRES_USER:-servicepro_admin}:${POSTGRES_PASSWORD:?Error: POSTGRES_PASSWORD must be configured in environment}@postgres:5432/${POSTGRES_DB:-servicepro}}"
+      DEMO_DATABASE_URL: "${DEMO_DATABASE_URL:-postgresql://${POSTGRES_USER:-servicepro_admin}:${POSTGRES_PASSWORD}@postgres_demo:5432/${DEMO_POSTGRES_DB:-servicepro_demo}}"
+      APP_DEMO_MODE: "${APP_DEMO_MODE:-false}"
+      UPLOAD_STORAGE_DIR: "/app/uploads"
+      PAYMENT_GATEWAY: "${PAYMENT_GATEWAY:-stripe}"
+      PAYTABS_PROFILE_ID: "${PAYTABS_PROFILE_ID:-}"
+      PAYTABS_SERVER_KEY: "${PAYTABS_SERVER_KEY:-}"
+      PAYTABS_REGION: "${PAYTABS_REGION:-ARE}"
+      TELR_STORE_ID: "${TELR_STORE_ID:-}"
+      TELR_AUTH_KEY: "${TELR_AUTH_KEY:-}"
+      DEFAULT_TAX_RATE_BPS: "${DEFAULT_TAX_RATE_BPS:-500}"
+      OUTBOX_POLL_INTERVAL_MS: "${OUTBOX_POLL_INTERVAL_MS:-500}"
+      REDIS_URL: "redis://${REDIS_PASSWORD:+:${REDIS_PASSWORD}@}redis:6379"
       JWT_SECRET: "${JWT_SECRET:?Error: JWT_SECRET must be configured in environment}"
       JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET:?Error: JWT_REFRESH_SECRET must be configured in environment}"
       BOOTSTRAP_TOKEN: "${BOOTSTRAP_TOKEN:?Error: BOOTSTRAP_TOKEN must be configured in environment}"
@@ -77,6 +108,12 @@ services:
       CAPTCHA_ENFORCED: "${CAPTCHA_ENFORCED:-false}"
       CAPTCHA_SECRET_KEY: "${CAPTCHA_SECRET_KEY:-}"
       CORS_ORIGIN: "${CORS_ORIGIN:?Error: CORS_ORIGIN must be configured in environment}"
+      STRIPE_SECRET_KEY: "${STRIPE_SECRET_KEY:-}"
+      STRIPE_WEBHOOK_SECRET: "${STRIPE_WEBHOOK_SECRET:-}"
+      TRUST_PROXY: "${TRUST_PROXY:-true}"
+      OUTBOX_WORKER_ENABLED: "${OUTBOX_WORKER_ENABLED:-true}"
+    volumes:
+      - uploads_data:/app/uploads
     ports:
       - "${BACKEND_BIND_IP:-127.0.0.1}:3000:3000"
     healthcheck:
@@ -93,8 +130,9 @@ services:
       context: ./admin_web
       dockerfile: Dockerfile
       args:
-        VITE_API_BASE_URL: "${VITE_API_BASE_URL:-http://localhost:3000/api/v1}"
-        VITE_TURNSTILE_SITE_KEY: "${VITE_TURNSTILE_SITE_KEY:-1x00000000000000000000AA}"
+        VITE_API_BASE_URL: "${VITE_API_BASE_URL:-/api/v1}"
+        VITE_TURNSTILE_SITE_KEY: "${VITE_TURNSTILE_SITE_KEY:-}"
+        VITE_DEMO_MODE: "${VITE_DEMO_MODE:-false}"
     restart: always
     depends_on:
       backend:
@@ -107,8 +145,12 @@ services:
 volumes:
   postgres_data:
     name: servicepro_postgres_data
+  postgres_demo_data:
+    name: servicepro_postgres_demo_data
   redis_data:
     name: servicepro_redis_data
+  uploads_data:
+    name: servicepro_uploads_data
 
 networks:
   servicepro_network:

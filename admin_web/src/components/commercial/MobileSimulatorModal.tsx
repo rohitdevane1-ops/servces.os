@@ -6,26 +6,18 @@ import {
   Sun, 
   MapPin, 
   Star, 
-  Clock, 
   ShieldCheck, 
   ArrowRight, 
   CheckCircle2, 
   Camera, 
-  MessageSquare, 
-  Phone, 
   Radio, 
-  User, 
   Wrench, 
   Zap, 
   Wind, 
   Sparkles, 
-  DollarSign, 
   Check, 
-  ChevronRight,
-  AlertTriangle,
-  Flame
 } from 'lucide-react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 
 interface MobileSimulatorModalProps {
   isOpen: boolean;
@@ -33,7 +25,7 @@ interface MobileSimulatorModalProps {
 }
 
 export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOpen, onClose }) => {
-  const { agencyName, services, categories } = useAdmin();
+  const { services, categories } = useAdmin();
   const [activePersona, setActivePersona] = useState<'customer' | 'technician'>('customer');
   const [isNightMode, setIsNightMode] = useState(false);
 
@@ -41,7 +33,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
   const [customerStep, setCustomerStep] = useState<'home' | 'service_detail' | 'booking_confirm' | 'live_radar'>('home');
   const [selectedCategory, setSelectedCategory] = useState(categories[0]?.name || 'Plumbing');
   const firstService = services[0];
-  const [selectedService, setSelectedService] = useState({
+  const [selectedService] = useState({
     name: firstService ? firstService.name : 'Field Service Order',
     price: firstService ? firstService.basePrice : 0,
     rating: 5.0,
@@ -67,8 +59,6 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
   }, [techStep, broadcastSeconds]);
 
   if (!isOpen) return null;
-
-  const brandName = agencyName || 'ServicePro OS';
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200">
@@ -358,7 +348,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                                   <span className="flex items-center gap-0.5 text-amber-500 font-bold">
                                     <Star className="w-3 h-3 fill-amber-500" /> {selectedService.rating}
                                   </span>
-                                  <span>•</span>
+                                  <span>â€¢</span>
                                   <span>{selectedService.time}</span>
                                 </div>
                               </div>
@@ -387,7 +377,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                           onClick={() => setCustomerStep('home')}
                           className="text-xs font-bold text-indigo-600 flex items-center gap-1"
                         >
-                          ← Back to Catalogue
+                          â† Back to Catalogue
                         </button>
 
                         <div>
@@ -461,7 +451,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                           onClick={() => setCustomerStep('service_detail')}
                           className="text-xs font-bold text-indigo-600 flex items-center gap-1"
                         >
-                          ← Modify Package
+                          â† Modify Package
                         </button>
 
                         <div className="text-center py-2">
@@ -519,7 +509,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                             <div className="absolute w-28 h-28 rounded-full border border-indigo-500/40 animate-ping"></div>
                             <div className="absolute w-20 h-20 rounded-full border border-indigo-500/60"></div>
                             <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white shadow-lg z-10 font-bold text-xs">
-                              🚗
+                              ðŸš—
                             </div>
                             <span className="absolute bottom-2 text-[9px] text-slate-400 font-bold">
                               Certified Technician is en route in Fleet Vehicle
@@ -565,7 +555,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                             </div>
                             <div>
                               <span className="text-xs font-bold block">Field Technician</span>
-                              <span className="text-[9px] text-slate-400">Master Service Pro • Tier Platinum</span>
+                              <span className="text-[9px] text-slate-400">Master Service Pro â€¢ Tier Platinum</span>
                             </div>
                           </div>
                           <button
@@ -574,7 +564,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                               techOnline ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-red-500/20 text-red-400 border-red-500/30'
                             }`}
                           >
-                            {techOnline ? '● ONLINE' : '○ OFFLINE'}
+                            {techOnline ? 'â— ONLINE' : 'â—‹ OFFLINE'}
                           </button>
                         </div>
 
@@ -584,7 +574,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                           <h3 className="text-xl font-black mt-1">$0.00</h3>
                           <div className="flex justify-between items-center mt-2 text-[10px] text-slate-300">
                             <span>0 Completed Jobs</span>
-                            <span className="text-emerald-400 font-bold">100% CSAT ★ 5.0</span>
+                            <span className="text-emerald-400 font-bold">100% CSAT â˜… 5.0</span>
                           </div>
                         </div>
 
@@ -601,7 +591,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                             onClick={() => { setTechStep('broadcast'); setBroadcastSeconds(48); }}
                             className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs"
                           >
-                            Trigger 60s Dispatch Offer Alert ⚡
+                            Trigger 60s Dispatch Offer Alert âš¡
                           </button>
                         </div>
                       </div>
@@ -619,13 +609,13 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                               Priority Dispatch Match
                             </span>
                             <h3 className="text-sm font-bold mt-1">{selectedService.name}</h3>
-                            <span className="text-xs text-indigo-400 font-bold">Proximity match • Live dispatch</span>
+                            <span className="text-xs text-indigo-400 font-bold">Proximity match â€¢ Live dispatch</span>
                           </div>
 
                           <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5 text-xs">
                             <div className="flex justify-between">
                               <span className="text-slate-400">Customer:</span>
-                              <span className="font-bold">Verified Customer (★ 5.0)</span>
+                              <span className="font-bold">Verified Customer (â˜… 5.0)</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-400">Net Tech Payout:</span>
@@ -718,7 +708,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                                 }`}
                               >
                                 <Camera className="w-3 h-3" />
-                                {beforePhotoUploaded ? '✓ Before Added' : '+ Add Before'}
+                                {beforePhotoUploaded ? 'âœ“ Before Added' : '+ Add Before'}
                               </button>
                               <button
                                 onClick={() => setAfterPhotoUploaded(!afterPhotoUploaded)}
@@ -727,7 +717,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                                 }`}
                               >
                                 <Camera className="w-3 h-3" />
-                                {afterPhotoUploaded ? '✓ After Added' : '+ Add After'}
+                                {afterPhotoUploaded ? 'âœ“ After Added' : '+ Add After'}
                               </button>
                             </div>
                           </div>
@@ -742,7 +732,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({ isOp
                               className="h-16 rounded-lg border-2 border-dashed border-slate-600 flex items-center justify-center cursor-pointer"
                             >
                               {hasSignature ? (
-                                <span className="font-serif italic text-base text-indigo-400 font-bold">Authorized Customer ✓</span>
+                                <span className="font-serif italic text-base text-indigo-400 font-bold">Authorized Customer âœ“</span>
                               ) : (
                                 <span className="text-[10px] text-slate-500">Tap to simulate finger signature</span>
                               )}

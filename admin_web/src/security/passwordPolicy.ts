@@ -36,7 +36,7 @@ export function validatePasswordStrength(password: string, minLength: number = 1
   const hasUpper = /[A-Z]/.test(password);
   const hasLower = /[a-z]/.test(password);
   const hasDigit = /[0-9]/.test(password);
-  const hasSpecial = /[!@#$%^&*()_+\-=\[\]{}|;:,.<>?~`]/.test(password);
+  const hasSpecial = /[!@#$%^&*()_+\-=[\]{}|;:,.<>?~`]/.test(password);
 
   if (!hasUpper) errors.push('Must contain at least one uppercase letter (A-Z).');
   if (!hasLower) errors.push('Must contain at least one lowercase letter (a-z).');

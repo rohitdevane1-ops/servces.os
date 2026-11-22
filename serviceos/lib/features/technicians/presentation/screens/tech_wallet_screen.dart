@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 
-class TechWalletScreen extends StatelessWidget {
+class TechWalletScreen extends StatefulWidget {
   final VoidCallback onBack;
   final double availableBalance;
   final List<Map<String, dynamic>> ledgerEntries;
@@ -14,7 +15,48 @@ class TechWalletScreen extends StatelessWidget {
   });
 
   @override
+  State<TechWalletScreen> createState() => _TechWalletScreenState();
+}
+
+class _TechWalletScreenState extends State<TechWalletScreen> {
+  late double _availableBalance;
+  late List<Map<String, dynamic>> _ledgerEntries;
+
+  @override
+  void initState() {
+    super.initState();
+    _availableBalance = widget.availableBalance;
+    _ledgerEntries = List<Map<String, dynamic>>.from(widget.ledgerEntries);
+    _loadEarnings();
+  }
+
+  Future<void> _loadEarnings() async {
+    try {
+      final data = await ApiClient.instance.fetchTechnicianEarnings();
+      if (!mounted || data.isEmpty) return;
+      final cents = double.tryParse((data['unpaidBalanceCents'] ?? data['totalEarnedCents'] ?? data['availableBalanceCents'] ?? data['totalNetEarnedCents'] ?? 0).toString()) ?? 0.0;
+      final rawEntries = (data['recentCompletedBookings'] ?? data['recentPayouts'] ?? data['recentJobs'] ?? data['ledger'] ?? data['payouts'] ?? []) as List<dynamic>;
+      final mapped = rawEntries.whereType<Map>().map((e) {
+        final itemCents = double.tryParse((e['netEarningCents'] ?? e['netPayoutCents'] ?? e['amountCents'] ?? 0).toString()) ?? 0.0;
+        return {
+          'title': (e['serviceName'] ?? e['bookingReference'] ?? e['status'] ?? 'Job Settlement').toString(),
+          'amount': '+${ApiClient.instance.formatCurrency(itemCents / 100.0)}',
+          'date': (e['completedAt'] ?? e['createdAt'] ?? '').toString().split('T').first,
+        };
+      }).toList();
+      setState(() {
+        _availableBalance = cents / 100.0;
+        if (mapped.isNotEmpty) {
+          _ledgerEntries = mapped;
+        }
+      });
+    } catch (_) {}
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final availableBalance = _availableBalance;
+    final ledgerEntries = _ledgerEntries;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final surfaceColor = isDark ? AppColors.nightSurface : AppColors.daySurface;
     final textPrimary = isDark ? AppColors.nightTextPrimary : AppColors.dayTextPrimary;
@@ -27,7 +69,7 @@ class TechWalletScreen extends StatelessWidget {
         centerTitle: true,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: onBack,
+          onPressed: widget.onBack,
         ),
       ),
       body: SafeArea(
@@ -60,7 +102,7 @@ class TechWalletScreen extends StatelessWidget {
                   children: [
                     const Text('AVAILABLE FOR CASHOUT', style: TextStyle(color: Color(0xFFC7D2FE), fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
                     const SizedBox(height: 6),
-                    Text('\$${availableBalance.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
+                    Text(ApiClient.instance.formatCurrency(availableBalance), style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
                     const SizedBox(height: 16),
                     Row(
                       children: [

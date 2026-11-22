@@ -10,8 +10,9 @@ function generateSecret(bytes = 32) {
   return crypto.randomBytes(bytes).toString('hex');
 }
 
-function generatePassword(length = 24) {
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+';
+function generatePassword(length = 32) {
+  // URL-safe high-entropy alphabet so POSTGRES_PASSWORD never breaks DATABASE_URL URI parsing (BUG-DEVOPS-001)
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_';
   let res = '';
   for (let i = 0; i < length; i++) {
     res += chars[crypto.randomInt(0, chars.length)];

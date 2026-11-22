@@ -8,7 +8,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.serviceos.app.data.model.ServiceCategory
 import com.serviceos.app.data.model.ServiceItem
 import com.serviceos.app.data.repository.ServiceRepository
@@ -21,11 +20,20 @@ fun CustomerDiscoverScreen(
     onSearchClick: () -> Unit = {},
     onCategoryClick: (ServiceCategory) -> Unit = {},
     onServiceClick: (ServiceItem) -> Unit = {},
-    onBookService: (ServiceItem) -> Unit = {}
+    onBookService: (ServiceItem) -> Unit = {},
+    onOpenBookings: () -> Unit = {},
+    onOpenSupport: () -> Unit = {},
+    onOpenProfile: () -> Unit = {}
 ) {
-    var selectedCategoryId by remember { mutableStateOf<String?>("plumb") }
-    val categories = remember { ServiceRepository.categories }
-    val featuredServices = remember { ServiceRepository.featuredServices }
+    val categories by ServiceRepository.categoriesFlow.collectAsState()
+    val featuredServices by ServiceRepository.featuredServicesFlow.collectAsState()
+    var selectedCategoryId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        if (categories.isEmpty() || featuredServices.isEmpty()) {
+            ServiceRepository.refreshFromBackend()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -33,6 +41,34 @@ fun CustomerDiscoverScreen(
                 locationTitle = "Select Service Location",
                 onThemeToggle = onThemeToggle
             )
+        },
+        bottomBar = {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                NavigationBarItem(
+                    selected = true,
+                    onClick = {},
+                    icon = { Icon(androidx.compose.material.icons.Icons.Default.Home, contentDescription = "Discover") },
+                    label = { Text("Discover") }
+                )
+                NavigationBarItem(
+                    selected = false,
+                    onClick = onOpenBookings,
+                    icon = { Icon(androidx.compose.material.icons.Icons.Default.List, contentDescription = "Bookings") },
+                    label = { Text("Bookings") }
+                )
+                NavigationBarItem(
+                    selected = false,
+                    onClick = onOpenSupport,
+                    icon = { Icon(androidx.compose.material.icons.Icons.Default.Help, contentDescription = "Support") },
+                    label = { Text("Support") }
+                )
+                NavigationBarItem(
+                    selected = false,
+                    onClick = onOpenProfile,
+                    icon = { Icon(androidx.compose.material.icons.Icons.Default.Person, contentDescription = "Profile") },
+                    label = { Text("Profile") }
+                )
+            }
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
@@ -42,17 +78,14 @@ fun CustomerDiscoverScreen(
                 .padding(paddingValues),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Hero Banner
             item {
                 HeroBanner(onSearchClick = onSearchClick)
             }
 
-            // 2. Trust Strip
             item {
                 TrustStrip()
             }
 
-            // 3. 17 Categories Horizontal Scroll
             item {
                 Column {
                     Row(
@@ -67,7 +100,7 @@ fun CustomerDiscoverScreen(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "See All 17 →",
+                            text = "${categories.size} Categories →",
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
@@ -86,7 +119,6 @@ fun CustomerDiscoverScreen(
                 }
             }
 
-            // 4. Featured Services Grid
             item {
                 Text(
                     text = "Most Requested Near You",

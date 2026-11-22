@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.serviceos.app.core.theme.LocalExtraColors
 import com.serviceos.app.data.model.ServiceItem
+import com.serviceos.app.data.network.ApiClient
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -74,7 +75,7 @@ fun ServiceDetailScreen(
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
                         Text(
-                            text = "$${service.basePrice.toInt()}",
+                            text = ApiClient.formatCurrency(service.basePrice),
                             style = MaterialTheme.typography.headlineMedium.copy(
                                 fontWeight = FontWeight.Black,
                                 color = MaterialTheme.colorScheme.primary

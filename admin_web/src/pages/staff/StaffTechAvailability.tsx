@@ -1,17 +1,10 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
-  Users, 
   Search, 
   ShieldCheck, 
-  Star, 
-  Clock, 
   Phone, 
-  CheckCircle2, 
-  XCircle,
-  Briefcase
 } from 'lucide-react';
-import { TechnicianStatus } from '../../types';
 
 export const StaffTechAvailability: React.FC = () => {
   const { technicians, addToast, openUserDossier, updateTechnician } = useAdmin();
@@ -97,7 +90,7 @@ export const StaffTechAvailability: React.FC = () => {
                       <ShieldCheck className="w-4 h-4 text-emerald-600" />
                     </div>
                     <div className="text-xs text-slate-500 font-medium mt-0.5">
-                      {tech.specialization} Pro • ★ {tech.rating}
+                      {tech.specialization} Pro â€¢ â˜… {tech.rating}
                     </div>
                   </div>
                 </div>
@@ -151,7 +144,7 @@ export const StaffTechAvailability: React.FC = () => {
 
               <button
                 onClick={() => {
-                  const newStatus = tech.status === 'Available' ? 'Off Duty' : 'Available';
+                  const newStatus = tech.status === 'Available' ? 'Offline' : 'Available';
                   updateTechnician(tech.id, { status: newStatus as any });
                   addToast(`${tech.name}'s duty status updated to ${newStatus}!`, 'success');
                 }}

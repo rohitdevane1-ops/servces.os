@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { AuthService } from '../modules/auth/auth.service.js';
 import { errorResponse } from '../types/envelope.js';
-import { pool } from '../database/pool.js';
+import { tenantQuery } from '../database/pool.js';
 
 export async function authenticate(request: FastifyRequest, reply: FastifyReply) {
   const requestId = request.id || `req_${Date.now()}`;
@@ -15,24 +15,50 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
 
   const token = authHeader.substring(7).trim();
 
+  let payload: ReturnType<typeof AuthService.verifyAccessToken>;
   try {
-    const payload = AuthService.verifyAccessToken(token);
-    request.user = {
-      id: payload.sub,
-      role: payload.role,
-      tenantId: payload.tenantId,
-      email: payload.email,
-    };
+    payload = AuthService.verifyAccessToken(token);
+  } catch {
+    return reply.status(401).send(
+      errorResponse('TOKEN_EXPIRED_OR_INVALID', 'The provided access token is expired or invalid.', requestId)
+    );
+  }
 
-    // Strict Cross-Tenant Guard: Enforce token tenant matches request tenant
-    if (request.tenantId && request.user.tenantId !== request.tenantId) {
+  request.user = {
+    id: payload.sub,
+    role: payload.role,
+    tenantId: payload.tenantId,
+    email: payload.email,
+  };
+
+  // Strict Cross-Tenant Guard: Enforce token tenant matches request tenant
+  if (request.tenantId && request.user.tenantId !== request.tenantId) {
+    return reply.status(403).send(
+      errorResponse('CROSS_TENANT_FORBIDDEN', 'Access token belongs to another organization.', requestId)
+    );
+  }
+
+  try {
+    // Verify account still exists and has not been deactivated/suspended in DB (fail-closed)
+    const activeCheck = await tenantQuery<{ is_active: boolean }>(
+      'SELECT is_active FROM users WHERE id = $1 AND tenant_id = $2',
+      [request.user.id, request.user.tenantId],
+      request.user.tenantId
+    );
+    if (activeCheck.rows.length === 0) {
+      return reply.status(401).send(
+        errorResponse('ACCOUNT_NOT_FOUND', 'User account no longer exists.', requestId)
+      );
+    }
+    if (!activeCheck.rows[0].is_active) {
       return reply.status(403).send(
-        errorResponse('CROSS_TENANT_FORBIDDEN', 'Access token belongs to another organization.', requestId)
+        errorResponse('ACCOUNT_DEACTIVATED', 'This user account is inactive or has been suspended.', requestId)
       );
     }
   } catch (err: any) {
-    return reply.status(401).send(
-      errorResponse('TOKEN_EXPIRED_OR_INVALID', 'The provided access token is expired or invalid.', requestId)
+    request.log?.error(err, 'Database unavailable during authentication check');
+    return reply.status(503).send(
+      errorResponse('SERVICE_UNAVAILABLE', 'Authentication verification temporarily unavailable.', requestId)
     );
   }
 }
@@ -53,28 +79,21 @@ export function requirePermission(permissionId: string) {
       );
     }
 
-    // 2. BACK-09: Check if account has been explicitly deactivated in DB
-    try {
-      const activeCheck = await pool.query<{ is_active: boolean }>(
-        'SELECT is_active FROM users WHERE id = $1',
-        [userId]
-      );
-      if (activeCheck.rows.length > 0 && !activeCheck.rows[0].is_active) {
-        return reply.status(403).send(
-          errorResponse('ACCOUNT_DEACTIVATED', 'This user account is inactive or has been suspended.', requestId)
-        );
-      }
-    } catch {
-      // In-memory / mocked test fallbacks
-    }
-
-    // 3. Administrators have root access
+    // 2. Administrators have root access (active status already verified in authenticate)
     if (userRole === 'ADMIN') {
       return;
     }
 
-    // 4. Query role permissions
-    const permissions = await AuthService.getUserPermissions(userRole);
+    // 3. Query role permissions (fail closed on DB errors)
+    let permissions: string[];
+    try {
+      permissions = await AuthService.getUserPermissions(userRole);
+    } catch (err) {
+      request.log?.error(err, 'Failed to verify RBAC permissions');
+      return reply.status(503).send(
+        errorResponse('SERVICE_UNAVAILABLE', 'Unable to verify authorization permissions.', requestId)
+      );
+    }
 
     if (!permissions.includes(permissionId)) {
       return reply.status(403).send(

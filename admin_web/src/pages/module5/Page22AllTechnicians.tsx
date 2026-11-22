@@ -1,21 +1,13 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { downloadCSV } from '../../utils/exportUtils';
 import { 
   Search, 
   UserPlus, 
   Star, 
-  MapPin, 
-  Phone, 
   Eye, 
-  Briefcase, 
-  CheckCircle2, 
-  Clock, 
-  Award,
-  Zap,
   Download
 } from 'lucide-react';
-import { Technician, TechnicianStatus } from '../../types';
 
 export const Page22AllTechnicians: React.FC = () => {
   const { technicians, navigateToPage, addToast, setSelectedTechnicianId, setIsCreateTechnicianModalOpen } = useAdmin();
@@ -81,7 +73,7 @@ export const Page22AllTechnicians: React.FC = () => {
         <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
           <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Average Customer Rating</div>
           <div className="text-2xl font-extrabold text-amber-600 mt-0.5">
-            {technicians.length > 0 ? `★ ${(technicians.reduce((a, t) => a + (t.rating || 0), 0) / technicians.length).toFixed(2)} / 5.0` : '★ 0.00 / 5.0'}
+            {technicians.length > 0 ? `â˜… ${(technicians.reduce((a, t) => a + (t.rating || 0), 0) / technicians.length).toFixed(2)} / 5.0` : 'â˜… 0.00 / 5.0'}
           </div>
           <div className="text-[10px] text-slate-400 font-bold mt-0.5">
             {technicians.length > 0 ? `${technicians.reduce((a, t) => a + (t.jobsCompleted || 0), 0)} verified jobs` : '0 verified jobs'}
@@ -175,7 +167,7 @@ export const Page22AllTechnicians: React.FC = () => {
                   <td className="py-3.5 px-4">
                     <div className="font-extrabold text-amber-600 flex items-center gap-1">
                       <Star className="w-3.5 h-3.5 fill-current" />
-                      ★ {t.rating}
+                      â˜… {t.rating}
                     </div>
                     <div className="text-[11px] text-slate-400 mt-0.5">{t.jobsCompleted} completed</div>
                   </td>

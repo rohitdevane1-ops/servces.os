@@ -1,0 +1,14 @@
+#!/bin/sh
+# Gradle Wrapper startup script for Unix/macOS/CI
+APP_HOME=$( cd "${0%/*}" && pwd -P ) || exit
+CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+if [ -n "$JAVA_HOME" ] ; then
+    JAVACMD="$JAVA_HOME/bin/java"
+else
+    JAVACMD="java"
+fi
+if [ -f "$CLASSPATH" ] ; then
+    exec "$JAVACMD" $JAVA_OPTS $GRADLE_OPTS -classpath "$CLASSPATH" org.gradle.wrapper.GradleWrapperMain "$@"
+else
+    exec gradle "$@"
+fi

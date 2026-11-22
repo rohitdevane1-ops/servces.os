@@ -1,17 +1,12 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
   MessageSquare, 
-  Search, 
   Send, 
   Phone, 
-  MapPin, 
-  Clock, 
-  ShieldCheck, 
   User, 
   CheckCheck
 } from 'lucide-react';
-import { Customer } from '../../types';
 
 interface ChatMsg {
   id: number;
@@ -23,7 +18,7 @@ interface ChatMsg {
 const INITIAL_CONVERSATIONS: Record<string, ChatMsg[]> = {};
 
 export const StaffCustomerComm: React.FC = () => {
-  const { customers, bookings, addToast, openUserDossier } = useAdmin();
+  const { customers, addToast, openUserDossier } = useAdmin();
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '');
   const [messageText, setMessageText] = useState('');
   const [conversations, setConversations] = useState<Record<string, ChatMsg[]>>(INITIAL_CONVERSATIONS);
@@ -141,7 +136,7 @@ export const StaffCustomerComm: React.FC = () => {
                   )}
                   <div>
                     <div className="text-xs font-bold text-slate-900">{selectedCustomer.name}</div>
-                    <div className="text-[10px] text-slate-500">{selectedCustomer.phone || 'No phone'} • {selectedCustomer.address || 'No address specified'}</div>
+                    <div className="text-[10px] text-slate-500">{selectedCustomer.phone || 'No phone'} â€¢ {selectedCustomer.address || 'No address specified'}</div>
                   </div>
                 </div>
 

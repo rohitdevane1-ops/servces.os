@@ -1,216 +1,111 @@
-import React, { useState, useEffect } from 'react';
-import { useAdmin } from '../../context/AdminContext';
-import { 
-  Lock, 
-  Unlock, 
-  ShieldCheck, 
-  KeyRound, 
-  Delete, 
-  Clock, 
-  UserCheck, 
-  ArrowRightLeft, 
-  Sparkles,
-  AlertCircle
-} from 'lucide-react';
+import React, { useState } from 'react';
+import { useAdmin } from '../../context/adminContextCore';
+import { Lock, ShieldCheck, KeyRound, AlertCircle, LogOut } from 'lucide-react';
+import { Modal } from '../common/Modal';
 
 export const SessionLockModal: React.FC = () => {
-  const { 
-    isSessionLocked, 
-    unlockSession, 
-    userProfile, 
-    currentRole, 
-    logout,
-    addToast 
-  } = useAdmin();
-
-  const [pin, setPin] = useState<string>('');
-  const [errorMessage, setErrorMessage] = useState<string>('');
-  const [currentTime, setCurrentTime] = useState<string>('');
-
-  useEffect(() => {
-    const updateTime = () => {
-      const now = new Date();
-      setCurrentTime(now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-    };
-    updateTime();
-    const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
-  }, []);
+  const { isSessionLocked, unlockSession, userProfile, currentRole, isDemoMode, logout } = useAdmin();
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [isVerifying, setIsVerifying] = useState(false);
 
   if (!isSessionLocked) return null;
 
-  // No default PIN exists. Without a configured PIN the only way to resume is to sign in again.
-  const hasConfiguredPin = !!localStorage.getItem('servicepro_security_pin');
-
-  const handleKeyPress = (num: string) => {
-    if (pin.length < 4) {
-      const nextPin = pin + num;
-      setPin(nextPin);
-      setErrorMessage('');
-      if (nextPin.length === 4) {
-        setTimeout(() => {
-          if (!unlockSession(nextPin)) {
-            setErrorMessage('Invalid PIN. Please try again.');
-            setPin('');
-          }
-        }, 150);
-      }
+  const handleUnlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setIsVerifying(true);
+    const res = await unlockSession(password);
+    setIsVerifying(false);
+    if (res.ok) {
+      setPassword('');
+      setError(null);
+    } else {
+      setError(res.error || 'Password verification failed.');
     }
   };
 
-  const handleClear = () => {
-    setPin('');
-    setErrorMessage('');
-  };
-
-  const handleBackspace = () => {
-    setPin(prev => prev.slice(0, -1));
-    setErrorMessage('');
-  };
-
   return (
-    <div 
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-300"
-      tabIndex={-1}
+    <Modal
+      isOpen={isSessionLocked}
+      dismissible={false}
+      maxWidthClass="max-w-md"
+      backdropClassName="bg-slate-950/90 backdrop-blur-md"
+      containerClassName="bg-white rounded-3xl shadow-2xl border border-slate-200/90 w-full p-8 text-center space-y-6"
+      ariaLabel="Session Locked â€” Server Re-authentication Required"
     >
-      <div 
-        className="w-full max-w-md bg-[#0C1523] border border-emerald-500/30 rounded-2xl p-6 sm:p-8 shadow-2xl text-white relative overflow-hidden flex flex-col items-center"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Glow ambient background elements */}
-        <div className="absolute -top-24 -left-24 w-48 h-48 bg-emerald-500/15 rounded-full blur-3xl pointer-events-none"></div>
-        <div className="absolute -bottom-24 -right-24 w-48 h-48 bg-teal-500/15 rounded-full blur-3xl pointer-events-none"></div>
-
-        {/* Security Header Banner */}
-        <div className="w-full flex items-center justify-between text-xs text-slate-400 mb-6 pb-4 border-b border-slate-800">
-          <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>ServiceOS Security Guard</span>
-          </div>
-          <div className="flex items-center gap-1 font-mono text-[11px] text-slate-400">
-            <Clock className="w-3.5 h-3.5" />
-            <span>{currentTime || 'Active'}</span>
-          </div>
-        </div>
-
-        {/* Lock Icon & Status */}
-        <div className="relative mb-4">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#0C3832] to-[#145a50] ring-4 ring-emerald-500/30 flex items-center justify-center shadow-lg">
-            <Lock className="w-8 h-8 text-emerald-300 animate-pulse" />
-          </div>
-          <span className="absolute -bottom-1 -right-1 px-1.5 py-0.5 rounded-full bg-emerald-400 text-slate-950 font-black text-[9px] uppercase tracking-wider">
-            Secured
-          </span>
-        </div>
-
-        <h2 className="text-xl font-black text-white tracking-tight text-center">
-          Console Session Locked
-        </h2>
-        <p className="text-xs text-slate-400 text-center mt-1 mb-5">
-          {hasConfiguredPin
-            ? 'Station node TX-01 suspended. Re-enter your enterprise 4-digit PIN.'
-            : 'Session suspended. Sign out and sign in again to resume.'}
-        </p>
-
-        {/* Current Active Operator Profile Chip */}
-        <div className="w-full p-3 rounded-2xl bg-slate-900/80 border border-slate-800 flex items-center justify-between gap-3 mb-6">
-          <div className="flex items-center gap-3">
-            {userProfile.avatar ? (
-              <img 
-                src={userProfile.avatar} 
-                alt={userProfile.name || 'User'} 
-                className="w-10 h-10 rounded-full object-cover ring-2 ring-emerald-500/50"
-              />
-            ) : (
-              <div className="w-10 h-10 rounded-full bg-emerald-700 text-white font-extrabold text-sm flex items-center justify-center ring-2 ring-emerald-500/50">
-                {(userProfile.name || (currentRole === 'ADMIN' ? 'A' : 'S')).charAt(0).toUpperCase()}
-              </div>
-            )}
-            <div className="text-left">
-              <div className="text-xs font-bold text-white flex items-center gap-1.5">
-                <span>{userProfile.name || (currentRole === 'ADMIN' ? 'Administrator' : 'Operations Staff')}</span>
-                <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase bg-emerald-950 text-emerald-300 border border-emerald-500/30">
-                  {currentRole === 'ADMIN' ? 'Administrator' : 'Operations Desk'}
-                </span>
-              </div>
-              <div className="text-[11px] text-slate-400 font-mono">
-                {userProfile.email || 'Authorized Session'}
-              </div>
-            </div>
-          </div>
-
-          <button
-            onClick={() => {
-              logout();
-            }}
-            className="px-2.5 py-1.5 text-xs text-rose-400 hover:text-rose-300 rounded-xl hover:bg-rose-950/40 border border-rose-900/40 transition-colors cursor-pointer"
-            title="Sign Out"
-          >
-            Sign Out
-          </button>
-        </div>
-
-        {hasConfiguredPin && (
-          <>
-        {/* PIN Dots Display */}
-        <div className="flex items-center justify-center gap-3 mb-4">
-          {[0, 1, 2, 3].map(idx => (
-            <div 
-              key={idx} 
-              className={`w-4 h-4 rounded-full transition-all duration-200 ${
-                idx < pin.length 
-                  ? 'bg-emerald-400 ring-4 ring-emerald-500/30 scale-110' 
-                  : 'bg-slate-800 border border-slate-700'
-              }`}
-            />
-          ))}
-        </div>
-
-        {/* Error message */}
-        {errorMessage && (
-          <div className="flex items-center gap-1.5 text-xs text-rose-400 font-medium mb-3 animate-in fade-in">
-            <AlertCircle className="w-3.5 h-3.5" />
-            <span>{errorMessage}</span>
-          </div>
-        )}
-
-        {/* Keypad */}
-        <div className="grid grid-cols-3 gap-2.5 w-full max-w-[260px] mb-6">
-          {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
-            <button
-              key={num}
-              onClick={() => handleKeyPress(num)}
-              className="h-12 rounded-2xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500/40 text-base font-bold text-white transition-all active:scale-95 cursor-pointer shadow-xs"
-            >
-              {num}
-            </button>
-          ))}
-          <button
-            onClick={handleClear}
-            className="h-12 rounded-2xl bg-slate-900/40 hover:bg-slate-800/80 text-xs font-bold text-slate-400 hover:text-white transition-all cursor-pointer"
-          >
-            Clear
-          </button>
-          <button
-            onClick={() => handleKeyPress('0')}
-            className="h-12 rounded-2xl bg-slate-900/80 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500/40 text-base font-bold text-white transition-all active:scale-95 cursor-pointer shadow-xs"
-          >
-            0
-          </button>
-          <button
-            onClick={handleBackspace}
-            className="h-12 rounded-2xl bg-slate-900/40 hover:bg-slate-800/80 text-xs font-bold text-slate-400 hover:text-white transition-all flex items-center justify-center cursor-pointer"
-          >
-            <Delete className="w-4 h-4" />
-          </button>
-        </div>
-          </>
-        )}
-
-        <div className="mt-4 text-[10px] text-slate-500 text-center font-mono">
-          Station Terminal #01 • Secure Connection Active
-        </div>
+      <div className="w-16 h-16 rounded-2xl bg-[#0C3832] text-emerald-400 flex items-center justify-center mx-auto shadow-lg">
+        <Lock className="w-8 h-8" />
       </div>
-    </div>
+
+      <div>
+        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-200 uppercase tracking-wider">
+          Session Locked â€¢ Server Verification Required
+        </span>
+        <h2 className="text-xl font-extrabold text-slate-900 mt-2">Console Temporarily Locked</h2>
+        <p className="text-xs text-slate-500 mt-1">
+          Active session for <strong className="text-slate-800">{userProfile.name || userProfile.email}</strong> (
+          {currentRole}). Re-enter your account password to verify with the authentication server.
+        </p>
+      </div>
+
+      <form onSubmit={handleUnlock} className="space-y-4">
+        <div className="text-left">
+          <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5 text-center">
+            Account Password
+          </label>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              setError(null);
+            }}
+            placeholder="Enter your account password..."
+            autoFocus
+            required
+            className={`w-full px-4 py-3 text-center text-sm font-medium bg-slate-50 border-2 rounded-2xl focus:outline-none focus:bg-white transition-all ${
+              error ? 'border-rose-400 text-rose-600' : 'border-slate-200 focus:border-emerald-600 text-slate-900'
+            }`}
+          />
+          {error && (
+            <div className="text-xs font-bold text-rose-600 mt-2 flex items-center justify-center gap-1">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+        </div>
+
+        <button
+          type="submit"
+          disabled={isVerifying}
+          className="w-full py-3.5 bg-[#0C3832] hover:bg-[#124e45] disabled:opacity-50 text-white font-extrabold text-xs rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
+        >
+          <KeyRound className="w-4 h-4 text-emerald-400" />
+          <span>{isVerifying ? 'Verifying with Server...' : 'Verify Password & Unlock Console'}</span>
+        </button>
+      </form>
+
+      {isDemoMode && (
+        <p className="text-[11px] text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-xl p-2.5">
+          Interactive Sandbox Mode: Click <strong>Sign Out &amp; Switch Account</strong> below to return to the one-click sandbox login screen.
+        </p>
+      )}
+
+      <div className="pt-4 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+        <div className="flex items-center gap-1.5">
+          <ShieldCheck className="w-4 h-4 text-emerald-600" />
+          <span>Fail-Closed Server Lock</span>
+        </div>
+        <button
+          type="button"
+          onClick={logout}
+          className="text-xs font-bold text-rose-600 hover:text-rose-700 flex items-center gap-1 cursor-pointer"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          <span>Sign Out &amp; Switch Account</span>
+        </button>
+      </div>
+    </Modal>
   );
 };

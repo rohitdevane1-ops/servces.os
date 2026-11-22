@@ -1,23 +1,17 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
   Compass, 
-  MapPin, 
   CheckCircle2, 
   Clock, 
   Calendar, 
   Radio, 
-  Battery, 
-  PhoneCall, 
-  Send,
-  Navigation,
-  ExternalLink
 } from 'lucide-react';
 import { RealDispatchMap } from '../../components/common/RealDispatchMap';
 
 export const Page02LiveOperations: React.FC = () => {
-  const { technicians, bookings, navigateToPage, addToast } = useAdmin();
-  const [selectedTech, setSelectedTech] = useState(technicians[0] || null);
+  const { technicians, bookings, navigateToPage } = useAdmin();
+  const [selectedTech] = useState(technicians[0] || null);
   const activeBooking = bookings.find(b => b.status === 'In Progress' && b.technicianId && b.technicianId !== 'unassigned');
   const hasActiveRoute = Boolean(activeBooking && selectedTech);
 
@@ -122,7 +116,7 @@ export const Page02LiveOperations: React.FC = () => {
                 onClick={() => navigateToPage(22)} 
                 className="text-xs font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
               >
-                View All →
+                View All â†’
               </button>
             </div>
 

@@ -50,16 +50,21 @@ export interface Booking {
   category: string;
   technicianName: string;
   technicianId: string;
+  technicianPhone?: string;
   scheduleDate: string;
   scheduleTime: string;
+  scheduledStartIso?: string;
   estimate: number;
   paymentStatus: PaymentStatus;
   status: BookingStatus;
+  rawStatus?: string;
   priority: JobPriority;
   lat: number;
   lng: number;
   customerId?: string;
   serviceId?: string;
+  safetyPin?: string;
+  currency?: string;
   notes?: string;
   isVerified?: boolean;
 }
@@ -69,6 +74,7 @@ export type TechnicianStatus = 'Available' | 'On Job' | 'Busy' | 'On Leave' | 'O
 export interface Technician {
   id: string;
   name: string;
+  email?: string;
   photo: string;
   phone: string;
   specialization: string;
@@ -80,6 +86,12 @@ export interface Technician {
   workingHours: string;
   lat: number;
   lng: number;
+  hourlyRate?: number;
+  licenseNumber?: string;
+  vehicleMakeModel?: string;
+  vehicleLicensePlate?: string;
+  isVerified?: boolean;
+  isActive?: boolean;
   matchScore?: number;
 }
 
@@ -93,8 +105,10 @@ export interface Customer {
   address: string;
   totalBookings: number;
   lifetimeSpend: number;
+  courtesyCreditCents?: number;
   rating: number;
   status: 'Active' | 'Suspended';
+  isActive?: boolean;
   notes?: string;
 }
 
@@ -116,6 +130,8 @@ export interface StaffMember {
 
 export interface ServiceItem {
   id: string;
+  categoryId?: string;
+  slug?: string;
   name: string;
   category: string;
   basePrice: number;
@@ -127,8 +143,11 @@ export interface ServiceItem {
 
 export interface ServiceCategory {
   id: string;
+  slug?: string;
   name: string;
   iconName: string;
+  bannerUrl?: string | null;
+  displayOrder?: number;
   serviceCount: number;
   color: string;
 }
@@ -136,34 +155,57 @@ export interface ServiceCategory {
 export interface Invoice {
   id: string;
   invoiceNo: string;
+  bookingId?: string;
+  bookingReference?: string;
+  customerId?: string;
   customerName: string;
+  providerName?: string;
   serviceName: string;
   amount: number;
+  laborSubtotalCents?: number;
+  partsSubtotalCents?: number;
+  taxTotalCents?: number;
+  totalAmountCents?: number;
+  refundedAmountCents?: number;
+  rawStatus?: string;
+  currency?: string;
   date: string;
+  paidAt?: string | null;
   status: 'Paid' | 'Pending' | 'Overdue';
 }
 
 export interface SupportTicket {
   id: string;
   ticketNo: string;
+  customerId?: string;
   customerName: string;
+  customerEmail?: string;
+  assignedStaffName?: string;
+  bookingId?: string;
+  bookingReference?: string;
   subject: string;
   category: string;
   priority: 'Urgent' | 'High' | 'Normal';
   status: 'Open' | 'In Progress' | 'Resolved';
+  rawStatus?: string;
   createdAt: string;
   lastReply: string;
 }
 
 export interface CustomerReview {
   id: string;
+  bookingId?: string;
   customerName: string;
+  providerName?: string;
   photo?: string;
   serviceName: string;
   rating: number;
   comment: string;
   date: string;
   isVerified: boolean;
+  isPublic?: boolean;
+  moderationFlagged?: boolean;
+  providerResponse?: string | null;
 }
 
 export interface AuditLogItem {
@@ -197,4 +239,60 @@ export interface PricingConfig {
   minCalloutFee: number; // e.g. 49.0
   nightSurcharge: number; // e.g. 35.0
   surgeActive: boolean;
+}
+
+export interface TenantConfig {
+  name: string;
+  slug: string;
+  primaryColor: string;
+  currencyCode: string;
+  currencySymbol: string;
+  timezone: string;
+  commissionBps: number;
+  taxRateBps: number;
+  vatPercent: number;
+  taxName: string;
+  countryCode: string;
+  distanceUnit: 'km' | 'mi';
+  supportPhone: string | null;
+  supportWhatsapp: string | null;
+  emergencyPhone: string | null;
+  logoUrl: string | null;
+  defaultLocale: string;
+  defaultMapLat: number;
+  defaultMapLng: number;
+  pricingConfig?: Partial<PricingConfig> | null;
+}
+
+export interface SystemRuntimeConfig {
+  demoMode: boolean;
+  paymentGateway: string;
+  paymentGatewayConfigured: boolean;
+  defaultCurrency: string;
+  defaultVatPercent: number;
+  defaultTaxName: string;
+  defaultCountryCode: string;
+  defaultDistanceUnit: 'km' | 'mi';
+  supportedLocales: string[];
+  pricingConfig?: Partial<PricingConfig> | null;
+  tenant: TenantConfig | null;
+}
+
+export interface CmsConfigData {
+  heroHeading: string;
+  heroSubheading: string;
+  searchPlaceholder: string;
+  promoCouponCode: string | null;
+  promoDiscountPercent: number | null;
+}
+
+export interface IntegrationConfigResponse {
+  stripeAccountId: string | null;
+  stripeLiveMode: boolean;
+  twilioEnabled: boolean;
+  awsSesEnabled: boolean;
+  fcmPushEnabled: boolean;
+  publicSettings: Record<string, any>;
+  secretsMasked: Record<string, any>;
+  updatedAt: string | null;
 }

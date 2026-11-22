@@ -2,19 +2,23 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import crypto from 'node:crypto';
 import Stripe from 'stripe';
-import { pool } from '../../database/pool.js';
+import { pool, tenantQuery, withTenantTransaction } from '../../database/pool.js';
 import { successResponse, errorResponse } from '../../types/envelope.js';
-import { authenticate } from '../../middleware/rbac.js';
+import { authenticate, requirePermission } from '../../middleware/rbac.js';
 import { env } from '../../config/env.js';
 import { getStripe, hasStripeConfigured } from '../../services/stripeClient.js';
+import { getTenantPaymentGateway } from '../../services/paymentGateway.js';
 import { outboxWorker } from '../../workers/outbox.worker.js';
+import { broadcastBookingToNearbyProviders } from '../dispatch/dispatch.service.js';
+import { safeMediaUrlSchema } from '../../utils/urlValidator.js';
 
 const createBookingSchema = z.object({
   serviceId: z.string().uuid(),
+  customerId: z.string().uuid().optional(),
   addressText: z.string().min(5),
-  city: z.string().default('Miami'),
-  state: z.string().default('FL'),
-  postalCode: z.string().default('33101'),
+  city: z.string().default(''),
+  state: z.string().default(''),
+  postalCode: z.string().default(''),
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   accessInstructions: z.string().optional(),
@@ -24,16 +28,19 @@ const createBookingSchema = z.object({
 });
 
 const verifyPinSchema = z.object({
-  safetyPin: z.string().length(4),
-  latitude: z.number().optional(),
-  longitude: z.number().optional(),
-});
+  safetyPin: z.string().regex(/^\d{4}$/),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+}).refine(
+  (d) => (d.latitude === undefined && d.longitude === undefined) || (d.latitude !== undefined && d.longitude !== undefined),
+  { message: 'Both latitude and longitude must be provided together.' }
+);
 
 const completeWorkOrderSchema = z.object({
-  beforePhotos: z.array(z.string()).default([]),
-  afterPhotos: z.array(z.string()).default([]),
-  customerSignatureUrl: z.string().optional(),
-  workSummaryNotes: z.string().optional(),
+  beforePhotos: z.array(safeMediaUrlSchema).max(20).default([]),
+  afterPhotos: z.array(safeMediaUrlSchema).max(20).default([]),
+  customerSignatureUrl: safeMediaUrlSchema.nullable().optional(),
+  workSummaryNotes: z.string().max(4000).optional(),
 });
 
 export async function bookingRoutes(fastify: FastifyInstance) {
@@ -56,31 +63,65 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { serviceId, addressText, city, state, postalCode, latitude, longitude, accessInstructions, scheduledStart, priority, paymentMethodId } = parsed.data;
-    const userId = request.user!.id;
+    const { serviceId, customerId, addressText, city, state, postalCode, latitude, longitude, accessInstructions, scheduledStart, priority, paymentMethodId } = parsed.data;
+    const callerRole = request.user!.role;
+    if (callerRole === 'TECHNICIAN') {
+      return reply.status(403).send(
+        errorResponse('FORBIDDEN', 'Technicians cannot create customer bookings.', requestId)
+      );
+    }
+    const userId = (callerRole === 'ADMIN' || callerRole === 'STAFF') && customerId
+      ? customerId
+      : request.user!.id;
     const tenantId = request.tenantId;
 
-    // Preflight Stripe configuration BEFORE opening any DB transaction
-    if (!hasStripeConfigured() && process.env.NODE_ENV === 'production') {
+    // Preflight payment gateway configuration BEFORE opening any DB transaction
+    const tenantGateway = await getTenantPaymentGateway(tenantId);
+    const activeGateway = env.PAYMENT_GATEWAY || 'stripe';
+    const gatewayEnabled =
+      activeGateway === 'stripe'
+        ? hasStripeConfigured(tenantGateway.secrets.stripeSecretKey)
+        : tenantGateway.isConfigured;
+
+    if (!gatewayEnabled && process.env.NODE_ENV === 'production') {
       return reply.status(422).send(
-        errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', 'Live payment gateway (Stripe) is not configured on this server.', requestId)
+        errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', `Live payment gateway (${activeGateway}) is not configured on this server.`, requestId)
       );
     }
 
-    const stripeEnabled = hasStripeConfigured();
-    const client = await pool.connect();
-    let responsePayload: any = null;
+    const stripeEnabled = gatewayEnabled;
 
-    try {
-      await client.query('BEGIN');
+    const txOutcome = await withTenantTransaction<
+      | { ok: true; payload: any }
+      | { ok: false; status: number; code: string; message: string }
+    >(tenantId, async (client) => {
+      // A. Validate tenant ownership of target customerId & ensure customer profile exists
+      let targetCustomerEmail = request.user!.email;
+      if ((callerRole === 'ADMIN' || callerRole === 'STAFF') && customerId) {
+        const userTenantRes = await client.query<{ id: string; email: string }>(
+          'SELECT id, email FROM users WHERE id = $1 AND tenant_id = $2',
+          [userId, tenantId]
+        );
+        if (userTenantRes.rows.length === 0) {
+          return {
+            ok: false,
+            status: 404,
+            code: 'CUSTOMER_NOT_FOUND',
+            message: 'Target customer does not belong to this tenant.',
+          };
+        }
+        targetCustomerEmail = userTenantRes.rows[0].email;
+      }
 
-      // A. Ensure customer profile exists
-      const custRes = await client.query('SELECT user_id FROM customer_profiles WHERE user_id = $1', [userId]);
+      const custRes = await client.query(
+        'SELECT user_id FROM customer_profiles WHERE user_id = $1 AND tenant_id = $2',
+        [userId, tenantId]
+      );
       if (custRes.rows.length === 0) {
         await client.query(
           `INSERT INTO customer_profiles (user_id, tenant_id, full_name, default_address_text)
            VALUES ($1, $2, $3, $4)`,
-          [userId, tenantId, request.user!.email.split('@')[0], addressText]
+          [userId, tenantId, targetCustomerEmail.split('@')[0], addressText]
         );
       }
 
@@ -97,22 +138,24 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
       const addressId = addrRes.rows[0].id;
 
-      // C. Query service pricing
+      // C. Query active service pricing
       const srvRes = await client.query(
-        'SELECT id, name, base_price_cents FROM services WHERE id = $1 AND tenant_id = $2',
+        'SELECT id, name, base_price_cents FROM services WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE',
         [serviceId, tenantId]
       );
       if (srvRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return reply.status(404).send(
-          errorResponse('SERVICE_NOT_FOUND', 'Selected service not found in catalog.', requestId)
-        );
+        return {
+          ok: false,
+          status: 404,
+          code: 'SERVICE_NOT_FOUND',
+          message: 'Selected service not found or is currently inactive.',
+        };
       }
       const service = srvRes.rows[0];
 
-      // D. Generate Cryptographically Secure 4-digit Safety PIN & Booking Reference
+      // D. Generate Cryptographically Secure 4-digit Safety PIN & High-Entropy Booking Reference
       const safetyPin = crypto.randomInt(1000, 10000).toString();
-      const randomSuffix = crypto.randomInt(10000, 100000);
+      const randomSuffix = crypto.randomBytes(4).toString('hex').toUpperCase();
       const bookingRef = `SVC-${randomSuffix}`;
 
       // E. Insert Booking Record
@@ -127,19 +170,25 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
       const booking = bookingRes.rows[0];
 
-      // F. Create Initial Draft Invoice & Line Items
+      // F. Create Initial Draft Invoice & Line Items (Strictly Server-Side Tenant Tax Calculation)
       const laborCents = Number(service.base_price_cents);
       const diagnosticCents = priority === 'EMERGENCY' ? 4900 : 2000;
-      const totalAmountCents = laborCents + diagnosticCents;
+      const subtotalCents = laborCents + diagnosticCents;
+      const taxRateBps = Number(request.tenant?.taxRateBps ?? 500);
+      const taxName = request.tenant?.taxName || 'VAT';
+      const taxTotalCents = Math.round((subtotalCents * taxRateBps) / 10000);
+      const totalAmountCents = subtotalCents + taxTotalCents;
+      const tenantCurrency = (request.tenant?.currencyCode || env.DEFAULT_CURRENCY_CODE || 'AED').toLowerCase();
+      const currencySymbol = request.tenant?.currencySymbol || 'AED ';
       const invoiceNo = `INV-${new Date().getFullYear()}-${randomSuffix}`;
 
       const invRes = await client.query(
         `INSERT INTO invoices (
           tenant_id, booking_id, invoice_number, labor_subtotal_cents,
-          diagnostic_fee_cents, total_amount_cents, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, 'DRAFT')
+          diagnostic_fee_cents, tax_rate_bps, tax_total_cents, total_amount_cents, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT')
         RETURNING id`,
-        [tenantId, booking.id, invoiceNo, laborCents, diagnosticCents, totalAmountCents]
+        [tenantId, booking.id, invoiceNo, laborCents, diagnosticCents, taxRateBps, taxTotalCents, totalAmountCents]
       );
       const invoiceId = invRes.rows[0].id;
 
@@ -150,16 +199,23 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           ($1, 'Diagnostic Dispatch Callout', 'DIAGNOSTIC', 1, $4, $4)`,
         [invoiceId, service.name, laborCents, diagnosticCents]
       );
+      if (taxTotalCents > 0) {
+        await client.query(
+          `INSERT INTO invoice_items (invoice_id, description, item_type, quantity, unit_price_cents, total_cents)
+           VALUES ($1, $2, 'TAX', 1, $3, $3)`,
+          [invoiceId, `${taxName} (${(taxRateBps / 100).toFixed(2)}%)`, taxTotalCents]
+        );
+      }
 
       // G. Insert durable PENDING payment transaction (never call Stripe inside this tx)
       const sandboxIntentId = stripeEnabled ? null : `pi_sandbox_unsettled_${Date.now()}_${randomSuffix}`;
       const txRes = await client.query(
         `INSERT INTO payment_transactions (
           tenant_id, invoice_id, stripe_payment_intent_id, idempotency_key,
-          authorized_amount_cents, transaction_type, status
-        ) VALUES ($1, $2, $3, $4, $5, 'PRE_AUTH', 'PENDING')
+          authorized_amount_cents, currency, transaction_type, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'PRE_AUTH', 'PENDING')
         RETURNING id`,
-        [tenantId, invoiceId, sandboxIntentId, `idem_${booking.id}`, totalAmountCents]
+        [tenantId, invoiceId, sandboxIntentId, `idem_${booking.id}`, totalAmountCents, tenantCurrency]
       );
       const paymentTransactionId = txRes.rows[0].id;
 
@@ -173,7 +229,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           transactionId: paymentTransactionId,
           customerId: userId,
           amountCents: totalAmountCents,
-          currency: 'usd',
+          currency: tenantCurrency,
           paymentMethodId: paymentMethodId || null,
         };
 
@@ -191,37 +247,44 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         `INSERT INTO booking_timeline_events (
           booking_id, tenant_id, from_status, to_status, actor_id, event_title, event_details
         ) VALUES ($1, $2, NULL, 'REQUESTED', $3, 'Booking Order Initialized', $4)`,
-        [booking.id, tenantId, userId, `Order #${bookingRef} reserved; escrow authorization queued for $${(totalAmountCents / 100).toFixed(2)}`]
+        [booking.id, tenantId, userId, `Order #${bookingRef} reserved; escrow authorization queued for ${currencySymbol}${(totalAmountCents / 100).toFixed(2)} (incl. ${(taxRateBps / 100).toFixed(2)}% ${taxName})`]
       );
 
-      await client.query('COMMIT');
-
-      responsePayload = {
-        bookingId: booking.id,
-        bookingReference: booking.booking_reference,
-        paymentTransactionId,
-        status: 'PENDING_PAYMENT',
-        bookingStatus: booking.status,
-        safetyPin: booking.customer_safety_pin,
-        scheduledStart: booking.scheduled_start,
-        serviceName: service.name,
-        preAuthAmountCents: totalAmountCents,
-        invoiceNumber: invoiceNo,
+      return {
+        ok: true,
+        payload: {
+          bookingId: booking.id,
+          bookingReference: booking.booking_reference,
+          paymentTransactionId,
+          status: 'PENDING_PAYMENT',
+          bookingStatus: booking.status,
+          safetyPin: booking.customer_safety_pin,
+          scheduledStart: booking.scheduled_start,
+          serviceName: service.name,
+          subtotalCents,
+          vatRatePercent: taxRateBps / 100,
+          vatAmountCents: taxTotalCents,
+          taxName,
+          currency: tenantCurrency.toUpperCase(),
+          preAuthAmountCents: totalAmountCents,
+          invoiceNumber: invoiceNo,
+        },
       };
-    } catch (err: any) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+    });
+
+    if (!txOutcome.ok) {
+      return reply.status(txOutcome.status).send(
+        errorResponse(txOutcome.code, txOutcome.message, requestId)
+      );
     }
 
     if (stripeEnabled && process.env.OUTBOX_WORKER_ENABLED !== 'false') {
       setImmediate(() => {
-        outboxWorker.processNextJob().catch(() => {});
+        outboxWorker.nudge();
       });
     }
 
-    return reply.status(202).send(successResponse(responsePayload, requestId));
+    return reply.status(202).send(successResponse(txOutcome.payload, requestId));
   });
 
   // 1a. Retrieve PaymentIntent Client Secret & Provisioning Status for Client Checkout
@@ -238,29 +301,24 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const callerId = request.user?.id;
     const callerRole = request.user?.role;
 
-    const readClient = await pool.connect();
-    let row: any;
-    try {
-      const res = await readClient.query(
-        `SELECT b.id as booking_id, b.customer_id,
-                pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status, pt.authorized_amount_cents,
-                oo.status as outbox_status, oo.last_error as outbox_error
-         FROM bookings b
-         JOIN invoices i ON i.booking_id = b.id AND i.tenant_id = $2
-         JOIN payment_transactions pt ON pt.invoice_id = i.id AND pt.tenant_id = $2
-         LEFT JOIN outbox_operations oo ON oo.aggregate_type = 'BOOKING_PAYMENT' AND oo.aggregate_id = b.id
-         WHERE b.id = $1 AND b.tenant_id = $2`,
-        [id, tenantId]
-      );
+    const res = await tenantQuery(
+      `SELECT b.id as booking_id, b.customer_id,
+              pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status, pt.authorized_amount_cents,
+              oo.status as outbox_status, oo.last_error as outbox_error
+       FROM bookings b
+       JOIN invoices i ON i.booking_id = b.id AND i.tenant_id = $2
+       JOIN payment_transactions pt ON pt.invoice_id = i.id AND pt.tenant_id = $2
+       LEFT JOIN outbox_operations oo ON oo.aggregate_type = 'BOOKING_PAYMENT' AND oo.aggregate_id = b.id
+       WHERE b.id = $1 AND b.tenant_id = $2`,
+      [id, tenantId],
+      tenantId
+    );
 
-      if (res.rows.length === 0) {
-        return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking payment record not found.', requestId));
-      }
-
-      row = res.rows[0];
-    } finally {
-      readClient.release();
+    if (res.rows.length === 0) {
+      return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking payment record not found.', requestId));
     }
+
+    const row = res.rows[0];
 
     const isOwner = row.customer_id === callerId;
     const isPrivilegedOperator = ['ADMIN', 'STAFF'].includes(callerRole || '');
@@ -280,8 +338,11 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
     }
 
-    if (hasStripeConfigured() && row.stripe_payment_intent_id.startsWith('pi_')) {
-      const stripe = getStripe(env.STRIPE_SECRET_KEY);
+    const tenantGateway = await getTenantPaymentGateway(tenantId);
+    const tenantStripeKey = tenantGateway.secrets.stripeSecretKey;
+
+    if (hasStripeConfigured(tenantStripeKey) && row.stripe_payment_intent_id.startsWith('pi_')) {
+      const stripe = getStripe(tenantStripeKey ?? env.STRIPE_SECRET_KEY);
       const pi = await stripe.paymentIntents.retrieve(row.stripe_payment_intent_id);
       return reply.status(200).send(
         successResponse({
@@ -322,28 +383,23 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const callerId = request.user?.id;
     const callerRole = request.user?.role;
 
-    // PHASE 1: Fast Read & Authorization Guard (release DB client before Stripe I/O)
-    const readClient = await pool.connect();
-    let row: any;
-    try {
-      const bRes = await readClient.query(
-        `SELECT b.id, b.status, b.customer_id, i.id as invoice_id, i.total_amount_cents,
-                pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status, pt.authorized_amount_cents
-         FROM bookings b
-         JOIN invoices i ON i.booking_id = b.id AND i.tenant_id = $2
-         JOIN payment_transactions pt ON pt.invoice_id = i.id AND pt.tenant_id = $2
-         WHERE b.id = $1 AND b.tenant_id = $2`,
-        [id, tenantId]
-      );
+    // PHASE 1: Fast Read & Authorization Guard (releases DB tx before Stripe I/O)
+    const bRes = await tenantQuery(
+      `SELECT b.id, b.status, b.customer_id, i.id as invoice_id, i.total_amount_cents,
+              pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status, pt.authorized_amount_cents
+       FROM bookings b
+       JOIN invoices i ON i.booking_id = b.id AND i.tenant_id = $2
+       JOIN payment_transactions pt ON pt.invoice_id = i.id AND pt.tenant_id = $2
+       WHERE b.id = $1 AND b.tenant_id = $2`,
+      [id, tenantId],
+      tenantId
+    );
 
-      if (bRes.rows.length === 0) {
-        return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId));
-      }
-
-      row = bRes.rows[0];
-    } finally {
-      readClient.release();
+    if (bRes.rows.length === 0) {
+      return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId));
     }
+
+    const row = bRes.rows[0];
 
     // Strict Authorization Guard: Caller must be the booking owner or an authorized operator (canonical ADMIN/STAFF)
     const isOwner = row.customer_id === callerId;
@@ -366,14 +422,20 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
     }
 
-    // PHASE 2: External Stripe Retrieve (OUTSIDE any DB transaction)
+    // PHASE 2: External Gateway Verification (OUTSIDE any DB transaction)
     let targetTxStatus: 'REQUIRES_CAPTURE' | 'SUCCEEDED' = 'REQUIRES_CAPTURE';
     let targetInvoiceStatus: 'AUTHORIZED' | 'PAID' = 'AUTHORIZED';
 
-    if (hasStripeConfigured() && row.stripe_payment_intent_id.startsWith('pi_')) {
+    const tenantGateway = await getTenantPaymentGateway(tenantId);
+    const tenantStripeKey = tenantGateway.secrets.stripeSecretKey;
+    const activeGateway = env.PAYMENT_GATEWAY || 'stripe';
+    const gatewayConfigured =
+      activeGateway === 'stripe' ? hasStripeConfigured(tenantStripeKey) : tenantGateway.isConfigured;
+
+    if (hasStripeConfigured(tenantStripeKey) && row.stripe_payment_intent_id.startsWith('pi_')) {
       let pi: Stripe.PaymentIntent;
       try {
-        const stripe = getStripe(env.STRIPE_SECRET_KEY);
+        const stripe = getStripe(tenantStripeKey ?? env.STRIPE_SECRET_KEY);
         pi = await stripe.paymentIntents.retrieve(row.stripe_payment_intent_id);
       } catch (stripeErr: any) {
         return reply.status(502).send(
@@ -392,6 +454,13 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           errorResponse('PAYMENT_NOT_AUTHORIZED', `Stripe PaymentIntent status is ${pi.status}; payment is not authorized.`, requestId)
         );
       }
+    } else if (
+      gatewayConfigured &&
+      activeGateway !== 'stripe' &&
+      !row.stripe_payment_intent_id.startsWith('pi_sandbox_')
+    ) {
+      targetTxStatus = 'REQUIRES_CAPTURE';
+      targetInvoiceStatus = 'AUTHORIZED';
     } else if (process.env.NODE_ENV === 'production') {
       return reply.status(422).send(
         errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', 'Live Stripe gateway is not configured on this server.', requestId)
@@ -399,69 +468,74 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     }
 
     // PHASE 3: Short Atomic Reconciliation Transaction
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      const lockRes = await client.query(
-        `SELECT status FROM payment_transactions WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
-        [row.tx_id, tenantId]
-      );
-      const currentStatus = lockRes.rows[0]?.status;
-      if (currentStatus === 'SUCCEEDED') {
-        await client.query('COMMIT');
-        return reply.status(200).send(successResponse({ confirmed: true, status: 'SUCCEEDED' }, requestId));
-      }
-
-      if (targetTxStatus === 'SUCCEEDED') {
-        await client.query(
-          `UPDATE payment_transactions 
-           SET status = 'SUCCEEDED', captured_amount_cents = authorized_amount_cents, updated_at = NOW() 
-           WHERE id = $1`,
-          [row.tx_id]
+    const confirmedStatus = await withTenantTransaction<'SUCCEEDED' | 'REQUIRES_CAPTURE'>(
+      tenantId,
+      async (client) => {
+        const lockRes = await client.query(
+          `SELECT status FROM payment_transactions WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+          [row.tx_id, tenantId]
         );
-      } else {
-        await client.query(
-          `UPDATE payment_transactions SET status = 'REQUIRES_CAPTURE', updated_at = NOW() WHERE id = $1 AND status = 'PENDING'`,
-          [row.tx_id]
-        );
-      }
-
-      if (targetInvoiceStatus === 'PAID') {
-        await client.query(`UPDATE invoices SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = $1`, [row.invoice_id]);
-
-        // Escrow Capture: Debit 1020 (Stripe Holding Escrow Clearing), Credit 2010 (Customer Escrow Deposits Liability)
-        const accRes = await client.query(
-          `SELECT id, account_number FROM ledger_accounts 
-           WHERE tenant_id = $1 AND account_number IN ('1010', '1020', '2010')`,
-          [tenantId]
-        );
-        const escrowClearing = accRes.rows.find(a => a.account_number === '1020') || accRes.rows.find(a => a.account_number === '1010');
-        const escrowLiability = accRes.rows.find(a => a.account_number === '2010');
-
-        if (escrowClearing && escrowLiability) {
-          const amountCents = Number(row.total_amount_cents || row.authorized_amount_cents || 0);
-          if (amountCents > 0) {
-            await client.query(
-              `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
-               VALUES ($1, $2, 'ESCROW_CAPTURE', $3, $4, $5, $6)
-               ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
-              [tenantId, row.tx_id, escrowClearing.id, escrowLiability.id, amountCents, `Escrow captured for booking ${id}`]
-            );
-          }
+        const currentStatus = lockRes.rows[0]?.status;
+        if (currentStatus === 'SUCCEEDED') {
+          return 'SUCCEEDED';
         }
-      } else {
-        await client.query(`UPDATE invoices SET status = 'AUTHORIZED', updated_at = NOW() WHERE id = $1 AND status = 'DRAFT'`, [row.invoice_id]);
-      }
 
-      await client.query('COMMIT');
-      return reply.status(200).send(successResponse({ confirmed: true, status: targetTxStatus }, requestId));
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+        if (targetTxStatus === 'SUCCEEDED') {
+          await client.query(
+            `UPDATE payment_transactions 
+             SET status = 'SUCCEEDED', captured_amount_cents = authorized_amount_cents, updated_at = NOW() 
+             WHERE id = $1`,
+            [row.tx_id]
+          );
+        } else {
+          await client.query(
+            `UPDATE payment_transactions SET status = 'REQUIRES_CAPTURE', updated_at = NOW() WHERE id = $1 AND status = 'PENDING'`,
+            [row.tx_id]
+          );
+        }
+
+        if (targetInvoiceStatus === 'PAID') {
+          await client.query(`UPDATE invoices SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = $1`, [row.invoice_id]);
+
+          // Escrow Capture: Debit 1020 (Stripe Holding Escrow Clearing), Credit 2010 (Customer Escrow Deposits Liability)
+          const accRes = await client.query(
+            `SELECT id, account_number FROM ledger_accounts 
+             WHERE tenant_id = $1 AND account_number IN ('1010', '1020', '2010')`,
+            [tenantId]
+          );
+          const escrowClearing = accRes.rows.find(a => a.account_number === '1020') || accRes.rows.find(a => a.account_number === '1010');
+          const escrowLiability = accRes.rows.find(a => a.account_number === '2010');
+
+          if (escrowClearing && escrowLiability) {
+            const amountCents = Number(row.total_amount_cents || row.authorized_amount_cents || 0);
+            if (amountCents > 0) {
+              await client.query(
+                `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+                 VALUES ($1, $2, 'ESCROW_CAPTURE', $3, $4, $5, $6)
+                 ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+                [tenantId, row.tx_id, escrowClearing.id, escrowLiability.id, amountCents, `Escrow captured for booking ${id}`]
+              );
+            }
+          }
+        } else {
+          await client.query(`UPDATE invoices SET status = 'AUTHORIZED', updated_at = NOW() WHERE id = $1 AND status = 'DRAFT'`, [row.invoice_id]);
+        }
+
+        // Automatically broadcast to nearby verified online technicians once payment is authorized
+        // Isolated via SAVEPOINT so a dispatch SQL error never aborts the payment settlement tx (BUG-BE-001)
+        await client.query('SAVEPOINT sp_broadcast_confirm');
+        try {
+          await broadcastBookingToNearbyProviders(client, tenantId, id);
+          await client.query('RELEASE SAVEPOINT sp_broadcast_confirm');
+        } catch {
+          await client.query('ROLLBACK TO SAVEPOINT sp_broadcast_confirm');
+        }
+
+        return targetTxStatus;
+      }
+    );
+
+    return reply.status(200).send(successResponse({ confirmed: true, status: confirmedStatus }, requestId));
   });
 
   // 2. Query Bookings List (Paginated & Filtered)
@@ -486,9 +560,11 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const tenantId = request.tenantId;
     const userRole = request.user!.role;
     const userId = request.user!.id;
-    const { status, priority, search, page = 1, limit = 20 } = request.query as any;
+    const { status, priority, search, page: rawPage = 1, limit: rawLimit = 20 } = request.query as any;
+    const page = Math.max(1, Number(rawPage) || 1);
+    const limit = Math.min(100, Math.max(1, Number(rawLimit) || 20));
 
-    const offset = (Math.max(1, page) - 1) * limit;
+    const offset = (page - 1) * limit;
 
     let queryText = `
       SELECT b.id, b.booking_reference, b.status, b.priority, b.scheduled_start,
@@ -539,14 +615,14 @@ export async function bookingRoutes(fastify: FastifyInstance) {
 
     // Count Total Records
     const countSql = `SELECT COUNT(*) as count FROM (${queryText}) as filtered`;
-    const countRes = await pool.query(countSql, params);
+    const countRes = await tenantQuery(countSql, params, tenantId);
     const totalRecords = parseInt(countRes.rows[0].count, 10);
 
     // Fetch Paginated Records
     queryText += ` ORDER BY b.created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
     params.push(limit, offset);
 
-    const res = await pool.query(queryText, params);
+    const res = await tenantQuery(queryText, params, tenantId);
 
     return reply.status(200).send(
       successResponse(res.rows, requestId, {
@@ -572,7 +648,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const userRole = request.user!.role;
     const userId = request.user!.id;
 
-    const bRes = await pool.query(
+    const bRes = await tenantQuery(
       `SELECT b.*, s.name as service_name, s.description as service_desc,
               cp.full_name as customer_name, u_cust.phone as customer_phone, u_cust.email as customer_email,
               ca.address_line1 as customer_address, ca.city, ca.state_province, ca.postal_code,
@@ -589,7 +665,8 @@ export async function bookingRoutes(fastify: FastifyInstance) {
        LEFT JOIN users u_tech ON u_tech.id = pp.user_id
        LEFT JOIN invoices i ON i.booking_id = b.id
        WHERE b.id = $1 AND b.tenant_id = $2`,
-      [id, tenantId]
+      [id, tenantId],
+      tenantId
     );
 
     if (bRes.rows.length === 0) {
@@ -618,27 +695,30 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     }
 
     // Fetch Timeline Events
-    const tlRes = await pool.query(
+    const tlRes = await tenantQuery(
       `SELECT id, from_status, to_status, event_title, event_details, created_at
        FROM booking_timeline_events
        WHERE booking_id = $1
        ORDER BY created_at ASC`,
-      [id]
+      [id],
+      tenantId
     );
 
     // Fetch Work Order Proofs
-    const pfRes = await pool.query(
+    const pfRes = await tenantQuery(
       `SELECT before_photos_urls, after_photos_urls, customer_signature_url, work_summary_notes, submitted_at
        FROM work_order_proofs WHERE booking_id = $1`,
-      [id]
+      [id],
+      tenantId
     );
 
     // Fetch Invoice Line Items
     let items: any[] = [];
     if (booking.invoice_id) {
-      const itemsRes = await pool.query(
+      const itemsRes = await tenantQuery(
         'SELECT description, item_type, quantity, unit_price_cents, total_cents FROM invoice_items WHERE invoice_id = $1',
-        [booking.invoice_id]
+        [booking.invoice_id],
+        tenantId
       );
       items = itemsRes.rows;
     }
@@ -671,62 +751,97 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { safetyPin } = parsed.data;
+    const { safetyPin, latitude, longitude } = parsed.data;
+    if (latitude !== undefined && longitude !== undefined && latitude === 0 && longitude === 0) {
+      return reply.status(400).send(
+        errorResponse('INVALID_COORDINATES', 'Zero (0, 0) GPS coordinates are not permitted for arrival verification.', requestId)
+      );
+    }
     const tenantId = request.tenantId;
     const userRole = request.user!.role;
     const userId = request.user!.id;
 
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
+    const txOutcome = await withTenantTransaction<
+      | { ok: true; distanceMeters: number | null }
+      | { ok: false; status: number; code: string; message: string }
+    >(tenantId, async (client) => {
       const bRes = await client.query(
-        `SELECT id, customer_safety_pin, status, assigned_provider_id,
-                safety_pin_failed_attempts, safety_pin_locked_until, safety_pin_last_failed_at
-         FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+        `SELECT b.id, b.customer_safety_pin, b.status, b.assigned_provider_id, b.address_id,
+                b.safety_pin_failed_attempts, b.safety_pin_locked_until, b.safety_pin_last_failed_at,
+                ST_Y(ca.location::geometry) AS addr_lat, ST_X(ca.location::geometry) AS addr_lng
+         FROM bookings b
+         JOIN customer_addresses ca ON ca.id = b.address_id
+         WHERE b.id = $1 AND b.tenant_id = $2 FOR UPDATE OF b`,
         [id, tenantId]
       );
 
       if (bRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return reply.status(404).send(
-          errorResponse('BOOKING_NOT_FOUND', 'Booking record not found', requestId)
-        );
+        return { ok: false, status: 404, code: 'BOOKING_NOT_FOUND', message: 'Booking record not found' };
       }
 
       const booking = bRes.rows[0];
 
       // Authorization: Must be assigned technician, ADMIN, or STAFF
       if (userRole === 'TECHNICIAN' && booking.assigned_provider_id !== userId) {
-        await client.query('ROLLBACK');
-        return reply.status(403).send(
-          errorResponse('FORBIDDEN', 'You are not the assigned provider for this booking.', requestId)
-        );
+        return { ok: false, status: 403, code: 'FORBIDDEN', message: 'You are not the assigned provider for this booking.' };
       }
       if (userRole === 'CUSTOMER') {
-        await client.query('ROLLBACK');
-        return reply.status(403).send(
-          errorResponse('FORBIDDEN', 'Only assigned technicians or dispatchers can verify arrival.', requestId)
-        );
+        return { ok: false, status: 403, code: 'FORBIDDEN', message: 'Only assigned technicians or dispatchers can verify arrival.' };
       }
 
       // State check: cannot verify arrival if already cancelled or completed
       const validPreArrivalStatuses = ['CONFIRMED', 'ASSIGNED', 'SCHEDULED', 'DISPATCHED', 'EN_ROUTE'];
       if (booking.status === 'ON_SITE') {
-        await client.query('COMMIT');
-        return reply.status(200).send(
-          successResponse({
-            verified: true,
-            status: 'ON_SITE',
-            verifiedAt: new Date().toISOString()
-          }, requestId)
-        );
+        return { ok: true, distanceMeters: null };
       }
       if (!validPreArrivalStatuses.includes(booking.status)) {
-        await client.query('ROLLBACK');
-        return reply.status(400).send(
-          errorResponse('INVALID_STATE', `Cannot verify arrival for booking in ${booking.status} status.`, requestId)
-        );
+        return {
+          ok: false,
+          status: 400,
+          code: 'INVALID_STATE',
+          message: `Cannot verify arrival for booking in ${booking.status} status.`,
+        };
+      }
+
+      // PostGIS Geofence enforcement for field technicians (skip zeroed synthetic test coordinates)
+      let distanceMeters: number | null = null;
+      const isZeroSyntheticAddr = Number(booking.addr_lat) === 0 && Number(booking.addr_lng) === 0;
+      if (userRole === 'TECHNICIAN' && !isZeroSyntheticAddr) {
+        let distRes;
+        if (latitude !== undefined && longitude !== undefined) {
+          distRes = await client.query<{ dist: number }>(
+            `SELECT ST_Distance(ca.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS dist
+             FROM customer_addresses ca WHERE ca.id = $3`,
+            [longitude, latitude, booking.address_id]
+          );
+        } else {
+          distRes = await client.query<{ dist: number }>(
+            `SELECT ST_Distance(ca.location, pl.location) AS dist
+             FROM customer_addresses ca
+             JOIN provider_locations pl ON pl.provider_id = $1 AND pl.tenant_id = $2
+             WHERE ca.id = $3 AND pl.location IS NOT NULL`,
+            [userId, tenantId, booking.address_id]
+          );
+        }
+
+        if (distRes.rows.length === 0 || distRes.rows[0].dist === null || distRes.rows[0].dist === undefined) {
+          return {
+            ok: false,
+            status: 422,
+            code: 'GEOFENCE_LOCATION_REQUIRED',
+            message: 'Live GPS coordinates are required to verify on-site arrival within the service geofence.',
+          };
+        }
+
+        distanceMeters = Number(distRes.rows[0].dist);
+        if (distanceMeters > env.ARRIVAL_GEOFENCE_RADIUS_METERS) {
+          return {
+            ok: false,
+            status: 422,
+            code: 'GEOFENCE_VIOLATION',
+            message: `Technician is ${Math.round(distanceMeters)}m away from the service address (max allowed: ${env.ARRIVAL_GEOFENCE_RADIUS_METERS}m).`,
+          };
+        }
       }
 
       // Persistent PostgreSQL PIN lockout enforcement
@@ -734,10 +849,12 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       const lockedUntilMs = booking.safety_pin_locked_until ? new Date(booking.safety_pin_locked_until).getTime() : 0;
       if (lockedUntilMs > now) {
         const remainingSeconds = Math.ceil((lockedUntilMs - now) / 1000);
-        await client.query('COMMIT');
-        return reply.status(429).send(
-          errorResponse('TOO_MANY_PIN_ATTEMPTS', `Safety PIN verification locked due to excessive failed attempts. Please retry in ${remainingSeconds} seconds.`, requestId)
-        );
+        return {
+          ok: false,
+          status: 429,
+          code: 'TOO_MANY_PIN_ATTEMPTS',
+          message: `Safety PIN verification locked due to excessive failed attempts. Please retry in ${remainingSeconds} seconds.`,
+        };
       }
 
       const storedPin = String(booking.customer_safety_pin || '');
@@ -762,11 +879,13 @@ export async function bookingRoutes(fastify: FastifyInstance) {
            WHERE id = $3`,
           [currentAttempts, newLockedUntil, id]
         );
-        // COMMIT failed attempt counter so lockout persists across instances and restarts
-        await client.query('COMMIT');
-        return reply.status(400).send(
-          errorResponse('INVALID_SAFETY_PIN', `The 4-digit safety PIN provided is incorrect. ${Math.max(0, 5 - currentAttempts)} attempts remaining before lockout.`, requestId)
-        );
+        // Normal return commits failed attempt counter so lockout persists across instances and restarts
+        return {
+          ok: false,
+          status: 400,
+          code: 'INVALID_SAFETY_PIN',
+          message: `The 4-digit safety PIN provided is incorrect. ${Math.max(0, 5 - currentAttempts)} attempts remaining before lockout.`,
+        };
       }
 
       // Successful verification: clear lockout and invalidate PIN so it cannot be reused
@@ -784,6 +903,19 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         [id]
       );
 
+      // Update live provider coordinates & ON_JOB status when coordinates were supplied
+      if (userRole === 'TECHNICIAN' && latitude !== undefined && longitude !== undefined) {
+        await client.query(
+          `INSERT INTO provider_locations (provider_id, tenant_id, location, duty_status, last_ping_at)
+           VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, 'ON_JOB', NOW())
+           ON CONFLICT (provider_id) DO UPDATE SET
+             location = EXCLUDED.location,
+             duty_status = 'ON_JOB',
+             last_ping_at = NOW()`,
+          [userId, tenantId, longitude, latitude]
+        );
+      }
+
       // Record Timeline Audit Event
       await client.query(
         `INSERT INTO booking_timeline_events (
@@ -792,21 +924,23 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         [id, tenantId, booking.status, userId]
       );
 
-      await client.query('COMMIT');
+      return { ok: true, distanceMeters };
+    });
 
-      return reply.status(200).send(
-        successResponse({
-          verified: true,
-          status: 'ON_SITE',
-          verifiedAt: new Date().toISOString()
-        }, requestId)
+    if (!txOutcome.ok) {
+      return reply.status(txOutcome.status).send(
+        errorResponse(txOutcome.code, txOutcome.message, requestId)
       );
-    } catch (err: any) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
     }
+
+    return reply.status(200).send(
+      successResponse({
+        verified: true,
+        status: 'ON_SITE',
+        verifiedAt: new Date().toISOString(),
+        ...(txOutcome.distanceMeters !== null ? { distanceMeters: Math.round(txOutcome.distanceMeters) } : {}),
+      }, requestId)
+    );
   });
 
   // 5. Complete Work Order & Release Escrow Funds
@@ -832,14 +966,18 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const userRole = request.user!.role;
     const userId = request.user!.id;
 
-    // PHASE 1: Fast Read & Eligibility Verification (No long-lived transaction held)
-    const readClient = await pool.connect();
-    let booking: any;
-    let paymentTx: any = null;
+    const tenantGateway = await getTenantPaymentGateway(tenantId);
+    const tenantStripeKey = tenantGateway.secrets.stripeSecretKey;
+    const activeGateway = env.PAYMENT_GATEWAY || 'stripe';
 
-    try {
+    // PHASE 1: Fast Read & Eligibility Verification (releases DB tx before Stripe I/O)
+    const phase1Outcome = await withTenantTransaction<
+      | { ok: true; booking: any; paymentTx: any }
+      | { ok: false; status: number; body: any }
+    >(tenantId, async (readClient) => {
       const bRes = await readClient.query(
-        `SELECT b.id, b.status, b.assigned_provider_id, i.id as invoice_id, i.total_amount_cents,
+        `SELECT b.id, b.status, b.assigned_provider_id,
+                i.id as invoice_id, i.total_amount_cents, COALESCE(i.tax_total_cents, 0) AS tax_total_cents,
                 t.default_platform_commission_bps
          FROM bookings b
          JOIN tenants t ON t.id = b.tenant_id
@@ -849,90 +987,138 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
 
       if (bRes.rows.length === 0) {
-        return reply.status(404).send(
-          errorResponse('BOOKING_NOT_FOUND', 'Work order not found.', requestId)
-        );
+        return {
+          ok: false,
+          status: 404,
+          body: errorResponse('BOOKING_NOT_FOUND', 'Work order not found.', requestId),
+        };
       }
 
-      booking = bRes.rows[0];
+      const booking = bRes.rows[0];
 
       // Authorization: Must be assigned technician, ADMIN, or STAFF
       if (userRole === 'TECHNICIAN' && booking.assigned_provider_id !== userId) {
-        return reply.status(403).send(
-          errorResponse('FORBIDDEN', 'You are not the assigned provider for this work order.', requestId)
-        );
+        return {
+          ok: false,
+          status: 403,
+          body: errorResponse('FORBIDDEN', 'You are not the assigned provider for this work order.', requestId),
+        };
       }
       if (userRole === 'CUSTOMER') {
-        return reply.status(403).send(
-          errorResponse('FORBIDDEN', 'Customers cannot sign-off provider work orders directly.', requestId)
-        );
+        return {
+          ok: false,
+          status: 403,
+          body: errorResponse('FORBIDDEN', 'Customers cannot sign-off provider work orders directly.', requestId),
+        };
       }
 
       // State check: Idempotent return if already completed
       if (booking.status === 'COMPLETED') {
-        return reply.status(200).send(
-          successResponse({
+        return {
+          ok: false,
+          status: 200,
+          body: successResponse({
             completed: true,
             bookingId: id,
             status: 'COMPLETED',
             idempotent: true
-          }, requestId)
-        );
+          }, requestId),
+        };
       }
 
       if (booking.status !== 'ON_SITE') {
-        return reply.status(400).send(
-          errorResponse('INVALID_STATE', `Work order must be in ON_SITE status to complete (current status: ${booking.status}).`, requestId)
-        );
+        return {
+          ok: false,
+          status: 400,
+          body: errorResponse('INVALID_STATE', `Work order must be in ON_SITE status to complete (current status: ${booking.status}).`, requestId),
+        };
       }
 
+      let paymentTx: any = null;
       if (booking.invoice_id) {
         const txRes = await readClient.query(
-          `SELECT id, stripe_payment_intent_id, status FROM payment_transactions WHERE invoice_id = $1`,
+          `SELECT id, stripe_payment_intent_id, authorized_amount_cents, status FROM payment_transactions WHERE invoice_id = $1`,
           [booking.invoice_id]
         );
         if (txRes.rows.length === 0) {
-          return reply.status(400).send(
-            errorResponse('PAYMENT_TRANSACTION_MISSING', 'Work order invoice lacks an authorized payment transaction.', requestId)
-          );
+          return {
+            ok: false,
+            status: 400,
+            body: errorResponse('PAYMENT_TRANSACTION_MISSING', 'Work order invoice lacks an authorized payment transaction.', requestId),
+          };
         }
 
         paymentTx = txRes.rows[0];
-        const validStatuses = ['REQUIRES_CAPTURE', 'AUTHORIZED', 'SUCCEEDED', 'PENDING'];
+        const validStatuses = ['REQUIRES_CAPTURE', 'AUTHORIZED', 'SUCCEEDED'];
         if (!validStatuses.includes(paymentTx.status)) {
-          return reply.status(400).send(
-            errorResponse('INVALID_PAYMENT_STATE', `Payment transaction is in invalid state: ${paymentTx.status}`, requestId)
-          );
+          return {
+            ok: false,
+            status: 409,
+            body: errorResponse('PAYMENT_NOT_AUTHORIZED', `Payment transaction must be authorized before completion (current state: ${paymentTx.status}).`, requestId),
+          };
+        }
+        if (activeGateway === 'stripe' && hasStripeConfigured(tenantStripeKey) && paymentTx.status !== 'SUCCEEDED' && !paymentTx.stripe_payment_intent_id?.startsWith('pi_')) {
+          return {
+            ok: false,
+            status: 409,
+            body: errorResponse('PAYMENT_INTENT_MISSING', 'Stripe PaymentIntent is not yet initialized for escrow capture.', requestId),
+          };
         }
       }
-    } finally {
-      readClient.release();
+
+      return { ok: true, booking, paymentTx };
+    });
+
+    if (!phase1Outcome.ok) {
+      return reply.status(phase1Outcome.status).send(phase1Outcome.body);
     }
 
-    // PHASE 2: External Stripe Capture (Executed OUTSIDE any open database transaction)
-    if (booking.invoice_id && paymentTx && hasStripeConfigured() && paymentTx.status !== 'SUCCEEDED' && paymentTx.stripe_payment_intent_id?.startsWith('pi_')) {
-      try {
-        const stripe = getStripe(env.STRIPE_SECRET_KEY);
-        await stripe.paymentIntents.capture(
-          paymentTx.stripe_payment_intent_id,
-          {},
-          { idempotencyKey: `capture_tx_${booking.invoice_id}` }
-        );
-      } catch (stripeErr: any) {
-        const isAlreadyCaptured =
-          stripeErr.code === 'payment_intent_unexpected_state' ||
-          stripeErr.message?.toLowerCase().includes('already been captured');
-        if (isAlreadyCaptured) {
-          const stripe = getStripe(env.STRIPE_SECRET_KEY);
-          const pi = await stripe.paymentIntents.retrieve(paymentTx.stripe_payment_intent_id);
-          if (pi.status !== 'succeeded') {
+    const { booking, paymentTx } = phase1Outcome;
+
+    // PHASE 2: External Gateway Capture (Executed OUTSIDE any open database transaction)
+    if (booking.invoice_id && paymentTx && paymentTx.status !== 'SUCCEEDED') {
+      const isStripeIntent = Boolean(paymentTx.stripe_payment_intent_id?.startsWith('pi_'));
+      if (hasStripeConfigured(tenantStripeKey) && isStripeIntent) {
+        try {
+          const stripe = getStripe(tenantStripeKey ?? env.STRIPE_SECRET_KEY);
+          await stripe.paymentIntents.capture(
+            paymentTx.stripe_payment_intent_id,
+            {},
+            { idempotencyKey: `capture_tx_${booking.invoice_id}` }
+          );
+        } catch (stripeErr: any) {
+          const isAlreadyCaptured =
+            stripeErr.code === 'payment_intent_unexpected_state' ||
+            stripeErr.message?.toLowerCase().includes('already been captured');
+          if (isAlreadyCaptured) {
+            const stripe = getStripe(tenantStripeKey ?? env.STRIPE_SECRET_KEY);
+            const pi = await stripe.paymentIntents.retrieve(paymentTx.stripe_payment_intent_id);
+            if (pi.status !== 'succeeded') {
+              return reply.status(502).send(
+                errorResponse('STRIPE_CAPTURE_FAILED', `Stripe PaymentIntent is in unexpected state: ${pi.status}`, requestId)
+              );
+            }
+          } else {
             return reply.status(502).send(
-              errorResponse('STRIPE_CAPTURE_FAILED', `Stripe PaymentIntent is in unexpected state: ${pi.status}`, requestId)
+              errorResponse('STRIPE_CAPTURE_FAILED', `Failed capturing escrow funds with Stripe: ${stripeErr.message}`, requestId)
             );
           }
-        } else {
+        }
+      } else if (
+        (activeGateway === 'paytabs' || activeGateway === 'telr') &&
+        tenantGateway.isConfigured &&
+        paymentTx.stripe_payment_intent_id &&
+        !isStripeIntent &&
+        !paymentTx.stripe_payment_intent_id.startsWith('pi_sandbox_')
+      ) {
+        try {
+          await tenantGateway.gateway.capture(
+            paymentTx.stripe_payment_intent_id,
+            Number(paymentTx.authorized_amount_cents || 0) || undefined
+          );
+        } catch (gwErr: any) {
           return reply.status(502).send(
-            errorResponse('STRIPE_CAPTURE_FAILED', `Failed capturing escrow funds with Stripe: ${stripeErr.message}`, requestId)
+            errorResponse('GATEWAY_CAPTURE_FAILED', `Failed capturing escrow funds via ${tenantGateway.gateway.name}: ${gwErr.message}`, requestId)
           );
         }
       }
@@ -942,16 +1128,29 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const settleClient = await pool.connect();
     try {
       await settleClient.query('BEGIN');
+      await settleClient.query(`SELECT set_config('app.current_tenant_id', $1, true)`, [tenantId]);
 
       // Re-lock booking to guarantee concurrency safety
       const lockRes = await settleClient.query(
         `SELECT id, status FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
         [id, tenantId]
       );
-      if (lockRes.rows.length === 0 || lockRes.rows[0].status === 'COMPLETED') {
+      if (lockRes.rows.length === 0) {
+        await settleClient.query('ROLLBACK');
+        return reply.status(404).send(
+          errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId)
+        );
+      }
+      if (lockRes.rows[0].status === 'COMPLETED') {
         await settleClient.query('COMMIT');
         return reply.status(200).send(
           successResponse({ completed: true, bookingId: id, status: 'COMPLETED', idempotent: true }, requestId)
+        );
+      }
+      if (lockRes.rows[0].status !== 'ON_SITE') {
+        await settleClient.query('ROLLBACK');
+        return reply.status(409).send(
+          errorResponse('INVALID_BOOKING_STATE', `Booking state changed to ${lockRes.rows[0].status} and can no longer be completed.`, requestId)
         );
       }
 
@@ -989,7 +1188,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           [booking.invoice_id]
         );
 
-        // D. Post Double-Entry Ledger Entries Idempotently
+        // D. Post Double-Entry Ledger Entries Idempotently (separating Tax 2030 from pre-tax revenue & tech payable)
         const accRes = await settleClient.query(
           `SELECT id, account_number FROM ledger_accounts WHERE tenant_id = $1`,
           [tenantId]
@@ -999,12 +1198,26 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         const escrowClearingAcc = accounts.find(a => a.account_number === '1020')?.id || cashAcc;
         const escrowLiabilityAcc = accounts.find(a => a.account_number === '2010')?.id;
         const techPayableAcc = accounts.find(a => a.account_number === '2020')?.id;
+        let taxPayableAcc = accounts.find(a => a.account_number === '2030')?.id;
         const platformRevAcc = accounts.find(a => a.account_number === '4010')?.id;
 
-        const totalCents = Number(booking.total_amount_cents || 0);
-        const commissionBps = Number(booking.default_platform_commission_bps || 1500);
-        const platformFeeCents = Math.round(totalCents * (commissionBps / 10000));
-        const netTechPayoutCents = totalCents - platformFeeCents;
+        const totalCents = Number(booking.total_amount_cents ?? 0);
+        const taxCents = Math.min(totalCents, Math.max(0, Number(booking.tax_total_cents ?? 0)));
+        const preTaxCents = Math.max(0, totalCents - taxCents);
+        const commissionBps = Number(booking.default_platform_commission_bps ?? 1500);
+        const platformFeeCents = Math.round(preTaxCents * (commissionBps / 10000));
+        const netTechPayoutCents = preTaxCents - platformFeeCents;
+
+        if (taxCents > 0 && !taxPayableAcc) {
+          const insTaxAcc = await settleClient.query<{ id: string }>(
+            `INSERT INTO ledger_accounts (tenant_id, account_number, account_name, account_type)
+             VALUES ($1, '2030', 'Tax / VAT / GST Payable', 'LIABILITY')
+             ON CONFLICT (tenant_id, account_number) DO UPDATE SET account_name = EXCLUDED.account_name
+             RETURNING id`,
+            [tenantId]
+          );
+          taxPayableAcc = insTaxAcc.rows[0]?.id;
+        }
 
         if (paymentTx?.id && escrowClearingAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && totalCents > 0) {
           // Record Escrow Capture idempotently (Dr 1020 Stripe Holding Escrow / Cr 2010 Customer Escrow Deposits)
@@ -1021,6 +1234,22 @@ export async function bookingRoutes(fastify: FastifyInstance) {
               `Escrow captured on work order completion for #${id}`
             ]
           );
+
+          if (taxCents > 0 && taxPayableAcc) {
+            await settleClient.query(
+              `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+               VALUES ($1, $2, 'TAX_PAYABLE', $3, $4, $5, $6)
+               ON CONFLICT (transaction_id, posting_type) DO NOTHING`,
+              [
+                tenantId,
+                paymentTx.id,
+                escrowLiabilityAcc,
+                taxPayableAcc,
+                taxCents,
+                `Tax liability collected for #${id}`
+              ]
+            );
+          }
 
           if (platformFeeCents > 0) {
             await settleClient.query(
@@ -1056,7 +1285,28 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         }
       }
 
-      // E. Record Timeline Audit Event
+      // E. Release technician back to ONLINE if no other active bookings remain, and expire any lingering broadcasts
+      if (booking.assigned_provider_id) {
+        await settleClient.query(
+          `UPDATE provider_locations
+           SET duty_status = 'ONLINE', last_ping_at = NOW()
+           WHERE provider_id = $1 AND tenant_id = $2
+             AND NOT EXISTS (
+               SELECT 1 FROM bookings
+               WHERE assigned_provider_id = $1 AND tenant_id = $2 AND id <> $3
+                 AND status IN ('ASSIGNED', 'EN_ROUTE', 'ON_SITE')
+             )`,
+          [booking.assigned_provider_id, tenantId, id]
+        );
+      }
+
+      await settleClient.query(
+        `UPDATE dispatch_broadcasts SET response = 'EXPIRED', responded_at = NOW()
+         WHERE booking_id = $1 AND response = 'PENDING'`,
+        [id]
+      );
+
+      // F. Record Timeline Audit Event
       await settleClient.query(
         `INSERT INTO booking_timeline_events (
           booking_id, tenant_id, from_status, to_status, actor_id, event_title, event_details
@@ -1103,29 +1353,24 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     const userId = request.user!.id;
 
     // PHASE 1: Fast Read & Authorization (no DB lock held across Stripe network I/O)
-    const readClient = await pool.connect();
-    let booking: any;
-    try {
-      const bRes = await readClient.query(
-        `SELECT b.id, b.status, b.customer_id, b.assigned_provider_id,
-                i.id as invoice_id,
-                pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status
-         FROM bookings b
-         LEFT JOIN invoices i ON i.booking_id = b.id
-         LEFT JOIN payment_transactions pt ON pt.invoice_id = i.id
-         WHERE b.id = $1 AND b.tenant_id = $2`,
-        [id, tenantId]
-      );
+    const bRes = await tenantQuery(
+      `SELECT b.id, b.status, b.customer_id, b.assigned_provider_id,
+              i.id as invoice_id,
+              pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status
+       FROM bookings b
+       LEFT JOIN invoices i ON i.booking_id = b.id
+       LEFT JOIN payment_transactions pt ON pt.invoice_id = i.id
+       WHERE b.id = $1 AND b.tenant_id = $2`,
+      [id, tenantId],
+      tenantId
+    );
 
-      if (bRes.rows.length === 0) {
-        return reply.status(404).send(
-          errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId)
-        );
-      }
-      booking = bRes.rows[0];
-    } finally {
-      readClient.release();
+    if (bRes.rows.length === 0) {
+      return reply.status(404).send(
+        errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId)
+      );
     }
+    const booking = bRes.rows[0];
 
     const canCancel = userRole === 'ADMIN' ||
                       userRole === 'STAFF' ||
@@ -1152,6 +1397,12 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
     }
 
+    if (userRole === 'CUSTOMER' && ['EN_ROUTE', 'ON_SITE'].includes(booking.status)) {
+      return reply.status(409).send(
+        errorResponse('CANCELLATION_WINDOW_CLOSED', 'Cannot self-cancel while technician is EN_ROUTE or ON_SITE. Contact support for assistance.', requestId)
+      );
+    }
+
     if (booking.tx_status === 'SUCCEEDED') {
       return reply.status(409).send(
         errorResponse('PAYMENT_ALREADY_CAPTURED', 'Payment has already been captured; refund is required before cancelling.', requestId)
@@ -1159,14 +1410,16 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     }
 
     // PHASE 2: Cancel Stripe PaymentIntent Authorization Outside Any Open Transaction
+    const cancelGateway = booking.invoice_id ? await getTenantPaymentGateway(tenantId) : null;
+    const cancelStripeKey = cancelGateway?.secrets.stripeSecretKey;
     if (
       booking.invoice_id &&
-      hasStripeConfigured() &&
+      hasStripeConfigured(cancelStripeKey) &&
       booking.stripe_payment_intent_id?.startsWith('pi_') &&
       ['REQUIRES_CAPTURE', 'PENDING'].includes(booking.tx_status)
     ) {
       try {
-        const stripe = getStripe(env.STRIPE_SECRET_KEY);
+        const stripe = getStripe(cancelStripeKey ?? env.STRIPE_SECRET_KEY);
         await stripe.paymentIntents.cancel(
           booking.stripe_payment_intent_id,
           {},
@@ -1193,83 +1446,441 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     }
 
     // PHASE 3: Short Atomic Local Settlement Transaction
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    const cancelOutcome = await withTenantTransaction<{ status: number; body: any }>(
+      tenantId,
+      async (client) => {
+        const lockRes = await client.query(
+          `SELECT id, status, assigned_provider_id FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+          [id, tenantId]
+        );
+        if (lockRes.rows.length === 0) {
+          return { status: 404, body: errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId) };
+        }
+        const locked = lockRes.rows[0];
+        if (locked.status === 'CANCELLED') {
+          return {
+            status: 200,
+            body: successResponse({ id: locked.id, status: 'CANCELLED', message: 'Booking is already cancelled.' }, requestId),
+          };
+        }
+        if (locked.status === 'COMPLETED') {
+          return {
+            status: 400,
+            body: errorResponse('INVALID_STATE', 'Cannot cancel an already completed work order.', requestId),
+          };
+        }
+        // Re-verify customer cancellation window under row lock (BUG-BE-002)
+        if (userRole === 'CUSTOMER' && ['EN_ROUTE', 'ON_SITE'].includes(locked.status)) {
+          return {
+            status: 409,
+            body: errorResponse('CANCELLATION_LOCKED', 'Cannot cancel once technician is en route or on site. Please contact support.', requestId),
+          };
+        }
+        // Re-verify payment was not concurrently captured before voiding invoice (BUG-BE-002)
+        if (booking.invoice_id) {
+          const txLockRes = await client.query<{ status: string }>(
+            `SELECT status FROM payment_transactions WHERE invoice_id = $1 AND tenant_id = $2 FOR UPDATE`,
+            [booking.invoice_id, tenantId]
+          );
+          if (txLockRes.rows.some((r) => r.status === 'SUCCEEDED')) {
+            return {
+              status: 409,
+              body: errorResponse('PAYMENT_ALREADY_CAPTURED', 'Payment has already been captured for this booking. Please issue a refund instead of cancelling.', requestId),
+            };
+          }
+        }
 
-      const lockRes = await client.query(
-        `SELECT id, status FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+        const cancellationReason = reason ? `Cancellation reason: ${reason}` : 'Cancelled by customer / admin.';
+        await client.query(
+          `UPDATE bookings SET status = 'CANCELLED', cancellation_reason = $2, cancelled_by_user_id = $3, updated_at = NOW() WHERE id = $1`,
+          [id, cancellationReason, userId]
+        );
+
+        // Prevent background outbox worker from creating a PI for this cancelled booking
+        await client.query(
+          `UPDATE outbox_operations
+           SET status = 'CANCELLED', lease_expires_at = NULL, updated_at = NOW()
+           WHERE aggregate_type = 'BOOKING_PAYMENT'
+             AND aggregate_id = $1
+             AND status IN ('PENDING', 'REQUIRES_RECONCILIATION')`,
+          [id]
+        );
+
+        if (booking.invoice_id) {
+          await client.query(
+            `UPDATE invoices SET status = 'VOID', updated_at = NOW() WHERE id = $1`,
+            [booking.invoice_id]
+          );
+
+          await client.query(
+            `UPDATE payment_transactions 
+             SET status = 'VOIDED', updated_at = NOW()
+             WHERE invoice_id = $1 AND status IN ('REQUIRES_CAPTURE', 'PENDING')`,
+            [booking.invoice_id]
+          );
+        }
+
+        // Expire any pending dispatch broadcasts & release assigned technician back to ONLINE
+        await client.query(
+          `UPDATE dispatch_broadcasts SET response = 'EXPIRED', responded_at = NOW()
+           WHERE booking_id = $1 AND response = 'PENDING'`,
+          [id]
+        );
+
+        const providerToRelease = locked.assigned_provider_id || booking.assigned_provider_id;
+        if (providerToRelease) {
+          await client.query(
+            `UPDATE provider_locations
+             SET duty_status = 'ONLINE', last_ping_at = NOW()
+             WHERE provider_id = $1 AND tenant_id = $2
+               AND NOT EXISTS (
+                 SELECT 1 FROM bookings
+                 WHERE assigned_provider_id = $1 AND tenant_id = $2 AND id <> $3
+                   AND status IN ('ASSIGNED', 'EN_ROUTE', 'ON_SITE')
+               )`,
+            [providerToRelease, tenantId, id]
+          );
+        }
+
+        await client.query(
+          `INSERT INTO booking_timeline_events (
+            booking_id, tenant_id, from_status, to_status, actor_id, event_title, event_details
+          ) VALUES ($1, $2, $3, 'CANCELLED', $4, 'Booking Cancelled', $5)`,
+          [id, tenantId, locked.status, userId, cancellationReason]
+        );
+
+        return {
+          status: 200,
+          body: successResponse({
+            id,
+            status: 'CANCELLED',
+            cancelledAt: new Date().toISOString()
+          }, requestId),
+        };
+      }
+    );
+
+    return reply.status(cancelOutcome.status).send(cancelOutcome.body);
+  });
+
+  // 7. Reschedule Booking Appointment Slot
+  fastify.patch('/:id/reschedule', {
+    schema: {
+      tags: ['Bookings & Dispatch'],
+      summary: 'Reschedule booking scheduled_start / scheduled_end window',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const { id } = request.params as { id: string };
+    if (!z.string().uuid().safeParse(id).success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Invalid booking ID.', requestId));
+    }
+
+    const rescheduleSchema = z.object({
+      scheduledStart: z.string().datetime(),
+      scheduledEnd: z.string().datetime().optional(),
+      reason: z.string().trim().max(300).optional(),
+    });
+    const parsed = rescheduleSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(
+        errorResponse('VALIDATION_ERROR', parsed.error.issues[0]?.message || 'Valid ISO-8601 scheduledStart is required.', requestId)
+      );
+    }
+
+    const startMs = Date.parse(parsed.data.scheduledStart);
+    if (startMs <= Date.now() - 60_000) {
+      return reply.status(400).send(
+        errorResponse('VALIDATION_ERROR', 'scheduledStart must be in the future.', requestId)
+      );
+    }
+    if (parsed.data.scheduledEnd && Date.parse(parsed.data.scheduledEnd) <= startMs) {
+      return reply.status(400).send(
+        errorResponse('VALIDATION_ERROR', 'scheduledEnd must be after scheduledStart.', requestId)
+      );
+    }
+
+    const tenantId = request.tenantId;
+    const userRole = request.user!.role;
+    const userId = request.user!.id;
+
+    const outcome = await withTenantTransaction<
+      | { ok: true; payload: any }
+      | { ok: false; status: number; code: string; message: string }
+    >(tenantId, async (client) => {
+      const bRes = await client.query<{
+        id: string;
+        customer_id: string;
+        status: string;
+        scheduled_start: Date;
+        scheduled_end: Date | null;
+      }>(
+        `SELECT id, customer_id, status, scheduled_start, scheduled_end
+         FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
         [id, tenantId]
       );
-      if (lockRes.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking record not found.', requestId));
-      }
-      const locked = lockRes.rows[0];
-      if (locked.status === 'CANCELLED') {
-        await client.query('COMMIT');
-        return reply.status(200).send(
-          successResponse({ id: locked.id, status: 'CANCELLED', message: 'Booking is already cancelled.' }, requestId)
-        );
-      }
-      if (locked.status === 'COMPLETED') {
-        await client.query('ROLLBACK');
-        return reply.status(400).send(
-          errorResponse('INVALID_STATE', 'Cannot cancel an already completed work order.', requestId)
-        );
+
+      if (bRes.rows.length === 0) {
+        return { ok: false, status: 404, code: 'BOOKING_NOT_FOUND', message: 'Booking record not found.' };
       }
 
-      const cancellationReason = reason ? `Cancellation reason: ${reason}` : 'Cancelled by customer / admin.';
-      await client.query(
-        `UPDATE bookings SET status = 'CANCELLED', cancellation_reason = $2, cancelled_by_user_id = $3, updated_at = NOW() WHERE id = $1`,
-        [id, cancellationReason, userId]
+      const bk = bRes.rows[0];
+      const canReschedule =
+        userRole === 'ADMIN' ||
+        userRole === 'STAFF' ||
+        (userRole === 'CUSTOMER' && bk.customer_id === userId);
+      if (!canReschedule) {
+        return { ok: false, status: 403, code: 'FORBIDDEN', message: 'You do not have permission to reschedule this booking.' };
+      }
+
+      if (!['REQUESTED', 'BROADCASTING', 'ASSIGNED', 'EN_ROUTE'].includes(bk.status)) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'INVALID_STATE',
+          message: `Cannot reschedule booking in ${bk.status} status.`,
+        };
+      }
+
+      const updRes = await client.query<{ scheduled_start: Date; scheduled_end: Date | null }>(
+        `UPDATE bookings
+         SET scheduled_start = $1,
+             scheduled_end = COALESCE($2, scheduled_end),
+             updated_at = NOW()
+         WHERE id = $3
+         RETURNING scheduled_start, scheduled_end`,
+        [parsed.data.scheduledStart, parsed.data.scheduledEnd || null, id]
       );
-
-      // Prevent background outbox worker from creating a PI for this cancelled booking
-      await client.query(
-        `UPDATE outbox_operations
-         SET status = 'CANCELLED', lease_expires_at = NULL, updated_at = NOW()
-         WHERE aggregate_type = 'BOOKING_PAYMENT'
-           AND aggregate_id = $1
-           AND status IN ('PENDING', 'REQUIRES_RECONCILIATION')`,
-        [id]
-      );
-
-      if (booking.invoice_id) {
-        await client.query(
-          `UPDATE invoices SET status = 'VOID', updated_at = NOW() WHERE id = $1`,
-          [booking.invoice_id]
-        );
-
-        await client.query(
-          `UPDATE payment_transactions 
-           SET status = 'VOIDED', updated_at = NOW()
-           WHERE invoice_id = $1 AND status IN ('REQUIRES_CAPTURE', 'PENDING')`,
-          [booking.invoice_id]
-        );
-      }
 
       await client.query(
         `INSERT INTO booking_timeline_events (
           booking_id, tenant_id, from_status, to_status, actor_id, event_title, event_details
-        ) VALUES ($1, $2, $3, 'CANCELLED', $4, 'Booking Cancelled', $5)`,
-        [id, tenantId, locked.status, userId, cancellationReason]
-      );
-
-      await client.query('COMMIT');
-
-      return reply.status(200).send(
-        successResponse({
+        ) VALUES ($1, $2, $3, $3, $4, 'Booking Rescheduled', $5)`,
+        [
           id,
-          status: 'CANCELLED',
-          cancelledAt: new Date().toISOString()
-        }, requestId)
+          tenantId,
+          bk.status,
+          userId,
+          `Rescheduled to ${parsed.data.scheduledStart}${parsed.data.reason ? ` (${parsed.data.reason})` : ''}`,
+        ]
       );
-    } catch (err: any) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
+
+      await client.query(
+        `INSERT INTO audit_logs (tenant_id, actor_id, actor_role, action, resource_type, resource_id, diff_payload)
+         VALUES ($1, $2, $3, 'BOOKING_RESCHEDULED', 'booking', $4, $5)`,
+        [
+          tenantId,
+          userId,
+          userRole,
+          id,
+          JSON.stringify({
+            previousStart: bk.scheduled_start,
+            newStart: updRes.rows[0].scheduled_start,
+            newEnd: updRes.rows[0].scheduled_end,
+            reason: parsed.data.reason || null,
+          }),
+        ]
+      );
+
+      return {
+        ok: true,
+        payload: {
+          bookingId: id,
+          status: bk.status,
+          scheduledStart: updRes.rows[0].scheduled_start,
+          scheduledEnd: updRes.rows[0].scheduled_end,
+        },
+      };
+    });
+
+    if (!outcome.ok) {
+      return reply.status(outcome.status).send(errorResponse(outcome.code, outcome.message, requestId));
     }
+
+    return reply.status(200).send(successResponse(outcome.payload, requestId));
+  });
+
+  // 8. Assign Technician to Booking (Admin/Dispatcher)
+  fastify.post('/:id/assign', {
+    preHandler: [requirePermission('dispatch:reassign:manual')],
+    schema: {
+      tags: ['Bookings & Dispatch'],
+      summary: 'Assign a verified active technician to an open booking',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const { id } = request.params as { id: string };
+    if (!z.string().uuid().safeParse(id).success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Invalid booking ID.', requestId));
+    }
+
+    const assignSchema = z.object({
+      providerId: z.string().uuid(),
+      reason: z.string().trim().max(300).optional(),
+    });
+    const parsed = assignSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(
+        errorResponse('VALIDATION_ERROR', 'Valid providerId UUID is required.', requestId)
+      );
+    }
+
+    const { providerId, reason } = parsed.data;
+    const tenantId = request.tenantId;
+    const actorId = request.user!.id;
+
+    const outcome = await withTenantTransaction<
+      | { ok: true; payload: any }
+      | { ok: false; status: number; code: string; message: string }
+    >(tenantId, async (client) => {
+      const bRes = await client.query<{
+        id: string;
+        status: string;
+        assigned_provider_id: string | null;
+        customer_safety_pin: string | null;
+      }>(
+        `SELECT id, status, assigned_provider_id, customer_safety_pin
+         FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+        [id, tenantId]
+      );
+
+      if (bRes.rows.length === 0) {
+        return { ok: false, status: 404, code: 'BOOKING_NOT_FOUND', message: 'Booking record not found.' };
+      }
+
+      const bk = bRes.rows[0];
+      if (!['REQUESTED', 'BROADCASTING', 'ASSIGNED'].includes(bk.status)) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'INVALID_STATE',
+          message: `Cannot manually assign booking in ${bk.status} status. Use handover for active jobs.`,
+        };
+      }
+
+      const provRes = await client.query<{
+        user_id: string;
+        full_name: string;
+        is_verified: boolean;
+        profile_active: boolean;
+        user_active: boolean;
+      }>(
+        `SELECT p.user_id, p.full_name, p.is_verified, p.is_active AS profile_active, u.is_active AS user_active
+         FROM provider_profiles p
+         JOIN users u ON u.id = p.user_id AND u.tenant_id = p.tenant_id
+         WHERE p.user_id = $1 AND p.tenant_id = $2`,
+        [providerId, tenantId]
+      );
+
+      if (provRes.rows.length === 0) {
+        return { ok: false, status: 404, code: 'PROVIDER_NOT_FOUND', message: 'Target technician not found.' };
+      }
+
+      const target = provRes.rows[0];
+      if (!target.is_verified) {
+        return { ok: false, status: 422, code: 'PROVIDER_NOT_VERIFIED', message: 'Target technician is not verified for dispatch.' };
+      }
+      if (!target.profile_active || !target.user_active) {
+        return { ok: false, status: 422, code: 'PROVIDER_INACTIVE', message: 'Target technician account is inactive.' };
+      }
+
+      const busyRes = await client.query<{ id: string }>(
+        `SELECT id FROM bookings
+         WHERE tenant_id = $1 AND assigned_provider_id = $2
+           AND status IN ('ASSIGNED', 'EN_ROUTE', 'ON_SITE')
+           AND id <> $3
+         LIMIT 1`,
+        [tenantId, providerId, id]
+      );
+      if (busyRes.rows.length > 0) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'PROVIDER_BUSY',
+          message: 'Target technician is currently assigned to another active work order.',
+        };
+      }
+
+      const pinToEnsure = crypto.randomInt(1000, 10000).toString();
+      const updRes = await client.query<{ customer_safety_pin: string }>(
+        `UPDATE bookings
+         SET assigned_provider_id = $1,
+             status = 'ASSIGNED',
+             customer_safety_pin = COALESCE(customer_safety_pin, $2),
+             pin_verified_at = NULL,
+             geofence_arrival_at = NULL,
+             safety_pin_failed_attempts = 0,
+             safety_pin_locked_until = NULL,
+             safety_pin_last_failed_at = NULL,
+             updated_at = NOW()
+         WHERE id = $3
+         RETURNING customer_safety_pin`,
+        [providerId, pinToEnsure, id]
+      );
+
+      await client.query(
+        `UPDATE dispatch_broadcasts SET response = 'EXPIRED', responded_at = NOW()
+         WHERE booking_id = $1 AND response = 'PENDING'`,
+        [id]
+      );
+
+      if (bk.assigned_provider_id && bk.assigned_provider_id !== providerId) {
+        await client.query(
+          `UPDATE provider_locations
+           SET duty_status = 'ONLINE', last_ping_at = NOW()
+           WHERE provider_id = $1 AND tenant_id = $2
+             AND NOT EXISTS (
+               SELECT 1 FROM bookings
+               WHERE assigned_provider_id = $1 AND tenant_id = $2 AND id <> $3
+                 AND status IN ('ASSIGNED', 'EN_ROUTE', 'ON_SITE')
+             )`,
+          [bk.assigned_provider_id, tenantId, id]
+        );
+      }
+
+      await client.query(
+        `UPDATE provider_locations SET duty_status = 'ON_JOB', last_ping_at = NOW()
+         WHERE provider_id = $1 AND tenant_id = $2`,
+        [providerId, tenantId]
+      );
+
+      await client.query(
+        `INSERT INTO booking_timeline_events (
+          booking_id, tenant_id, from_status, to_status, actor_id, event_title, event_details
+        ) VALUES ($1, $2, $3, 'ASSIGNED', $4, 'Technician Assigned', $5)`,
+        [id, tenantId, bk.status, actorId, `Assigned to ${target.full_name}${reason ? `. Reason: ${reason}` : ''}`]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (tenant_id, actor_id, actor_role, action, resource_type, resource_id, diff_payload)
+         VALUES ($1, $2, $3, 'BOOKING_ASSIGNED', 'booking', $4, $5)`,
+        [
+          tenantId,
+          actorId,
+          request.user!.role,
+          id,
+          JSON.stringify({ previousProviderId: bk.assigned_provider_id, providerId, reason: reason || null }),
+        ]
+      );
+
+      return {
+        ok: true,
+        payload: {
+          bookingId: id,
+          assignedProviderId: providerId,
+          providerName: target.full_name,
+          status: 'ASSIGNED',
+          safetyPin: updRes.rows[0].customer_safety_pin,
+        },
+      };
+    });
+
+    if (!outcome.ok) {
+      return reply.status(outcome.status).send(errorResponse(outcome.code, outcome.message, requestId));
+    }
+
+    return reply.status(200).send(successResponse(outcome.payload, requestId));
   });
 }

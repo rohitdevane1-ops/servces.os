@@ -1,21 +1,16 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
   Search, 
   Plus, 
   Edit, 
-  Trash2, 
-  CheckCircle2, 
   Eye, 
   Clock, 
   Sparkles, 
-  DollarSign,
-  Tag
 } from 'lucide-react';
-import { ServiceItem } from '../../types';
 
 export const Page13AllServices: React.FC = () => {
-  const { services, categories, navigateToPage, addToast, setSelectedServiceId, deleteService } = useAdmin();
+  const { services, categories, navigateToPage, setSelectedServiceId } = useAdmin();
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
 

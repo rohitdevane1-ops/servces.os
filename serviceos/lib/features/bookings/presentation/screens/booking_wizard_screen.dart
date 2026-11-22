@@ -1,15 +1,22 @@
 import 'package:flutter/material.dart';
+import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../data/models/service_model.dart';
 
 class BookingWizardScreen extends StatefulWidget {
   final ServiceItemModel service;
+  final String? selectedTierTitle;
+  final double? selectedPackagePrice;
+  final void Function(Map<String, dynamic> createdBooking)? onBookingCreated;
   final VoidCallback onBookingConfirmed;
   final VoidCallback onBack;
 
   const BookingWizardScreen({
     super.key,
     required this.service,
+    this.selectedTierTitle,
+    this.selectedPackagePrice,
+    this.onBookingCreated,
     required this.onBookingConfirmed,
     required this.onBack,
   });
@@ -22,11 +29,85 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
   int _currentStep = 1; // 1: Problem, 2: Address, 3: Schedule, 4: Cost & Escrow
   late String _selectedProblemLocation;
   bool _isEmergencySurge = false;
-  String _selectedDate = 'Today (Nov 11)';
   String _selectedTimeWindow = 'Morning (08:00 AM – 12:00 PM)';
 
+  bool _isSubmitting = false;
+
   final TextEditingController _notesController = TextEditingController();
-  final TextEditingController _addressController = TextEditingController(text: '742 Evergreen Terrace, Suite 100');
+  final TextEditingController _addressController = TextEditingController();
+
+  DateTime _resolveScheduledStart() {
+    final now = DateTime.now();
+    if (_isEmergencySurge) {
+      return now.add(const Duration(minutes: 45));
+    }
+    int targetHour = 9;
+    if (_selectedTimeWindow.contains('Afternoon')) {
+      targetHour = 13;
+    } else if (_selectedTimeWindow.contains('Evening')) {
+      targetHour = 17;
+    }
+    var candidate = DateTime(now.year, now.month, now.day, targetHour);
+    if (!candidate.isAfter(now.add(const Duration(minutes: 30)))) {
+      candidate = candidate.add(const Duration(days: 1));
+    }
+    return candidate;
+  }
+
+  Future<void> _submitBooking() async {
+    if (_isSubmitting) return;
+    final address = _addressController.text.trim();
+    if (address.length < 5) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a valid service address (at least 5 characters).')),
+      );
+      return;
+    }
+    setState(() => _isSubmitting = true);
+    try {
+      final tierPrefix = (widget.selectedTierTitle != null && widget.selectedTierTitle!.isNotEmpty)
+          ? '[${widget.selectedTierTitle}] '
+          : '';
+      final noteText = _notesController.text.trim();
+      final scheduledAt = _resolveScheduledStart();
+      final res = await ApiClient.instance.createBooking({
+        'serviceId': widget.service.id,
+        'addressText': address,
+        'latitude': 25.1972,
+        'longitude': 55.2744,
+        'scheduledStart': scheduledAt.toUtc().toIso8601String(),
+        'priority': _isEmergencySurge ? 'EMERGENCY' : 'STANDARD',
+        'accessInstructions': '$tierPrefix$_selectedProblemLocation${noteText.isNotEmpty ? ': $noteText' : ''}',
+      });
+      final bookingId = (res['bookingId'] ?? res['id'])?.toString();
+      if (bookingId != null && bookingId.isNotEmpty) {
+        try {
+          await ApiClient.instance.waitForPaymentIntentAndConfirm(bookingId);
+        } catch (_) {}
+        widget.onBookingCreated?.({
+          ...res,
+          'bookingId': bookingId,
+          'serviceTitle': widget.service.name,
+          'customerAddress': address,
+          'basePrice': widget.selectedPackagePrice ?? widget.service.price,
+          'diagnosticFee': _isEmergencySurge ? 49.00 : 20.00,
+        });
+        if (mounted) widget.onBookingConfirmed();
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not create booking. Please check your details and try again.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Booking failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
 
   List<String> get _problemLocations {
     final cat = widget.service.category.toLowerCase();
@@ -107,15 +188,19 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
-                  onPressed: () {
-                    if (_currentStep < 4) {
-                      setState(() => _currentStep++);
-                    } else {
-                      widget.onBookingConfirmed();
-                    }
-                  },
+                  onPressed: _isSubmitting
+                      ? null
+                      : () {
+                          if (_currentStep < 4) {
+                            setState(() => _currentStep++);
+                          } else {
+                            _submitBooking();
+                          }
+                        },
                   child: Text(
-                    _currentStep == 4 ? 'Confirm & Pre-Authorize Escrow 🔒' : 'Next Step →',
+                    _isSubmitting
+                        ? 'Authorizing Escrow...'
+                        : (_currentStep == 4 ? 'Confirm & Pre-Authorize Escrow 🔒' : 'Next Step →'),
                     style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
                   ),
                 ),
@@ -313,17 +398,20 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
               ),
               child: Builder(
                 builder: (context) {
-                  final basePrice = widget.service.price;
-                  final platformFee = basePrice > 0 ? (basePrice * 0.15) : 0.00; // FLUT-04: Aligned to 15% enterprise platform commission
-                  final tax = (basePrice + platformFee) * 0.07;
-                  final total = basePrice + platformFee + tax;
+                  final basePrice = widget.selectedPackagePrice ?? widget.service.price;
+                  final diagnosticFee = _isEmergencySurge ? 49.00 : 20.00;
+                  final subtotal = basePrice + diagnosticFee;
+                  final uaeVat = subtotal * 0.05; // 5% UAE VAT (matches server-side calculation)
+                  final total = subtotal + uaeVat;
+                  final serviceLabel = widget.service.name.isNotEmpty ? widget.service.name : 'Service Package';
+                  final packageLabel = widget.selectedTierTitle != null ? '$serviceLabel (${widget.selectedTierTitle})' : serviceLabel;
                   return Column(
                     children: [
-                      _buildCostRow(widget.service.name.isNotEmpty ? widget.service.name : 'Service Package', '\$${basePrice.toStringAsFixed(2)}', textSecondary, textPrimary),
-                      _buildCostRow('Safety & Platform Fee', '\$${platformFee.toStringAsFixed(2)}', textSecondary, textPrimary),
-                      _buildCostRow('Sales Tax (7%)', '\$${tax.toStringAsFixed(2)}', textSecondary, textPrimary),
+                      _buildCostRow(packageLabel, ApiClient.instance.formatCurrency(basePrice), textSecondary, textPrimary),
+                      _buildCostRow(_isEmergencySurge ? 'Emergency 60-Min Dispatch Fee' : 'Standard Dispatch Callout', ApiClient.instance.formatCurrency(diagnosticFee), textSecondary, textPrimary),
+                      _buildCostRow('UAE VAT (5%)', ApiClient.instance.formatCurrency(uaeVat), textSecondary, textPrimary),
                       const Divider(height: 20),
-                      _buildCostRow('Total Pre-Authorized', '\$${total.toStringAsFixed(2)}', textPrimary, primaryBrand, isBold: true),
+                      _buildCostRow('Total Pre-Authorized', ApiClient.instance.formatCurrency(total), textPrimary, primaryBrand, isBold: true),
                     ],
                   );
                 },

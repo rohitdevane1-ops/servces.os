@@ -1,15 +1,10 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
   ArrowRightLeft, 
   AlertTriangle, 
-  UserCheck, 
   ShieldAlert, 
-  CheckCircle2, 
-  Phone, 
   Clock, 
-  MapPin,
-  HelpCircle
 } from 'lucide-react';
 import { Booking } from '../../types';
 
@@ -31,10 +26,11 @@ export const StaffEmergencyHandover: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const availableBackupTechs = technicians.filter(t => 
-    t.status === 'Available' || (selectedBooking && t.id !== selectedBooking.technicianId)
+    (!selectedBooking || t.id !== selectedBooking.technicianId) &&
+    t.status === 'Available'
   );
 
-  const handleExecuteHandover = (e: React.FormEvent) => {
+  const handleExecuteHandover = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedBooking) {
       addToast('Please select a booking to handover', 'warning');
@@ -46,19 +42,22 @@ export const StaffEmergencyHandover: React.FC = () => {
     }
 
     setIsSubmitting(true);
-    const newTech = technicians.find(t => t.id === selectedNewTechId);
-
-    emergencyHandover(
-      selectedBooking.id,
-      selectedNewTechId,
-      `${handoverReason}: ${notes || 'Handed over by operations staff'}`
-    );
-    addToast(`Order ${selectedBooking.jobNo} transferred to ${newTech?.name || 'selected technician'}.`, 'success');
-    setIsSubmitting(false);
-    setNotes('');
-      
-    const remaining = assignedBookings.filter(b => b.id !== selectedBooking.id);
-    setSelectedBooking(remaining.length > 0 ? remaining[0] : null);
+    try {
+      await Promise.resolve(
+        emergencyHandover(
+          selectedBooking.id,
+          selectedNewTechId,
+          `${handoverReason}: ${notes || 'Handed over by operations staff'}`
+        )
+      );
+      setNotes('');
+      const remaining = assignedBookings.filter(b => b.id !== selectedBooking.id);
+      setSelectedBooking(remaining.length > 0 ? remaining[0] : null);
+    } catch (err: any) {
+      addToast(err?.message || 'Emergency handover failed', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -154,7 +153,7 @@ export const StaffEmergencyHandover: React.FC = () => {
                   </span>
                   <div className="text-sm font-black text-slate-900 mt-0.5 flex items-center gap-2">
                     <span>{selectedBooking.jobNo}</span>
-                    <span>•</span>
+                    <span>â€¢</span>
                     <span>{selectedBooking.serviceName}</span>
                   </div>
                   <div className="text-xs text-slate-600 mt-0.5">
@@ -214,7 +213,7 @@ export const StaffEmergencyHandover: React.FC = () => {
                         <div className="min-w-0 flex-1">
                           <div className="text-xs font-bold text-slate-900 truncate">{tech.name}</div>
                           <div className="text-[10px] text-slate-500">
-                            {tech.specialization} • ★ {tech.rating}
+                            {tech.specialization} â€¢ â˜… {tech.rating}
                           </div>
                           <div className="text-[10px] font-semibold text-emerald-700">
                             Status: {tech.status}

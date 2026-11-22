@@ -541,9 +541,9 @@ class _TechOnboardingScreenState extends State<TechOnboardingScreen> {
               children: [
                 _buildCheckRow('Background Check Cleared', true, textPrimary),
                 const SizedBox(height: 8),
-                _buildCheckRow('Florida Master License Validated', true, textPrimary),
+                _buildCheckRow('Master Trade License Validated', true, textPrimary),
                 const SizedBox(height: 8),
-                _buildCheckRow('\$1M Commercial Insurance Active', true, textPrimary),
+                _buildCheckRow('Commercial Liability Insurance Active', true, textPrimary),
                 const SizedBox(height: 8),
                 _buildCheckRow('GPS Dispatch Radar Ready', true, textPrimary),
               ],

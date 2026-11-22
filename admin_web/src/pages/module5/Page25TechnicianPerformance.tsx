@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import {
   ResponsiveContainer,
   BarChart,
@@ -8,16 +8,9 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend
 } from 'recharts';
 import { 
   Award, 
-  Star, 
-  TrendingUp, 
-  CheckCircle2, 
-  Clock, 
-  DollarSign, 
-  Sparkles,
   Trophy
 } from 'lucide-react';
 
@@ -67,7 +60,7 @@ export const Page25TechnicianPerformance: React.FC = () => {
           }`}
         >
           <Award className="w-3.5 h-3.5" />
-          <span>{isBonusDistributed ? '✓ Bonuses Recorded' : 'Distribute Monthly Bonuses'}</span>
+          <span>{isBonusDistributed ? 'âœ“ Bonuses Recorded' : 'Distribute Monthly Bonuses'}</span>
         </button>
       </div>
 
@@ -81,43 +74,43 @@ export const Page25TechnicianPerformance: React.FC = () => {
           {/* Silver */}
           <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs text-center space-y-2">
             <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-600 font-extrabold flex items-center justify-center mx-auto text-base border-2 border-slate-300">
-              🥈 #2
+              ðŸ¥ˆ #2
             </div>
-            <div className="font-extrabold text-slate-900 text-sm">{runnerUp ? runnerUp.name : '—'}</div>
+            <div className="font-extrabold text-slate-900 text-sm">{runnerUp ? runnerUp.name : 'â€”'}</div>
             <div className="text-xs text-slate-400">{runnerUp ? runnerUp.specialization : 'Awaiting #2'}</div>
             <div className="text-sm font-extrabold text-amber-600">
-              {runnerUp ? `★ ${runnerUp.rating.toFixed(2)} (${runnerUp.jobsCompleted} Jobs)` : 'No data'}
+              {runnerUp ? `â˜… ${runnerUp.rating.toFixed(2)} (${runnerUp.jobsCompleted} Jobs)` : 'No data'}
             </div>
             <div className="text-[11px] font-bold text-emerald-700 bg-emerald-50 py-1 rounded-lg">
-              {runnerUp ? (isBonusDistributed ? '✓ Bonus Recorded' : 'Tier 2 Eligible') : '—'}
+              {runnerUp ? (isBonusDistributed ? 'âœ“ Bonus Recorded' : 'Tier 2 Eligible') : 'â€”'}
             </div>
           </div>
 
           {/* Gold */}
           <div className="bg-gradient-to-b from-amber-50 to-white rounded-2xl p-6 border-2 border-amber-300 shadow-md text-center space-y-2 relative">
             <div className="w-14 h-14 rounded-full bg-amber-400 text-amber-900 font-extrabold flex items-center justify-center mx-auto text-lg shadow-sm border-2 border-white">
-              🥇 #1
+              ðŸ¥‡ #1
             </div>
             <div className="font-extrabold text-slate-900 text-base">{champion.name}</div>
             <div className="text-xs text-slate-500">{champion.specialization}</div>
-            <div className="text-base font-extrabold text-amber-600">★ {champion.rating.toFixed(2)} ({champion.jobsCompleted} Jobs)</div>
+            <div className="text-base font-extrabold text-amber-600">â˜… {champion.rating.toFixed(2)} ({champion.jobsCompleted} Jobs)</div>
             <div className="text-xs font-extrabold text-emerald-800 bg-emerald-100 py-1 rounded-lg">
-              {isBonusDistributed ? '✓ Champion Bonus Recorded' : 'Tier 1 Champion Eligible'}
+              {isBonusDistributed ? 'âœ“ Champion Bonus Recorded' : 'Tier 1 Champion Eligible'}
             </div>
           </div>
 
           {/* Bronze */}
           <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs text-center space-y-2">
             <div className="w-12 h-12 rounded-full bg-amber-100 text-amber-800 font-extrabold flex items-center justify-center mx-auto text-base border-2 border-amber-200">
-              🥉 #3
+              ðŸ¥‰ #3
             </div>
-            <div className="font-extrabold text-slate-900 text-sm">{thirdPlace ? thirdPlace.name : '—'}</div>
+            <div className="font-extrabold text-slate-900 text-sm">{thirdPlace ? thirdPlace.name : 'â€”'}</div>
             <div className="text-xs text-slate-400">{thirdPlace ? thirdPlace.specialization : 'Awaiting #3'}</div>
             <div className="text-sm font-extrabold text-amber-600">
-              {thirdPlace ? `★ ${thirdPlace.rating.toFixed(2)} (${thirdPlace.jobsCompleted} Jobs)` : 'No data'}
+              {thirdPlace ? `â˜… ${thirdPlace.rating.toFixed(2)} (${thirdPlace.jobsCompleted} Jobs)` : 'No data'}
             </div>
             <div className="text-[11px] font-bold text-emerald-700 bg-emerald-50 py-1 rounded-lg">
-              {thirdPlace ? (isBonusDistributed ? '✓ Bonus Recorded' : 'Tier 3 Eligible') : '—'}
+              {thirdPlace ? (isBonusDistributed ? 'âœ“ Bonus Recorded' : 'Tier 3 Eligible') : 'â€”'}
             </div>
           </div>
         </div>
@@ -197,7 +190,7 @@ export const Page25TechnicianPerformance: React.FC = () => {
                         </div>
                         <div className="flex items-center justify-between text-amber-400 font-bold">
                           <span>CSAT Rating:</span>
-                          <span>★ {data.rating} / 5.0</span>
+                          <span>â˜… {data.rating} / 5.0</span>
                         </div>
                       </div>
                     );
@@ -255,14 +248,14 @@ export const Page25TechnicianPerformance: React.FC = () => {
 
                   <td className="py-3.5 px-4 text-slate-600">{t.specialization}</td>
 
-                  <td className="py-3.5 px-4 font-bold text-amber-600">★ {t.rating}</td>
+                  <td className="py-3.5 px-4 font-bold text-amber-600">â˜… {t.rating}</td>
 
                   <td className="py-3.5 px-4 font-extrabold text-slate-900">{t.jobsCompleted}</td>
 
                   <td className="py-3.5 px-4 font-bold text-emerald-700">{t.onTimeRate}%</td>
 
                   <td className="py-3.5 px-4 font-bold text-slate-700">
-                    {t.jobsCompleted > 0 ? `${Math.min(100, Math.round(t.onTimeRate * 0.98 * 10) / 10)}%` : '—'}
+                    {t.jobsCompleted > 0 ? `${Math.min(100, Math.round(t.onTimeRate * 0.98 * 10) / 10)}%` : 'â€”'}
                   </td>
 
                   <td className="py-3.5 px-4 text-right">
@@ -271,7 +264,7 @@ export const Page25TechnicianPerformance: React.FC = () => {
                         ? 'bg-emerald-600 text-white shadow-2xs'
                         : 'bg-emerald-100 text-emerald-800'
                     }`}>
-                      {isBonusDistributed ? '✓ Bonus Paid (Stripe)' : 'Tier 1 Bonus Eligible'}
+                      {isBonusDistributed ? 'âœ“ Bonus Paid (Stripe)' : 'Tier 1 Bonus Eligible'}
                     </span>
                   </td>
                 </tr>

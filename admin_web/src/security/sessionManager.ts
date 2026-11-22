@@ -3,7 +3,7 @@
  * Standards: OWASP ASVS v4.0.3 Chapter 3, NIST SP 800-63B
  */
 
-import { AuthSession } from '../context/AdminContext';
+import type { AuthSession } from '../context/types';
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes of inactivity
 const ABSOLUTE_LIFETIME_MS = 12 * 60 * 60 * 1000; // 12 hours absolute ceiling

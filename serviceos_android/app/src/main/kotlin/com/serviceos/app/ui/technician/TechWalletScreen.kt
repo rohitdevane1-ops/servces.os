@@ -10,7 +10,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -18,6 +18,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.serviceos.app.core.theme.LocalExtraColors
+import com.serviceos.app.data.model.BookingStatus
+import com.serviceos.app.data.network.ApiClient
+import com.serviceos.app.data.repository.BookingRepository
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -25,6 +28,40 @@ fun TechWalletScreen(
     onBack: () -> Unit = {}
 ) {
     val extraColors = LocalExtraColors.current
+    val allBookings by BookingRepository.bookingsFlow.collectAsState()
+    var serverAvailableBalance by remember { mutableStateOf<Double?>(null) }
+    var serverLedgerRows by remember { mutableStateOf<List<Triple<String, String, String>>>(emptyList()) }
+
+    LaunchedEffect(Unit) {
+        ApiClient.fetchTechnicianEarnings().onSuccess { json ->
+            val data = json.optJSONObject("data") ?: json
+            val unpaidCents = data.optDouble("unpaidBalanceCents", data.optDouble("totalEarnedCents", Double.NaN))
+            if (!unpaidCents.isNaN()) {
+                serverAvailableBalance = unpaidCents / 100.0
+            }
+            val recent = data.optJSONArray("recentCompletedBookings")
+            if (recent != null && recent.length() > 0) {
+                val list = mutableListOf<Triple<String, String, String>>()
+                for (i in 0 until recent.length()) {
+                    val row = recent.optJSONObject(i) ?: continue
+                    val ref = row.optString("bookingReference", "")
+                    val svcName = row.optString("serviceName", "Completed Job")
+                    val netCents = row.optDouble("netEarningCents", 0.0)
+                    val dateStr = row.optString("completedAt", "").take(10).ifBlank { "Settled" }
+                    val label = if (ref.isNotBlank()) "$ref • $svcName" else svcName
+                    list.add(Triple(label, dateStr, "+${ApiClient.formatCurrency(netCents / 100.0)}"))
+                }
+                serverLedgerRows = list
+            }
+        }
+    }
+
+    val completedJobs = remember(allBookings) {
+        allBookings.filter { it.status == BookingStatus.COMPLETED }
+    }
+    val availableBalance = remember(completedJobs, serverAvailableBalance) {
+        serverAvailableBalance ?: completedJobs.sumOf { it.totalAmount * 0.85 }
+    }
 
     Scaffold(
         topBar = {
@@ -50,7 +87,6 @@ fun TechWalletScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Main Balance Card
             Surface(
                 color = MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(22.dp),
@@ -69,7 +105,7 @@ fun TechWalletScreen(
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "$0.00",
+                        text = ApiClient.formatCurrency(availableBalance),
                         style = MaterialTheme.typography.headlineLarge.copy(
                             fontWeight = FontWeight.Black,
                             fontSize = 38.sp
@@ -130,28 +166,47 @@ fun TechWalletScreen(
                 }
             }
 
-            // Payouts Ledger
             Text(
-                text = "Recent Completed Work Orders",
+                text = "Recent Completed Work Orders (${if (serverLedgerRows.isNotEmpty()) serverLedgerRows.size else completedJobs.size})",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
 
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(14.dp),
-                shadowElevation = 1.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    contentAlignment = Alignment.Center
+            if (serverLedgerRows.isNotEmpty()) {
+                serverLedgerRows.forEach { entry ->
+                    PayoutItem(
+                        title = entry.first,
+                        date = entry.second,
+                        netAmount = entry.third,
+                        accentColor = extraColors.verified
+                    )
+                }
+            } else if (completedJobs.isEmpty()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(14.dp),
+                    shadowElevation = 1.dp,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = "No completed job payouts recorded yet.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No completed job payouts recorded yet.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+            } else {
+                completedJobs.forEach { job ->
+                    PayoutItem(
+                        title = "${job.reference} • ${job.serviceTitle}",
+                        date = job.scheduledTime,
+                        netAmount = "+${ApiClient.formatCurrency(job.totalAmount * 0.85)}",
+                        accentColor = extraColors.verified
                     )
                 }
             }

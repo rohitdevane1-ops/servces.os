@@ -105,7 +105,26 @@ describe('Database Migrations Validation Suite', () => {
     const parsed = YAML.parse(composeContent);
     assert.ok(parsed.services, 'Parsed compose must contain services');
     assert.ok(parsed.services.postgres, 'Parsed compose must define postgres');
+    assert.ok(parsed.services.postgres_demo, 'Parsed compose must define isolated postgres_demo for 2-DB architecture');
     assert.ok(parsed.services.backend, 'Parsed compose must define backend');
     assert.ok(parsed.services.frontend, 'Parsed compose must define frontend');
+    assert.ok(parsed.volumes.uploads_data, 'Parsed compose must define persistent uploads_data volume');
+  });
+
+  it('Nginx reverse proxy uses ^~ /api/ prefix priority so /api/v1/uploads/files/*.png is not intercepted as a static asset', () => {
+    const nginxPath = path.resolve(__dirname, '../../admin_web/nginx.conf');
+    assert.ok(fs.existsSync(nginxPath), 'admin_web/nginx.conf must exist');
+    const nginxContent = fs.readFileSync(nginxPath, 'utf-8');
+
+    assert.match(
+      nginxContent,
+      /location\s+\^~\s+\/api\/\s*\{/,
+      'nginx.conf must use location ^~ /api/ to take precedence over static file extension regex'
+    );
+    assert.match(
+      nginxContent,
+      /location\s+=\s+\/health\s*\{/,
+      'nginx.conf must proxy root /health to backend'
+    );
   });
 });

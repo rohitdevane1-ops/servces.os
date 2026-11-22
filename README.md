@@ -1,91 +1,107 @@
-# ServicePro OS — Enterprise International Home Services Management Platform
+# ServicePro OS — UAE Enterprise Home Services & Dispatch Platform
 
-> **Commercial Valuation Target**: **\$20,000 – \$60,000 USD**  
-> **Classification**: Turnkey Intellectual Property / Production-Ready Software Acquisition  
-> **Status**: Full-Stack Reconstructed, Verified, Zero Personal Data, 100% Ready for Buyer Handover  
-
----
-
-## 1. Executive Platform Summary
-
-**ServicePro OS** is an enterprise-grade multi-tenant software system engineered for on-demand home service marketplaces (plumbing, electrical, HVAC, cleaning, roofing, appliance repair). It delivers an end-to-end operational engine across web, mobile, and cloud infrastructure:
-
-1. **Enterprise REST API Backend (`server/`)**: Fastify 5 + TypeScript + PostgreSQL 16 + PostGIS + Redis. Features 8 domain modules, double-entry general ledger, 60s timed dispatch broadcast engine, and RFC 6238 TOTP MFA.
-2. **Admin & Staff Web Control Portal (`admin_web/`)**: React 19 + TypeScript + Tailwind CSS with **52 dedicated operational views** (38 Admin pages + 14 Staff pages), Dual-Vision design engine (Day/Night mode), and live dispatch telemetry.
-3. **Cross-Platform Mobile App (`serviceos/`)**: Flutter (iOS & Android) with clean Riverpod state management, Day Vision & Night Vision UI, client-side geofencing, and photo proof captures.
-4. **Native Android App (`serviceos_android/`)**: 100% Kotlin + Jetpack Compose with Material 3 styling and native Android architecture.
-5. **Turnkey Docker Packaging (`docker-compose.yml`)**: Production orchestration provisioning PostgreSQL 16 with PostGIS spatial extensions, Redis caching, Fastify backend, and React/Nginx frontend in a single command.
+> **Market Edition:** Dubai / UAE Turnkey Acquisition Release (`AED`, **5% UAE VAT**, **English LTR / Arabic RTL**, Dual-Database Demo & Production Architecture)  
+> **Stack:** Fastify 5 + TypeScript + PostgreSQL 16/PostGIS + React 19 + Flutter + Native Android Kotlin/Compose
 
 ---
 
-## 2. Directory Structure Map
+## 1. Platform Architecture
 
-```
-├── docker-compose.yml               # Production multi-container orchestration
-├── .env.example                     # Turnkey configuration template (Zero personal data)
-├── COMMERCIAL_HANDOVER.md           # Executive acquisition & valuation dossier
-├── PROJECT_ARCHITECTURE.md          # Complete technical architecture specification
-├── INSTALLATION_GUIDE.md            # Buyer deployment runbook (Docker & Cloud VPS)
-├── API_DOCUMENTATION.md             # Complete OpenAPI 3.1 REST API specification
-│
-├── server/                          # Fastify 5 + TypeScript Backend
-│   ├── src/                         # Modules: Auth, Installer, Services, Bookings, Dispatch, CRM, Finances, Support
-│   ├── tests/                       # Automated unit & integration tests (16 passing tests)
-│   └── Dockerfile                   # Multi-stage minimal Node 22 Alpine container
-│
-├── admin_web/                       # React 19 + TypeScript Admin & Staff Portal (52 Screens)
-│   ├── src/                         # Components, Pages, State, API Client
-│   ├── Dockerfile                   # Multi-stage minimal Nginx Alpine container
-│   └── nginx.conf                   # SPA routing & Security Headers
-│
-├── serviceos/                       # Flutter Cross-Platform Mobile App (Android & iOS)
-│   ├── lib/                         # Features: Customer Booking Flow, Tech Broadcast Radar, Work Order
-│   └── pubspec.yaml                 # Flutter 3.19+ dependencies
-│
-└── serviceos_android/               # Native Android Jetpack Compose Mobile App (Material 3)
-    └── app/src/main/kotlin/com/serviceos/app/
-```
+1. **Enterprise REST API Backend (`server/`)**: Fastify 5 + TypeScript + PostgreSQL 16 + PostGIS (`15` paired up/down migrations, fail-closed `FORCE ROW LEVEL SECURITY`, durable payment outbox worker, double-entry general ledger with pre-tax Account `2030` VAT/Tax liability accounting, proportional refund reversals, HMAC-signed media uploads, and modular payment gateway adapter supporting **Stripe**, **PayTabs**, and **Telr**).
+2. **Admin & Staff Web Control Portal (`admin_web/`)**: React 19 + Vite + TypeScript + Tailwind CSS with **52+ operational screens**, **English (LTR) & Arabic (RTL)** bilingual switcher, live Dubai sandbox banner & one-click demo logins (when `VITE_DEMO_MODE=true`), and Nginx hardened reverse proxy.
+3. **Cross-Platform Mobile App (`serviceos/`)**: Flutter (Android & iOS) with `ApiClient` JWT single-flight refresh, AED + 5% UAE VAT checkout, and Day/Night Vision themes.
+4. **Native Android App (`serviceos_android/`)**: Kotlin + Jetpack Compose Material 3 with `BuildConfig.API_BASE_URL` HTTPS release enforcement and `EncryptedSharedPreferences`.
 
 ---
 
-## 3. Instant Turnkey Launch (< 5 Minutes)
+## 2. Dual-Environment Setup (2 Databases: Production vs. Dubai Demo Sandbox)
 
+This repository uses a **single clean codebase** that can run against **two completely isolated PostgreSQL databases**:
+
+| Mode | Environment Flags | Database | Seeding Command | Behavior |
+|---|---|---|---|---|
+| **Live Dubai Demo Sandbox** | `APP_DEMO_MODE=true`, `VITE_DEMO_MODE=true` | `DEMO_DATABASE_URL` (`postgres_demo`) | `npm run seed:demo` | Pre-loads **12 AED UAE services**, **10 verified Dubai technicians** (Marina, Downtown, Business Bay, JLT, Al Quoz), and **45 historical bookings** (past 30 days) with 5% VAT invoices & ledger entries. Shows top sandbox banner, enables One-Click Demo Login, and blocks destructive actions (password changes, etc.). |
+| **Clean Buyer Production** | `APP_DEMO_MODE=false`, `VITE_DEMO_MODE=false` | `DATABASE_URL` (`postgres`) | `npm run seed:prod` | **ZERO fake users, technicians, or bookings.** Seeds only the buyer's UAE base tenant (`AED`, 5% VAT, `Asia/Dubai`), Chart of Accounts, CMS defaults, and 1 Super Admin account. |
+
+---
+
+## 3. Quick Start & Local Setup
+
+### Step 1: Generate Production-Grade Secrets
 ```bash
-# 1. Clone repository
-git clone <repository_url>
-cd <repository_folder>
-
-# 2. Configure environment
+node scripts/generate_secrets.cjs
+```
+Copy `.env.example` to `.env` and populate your generated keys:
+```bash
 cp .env.example .env
+```
 
-# 3. Launch Docker containers
-docker compose up -d --build
+### Step 2: Launch PostgreSQL 16 + PostGIS (Docker)
+- **Production Database Only:**
+  ```bash
+  docker compose up -d --build
+  ```
+- **Both Production + Separate Demo Sandbox Databases (2-DB Mode):**
+  ```bash
+  docker compose --profile demo up -d --build
+  ```
 
-# 4. Open Turnkey Setup Wizard in browser:
-# Navigate to http://localhost/installer to configure tenant and first admin
+### Step 3: Run Migrations & Choose Your Seed Command
+```bash
+# Apply all 15 PostgreSQL + PostGIS migrations
+npm run db:migrate
+npm run db:verify
+
+# Option A — Populate Separate Dubai Interactive Sandbox DB
+npm run seed:demo
+
+# Option B — Clean Production Buyer Handover DB (ZERO demo data)
+PROD_ADMIN_EMAIL=admin@yourdomain.ae \
+PROD_ADMIN_PASSWORD=StrongProductionPassword2026! \
+npm run seed:prod
 ```
 
 ---
 
-## 4. Quality & Build Verification
+## 4. Key Environment Variables
 
-Each component of the platform compiles cleanly without errors:
+| Variable | Description | Default / Example |
+|---|---|---|
+| `DATABASE_URL` | Primary Production PostgreSQL 16 + PostGIS URI | `postgresql://.../servicepro` |
+| `DEMO_DATABASE_URL` | Optional separate Demo Sandbox PostgreSQL URI | `postgresql://.../servicepro_demo` |
+| `APP_DEMO_MODE` | Backend demo mode (`true` enables `/auth/demo-login` & destructive guards) | `false` |
+| `VITE_DEMO_MODE` | Frontend demo banner & One-Click Dubai Sandbox Login buttons | `false` |
+| `DEFAULT_TAX_RATE_BPS` | Server-side VAT in basis points (`500` = **5.00% UAE VAT**) | `500` |
+| `PAYMENT_GATEWAY` | Active UAE payment adapter: `stripe` \| `paytabs` \| `telr` | `stripe` |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Stripe UAE API & HMAC webhook keys | — |
+| `PAYTABS_PROFILE_ID` / `PAYTABS_SERVER_KEY` / `PAYTABS_REGION` | PayTabs UAE (`ARE`) credentials | `ARE` |
+| `TELR_STORE_ID` / `TELR_AUTH_KEY` | Telr UAE credentials | — |
+| `JWT_SECRET` / `JWT_REFRESH_SECRET` / `APP_ENCRYPTION_KEY` | High-entropy secrets (placeholder values rejected in production) | Generate via `scripts/generate_secrets.cjs` |
+
+---
+
+## 5. Verification & Test Commands
 
 ```bash
-# Fastify Backend Build & Test Suite
-npm --prefix server run build     # Compiles TypeScript with 0 errors
-npm --prefix server test          # Runs 16 automated tests (100% pass)
+# 1. Validate all 15 SQL Migration Pairs & Mobile Dart/Kotlin Codebases
+npm run validate
 
-# Admin Web Portal Production Build
-npm --prefix admin_web run build  # Builds Vite client in < 1 second
+# 2. Backend TypeScript Compile Check
+npm --prefix server run build
+
+# 3. Full Backend Unit & Real-PostgreSQL Integration Suite (116 Tests across 21 Suites)
+npm --prefix server test
+
+# 4. Admin & Staff Web Portal Lint & Production Build
+npm --prefix admin_web run lint
+npm --prefix admin_web run build
 ```
 
 ---
 
-## 5. Commercial Asset Valuation
+## 6. Deployment & Buyer Handover Guidelines
 
-- **Target Sale Range**: **\$20,000 – \$60,000**
-- **Commercial Valuation Dossier**: See [`COMMERCIAL_HANDOVER.md`](COMMERCIAL_HANDOVER.md)
-- **Architecture Specification**: See [`PROJECT_ARCHITECTURE.md`](PROJECT_ARCHITECTURE.md)
-- **Deployment Runbook**: See [`INSTALLATION_GUIDE.md`](INSTALLATION_GUIDE.md)
-- **REST API Contract**: See [`API_DOCUMENTATION.md`](API_DOCUMENTATION.md)
+1. Set `NODE_ENV=production`, `APP_DEMO_MODE=false`, and `VITE_DEMO_MODE=false`.
+2. Generate unique secrets with `node scripts/generate_secrets.cjs` (never reuse `.env.example` placeholders — the server fails closed on startup if detected).
+3. Configure your UAE payment gateway (`PAYMENT_GATEWAY=stripe`, `paytabs`, or `telr`) and TLS reverse proxy in front of `admin_web` (port 80) and `server` (port 3000).
+4. Run `npm run db:migrate && npm run seed:prod` for a completely clean buyer database with zero demo artifacts.

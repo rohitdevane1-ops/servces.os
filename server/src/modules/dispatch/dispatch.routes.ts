@@ -1,8 +1,10 @@
+import crypto from 'node:crypto';
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { pool } from '../../database/pool.js';
+import { tenantQuery, withTenantTransaction } from '../../database/pool.js';
 import { successResponse, errorResponse } from '../../types/envelope.js';
 import { authenticate, requirePermission } from '../../middleware/rbac.js';
+import { broadcastBookingToNearbyProviders } from './dispatch.service.js';
 
 const radarQuerySchema = z.object({
   latitude: z.coerce.number().min(-90).max(90),
@@ -70,7 +72,10 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
       JOIN provider_profiles p ON p.user_id = pl.provider_id AND p.tenant_id = pl.tenant_id
       LEFT JOIN customer_reviews r ON r.provider_id = p.user_id AND r.is_public = TRUE
       WHERE pl.tenant_id = $3
+        AND p.is_verified = TRUE
+        AND p.is_active = TRUE
         AND pl.duty_status IN ('ONLINE', 'EN_ROUTE')
+        AND pl.location IS NOT NULL
         AND ST_DWithin(pl.location, ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography, $4)
     `;
 
@@ -88,7 +93,7 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
       LIMIT 50
     `;
 
-    const result = await pool.query(query, params);
+    const result = await tenantQuery(query, params, tenantId);
 
     // BACK-06: Field-masking for non-dispatchers / customers
     const userRole = request.user?.role;
@@ -107,7 +112,8 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
         // Fuzzy coordinate: rounded to 2 decimals (~1.1 km precision) to protect driver privacy
         latitude: Math.round(Number(row.latitude) * 100) / 100,
         longitude: Math.round(Number(row.longitude) * 100) / 100,
-        distanceKm: row.distanceKm,
+        // Coarsened to nearest whole km to prevent 3-point trilateration of exact GPS
+        distanceKm: Math.max(1, Math.round(Number(row.distanceKm || 0))),
         averageRating: row.averageRating,
         reviewCount: row.reviewCount
         // hourlyRateCents & headingDegrees omitted for customers
@@ -131,7 +137,7 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
     const tenantId = request.tenantId;
     const userId = request.user!.id;
 
-    const result = await pool.query(
+    const result = await tenantQuery(
       `SELECT 
         b.id as "broadcastId",
         b.booking_id as "bookingId",
@@ -158,13 +164,53 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
         AND b.expires_at > NOW()
         AND bk.status IN ('REQUESTED', 'BROADCASTING')
       ORDER BY b.created_at DESC`,
-      [tenantId, userId]
+      [tenantId, userId],
+      tenantId
     );
 
     return reply.status(200).send(
       successResponse(result.rows, requestId)
     );
   });
+
+  // 2b. Trigger Dispatch Broadcast Wave for a Booking (Admin / Staff)
+  const triggerBroadcastHandler = async (request: any, reply: any) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const body = request.body as { bookingId?: string; radiusMeters?: number; ttlSeconds?: number };
+
+    if (!body?.bookingId || !z.string().uuid().safeParse(body.bookingId).success) {
+      return reply.status(400).send(
+        errorResponse('VALIDATION_ERROR', 'Valid bookingId UUID is required.', requestId)
+      );
+    }
+
+    const result = await withTenantTransaction(tenantId, (client) =>
+      broadcastBookingToNearbyProviders(client, tenantId, body.bookingId!, {
+        radiusMeters: body.radiusMeters,
+        ttlSeconds: body.ttlSeconds,
+      })
+    );
+    return reply.status(200).send(successResponse(result, requestId));
+  };
+
+  fastify.post('/broadcasts', {
+    preHandler: [requirePermission('dispatch:reassign:manual')],
+    schema: {
+      tags: ['Bookings & Dispatch'],
+      summary: 'Broadcast a pending booking to nearby verified online technicians',
+      security: [{ bearerAuth: [] }]
+    }
+  }, triggerBroadcastHandler);
+
+  fastify.post('/broadcast', {
+    preHandler: [requirePermission('dispatch:reassign:manual')],
+    schema: {
+      tags: ['Bookings & Dispatch'],
+      summary: 'Alias for triggering a dispatch broadcast wave for a booking',
+      security: [{ bearerAuth: [] }]
+    }
+  }, triggerBroadcastHandler);
 
   // 3. Accept Broadcast Offer (Lock job in transactional concurrency)
   fastify.post('/broadcasts/accept', {
@@ -185,9 +231,38 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
+    const txOutcome = await withTenantTransaction<
+      | { ok: true; bookingId: string }
+      | { ok: false; status: number; code: string; message: string }
+    >(tenantId, async (client) => {
+      // Verify technician is verified, active, and not already assigned to another active job
+      const provRes = await client.query<{ is_verified: boolean; is_active: boolean }>(
+        `SELECT is_verified, is_active FROM provider_profiles WHERE user_id = $1 AND tenant_id = $2 FOR UPDATE`,
+        [userId, tenantId]
+      );
+      if (provRes.rows.length === 0 || !provRes.rows[0].is_verified || !provRes.rows[0].is_active) {
+        return {
+          ok: false,
+          status: 403,
+          code: 'PROVIDER_NOT_ELIGIBLE',
+          message: 'Only verified active technicians can accept dispatch offers.',
+        };
+      }
+
+      const activeJobRes = await client.query(
+        `SELECT id FROM bookings
+         WHERE assigned_provider_id = $1 AND tenant_id = $2 AND status IN ('ASSIGNED', 'EN_ROUTE', 'ON_SITE')
+         LIMIT 1`,
+        [userId, tenantId]
+      );
+      if (activeJobRes.rows.length > 0) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'PROVIDER_BUSY',
+          message: 'Technician already has an active work order in progress.',
+        };
+      }
 
       // Find the broadcast offer
       let offerQuery = `
@@ -208,27 +283,33 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
 
       const offerRes = await client.query(offerQuery, params);
       if (offerRes.rowCount === 0) {
-        await client.query('ROLLBACK');
-        return reply.status(404).send(
-          errorResponse('NOT_FOUND', 'Broadcast offer not found for this provider', requestId)
-        );
+        return {
+          ok: false,
+          status: 404,
+          code: 'NOT_FOUND',
+          message: 'Broadcast offer not found for this provider',
+        };
       }
 
       const offer = offerRes.rows[0];
 
       if (offer.response !== 'PENDING') {
-        await client.query('ROLLBACK');
-        return reply.status(409).send(
-          errorResponse('OFFER_CLOSED', `This offer has already been ${offer.response.toLowerCase()}`, requestId)
-        );
+        return {
+          ok: false,
+          status: 409,
+          code: 'OFFER_CLOSED',
+          message: `This offer has already been ${offer.response.toLowerCase()}`,
+        };
       }
 
       if (new Date(offer.expires_at).getTime() < Date.now()) {
         await client.query('UPDATE dispatch_broadcasts SET response = $1 WHERE id = $2', ['EXPIRED', offer.id]);
-        await client.query('COMMIT');
-        return reply.status(410).send(
-          errorResponse('OFFER_EXPIRED', 'This dispatch offer has expired', requestId)
-        );
+        return {
+          ok: false,
+          status: 410,
+          code: 'OFFER_EXPIRED',
+          message: 'This dispatch offer has expired',
+        };
       }
 
       // Lock booking row
@@ -238,10 +319,12 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
       );
 
       if (bookRes.rowCount === 0 || !['REQUESTED', 'BROADCASTING'].includes(bookRes.rows[0].status)) {
-        await client.query('ROLLBACK');
-        return reply.status(409).send(
-          errorResponse('BOOKING_UNAVAILABLE', 'Booking is no longer available for assignment', requestId)
-        );
+        return {
+          ok: false,
+          status: 409,
+          code: 'BOOKING_UNAVAILABLE',
+          message: 'Booking is no longer available for assignment',
+        };
       }
 
       // Mark this broadcast as ACCEPTED
@@ -292,21 +375,22 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
         [userId, tenantId]
       );
 
-      await client.query('COMMIT');
+      return { ok: true, bookingId: offer.booking_id };
+    });
 
-      return reply.status(200).send(
-        successResponse({
-          bookingId: offer.booking_id,
-          status: 'EN_ROUTE',
-          message: 'Job successfully locked and assigned. You are now en route.'
-        }, requestId)
+    if (!txOutcome.ok) {
+      return reply.status(txOutcome.status).send(
+        errorResponse(txOutcome.code, txOutcome.message, requestId)
       );
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
     }
+
+    return reply.status(200).send(
+      successResponse({
+        bookingId: txOutcome.bookingId,
+        status: 'EN_ROUTE',
+        message: 'Job successfully locked and assigned. You are now en route.'
+      }, requestId)
+    );
   });
 
   // 4. Decline Broadcast Offer
@@ -328,12 +412,13 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const res = await pool.query(
+    const res = await tenantQuery(
       `UPDATE dispatch_broadcasts
        SET response = 'DECLINED', responded_at = NOW()
        WHERE id = $1 AND provider_id = $2 AND response = 'PENDING'
        RETURNING id, booking_id`,
-      [parsed.data.broadcastId, userId]
+      [parsed.data.broadcastId, userId],
+      tenantId
     );
 
     if (res.rowCount === 0) {
@@ -369,10 +454,10 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
 
     const { bookingId, newProviderId, reason } = parsed.data;
 
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
+    const txOutcome = await withTenantTransaction<
+      | { ok: true; providerName: string; safetyPin: string }
+      | { ok: false; status: number; code: string; message: string }
+    >(tenantId, async (client) => {
       // Verify booking exists and is not already completed
       const bookingRes = await client.query(
         `SELECT id, assigned_provider_id, status FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
@@ -380,59 +465,123 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
       );
 
       if (bookingRes.rowCount === 0) {
-        await client.query('ROLLBACK');
-        return reply.status(404).send(
-          errorResponse('NOT_FOUND', 'Booking not found', requestId)
-        );
+        return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Booking not found' };
       }
 
       const booking = bookingRes.rows[0];
       if (['COMPLETED', 'CANCELLED'].includes(booking.status)) {
-        await client.query('ROLLBACK');
-        return reply.status(400).send(
-          errorResponse('INVALID_STATE', `Cannot reassign booking in ${booking.status} status`, requestId)
-        );
+        return {
+          ok: false,
+          status: 400,
+          code: 'INVALID_STATE',
+          message: `Cannot reassign booking in ${booking.status} status`,
+        };
       }
 
-      // Verify new provider exists and is verified
-      const providerRes = await client.query(
-        `SELECT user_id, full_name, is_verified FROM provider_profiles WHERE user_id = $1 AND tenant_id = $2`,
+      // Verify new provider exists, is active, verified, online/idle
+      const providerRes = await client.query<{
+        user_id: string;
+        full_name: string;
+        is_verified: boolean;
+        profile_active: boolean;
+        user_active: boolean;
+        duty_status: string | null;
+      }>(
+        `SELECT p.user_id, p.full_name, p.is_verified,
+                p.is_active AS profile_active, u.is_active AS user_active,
+                pl.duty_status
+         FROM provider_profiles p
+         JOIN users u ON u.id = p.user_id AND u.tenant_id = p.tenant_id
+         LEFT JOIN provider_locations pl ON pl.provider_id = p.user_id AND pl.tenant_id = p.tenant_id
+         WHERE p.user_id = $1 AND p.tenant_id = $2`,
         [newProviderId, tenantId]
       );
 
       if (providerRes.rowCount === 0) {
-        await client.query('ROLLBACK');
-        return reply.status(404).send(
-          errorResponse('NOT_FOUND', 'Target technician not found', requestId)
-        );
+        return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Target technician not found' };
       }
 
       const targetProvider = providerRes.rows[0];
       // BACK-07: Enforce verified provider requirement before assignment
       if (!targetProvider.is_verified) {
-        await client.query('ROLLBACK');
-        return reply.status(422).send(
-          errorResponse('PROVIDER_NOT_VERIFIED', 'Target technician is not verified for work order dispatch.', requestId)
-        );
+        return {
+          ok: false,
+          status: 422,
+          code: 'PROVIDER_NOT_VERIFIED',
+          message: 'Target technician is not verified for work order dispatch.',
+        };
+      }
+      if (!targetProvider.profile_active || !targetProvider.user_active) {
+        return {
+          ok: false,
+          status: 422,
+          code: 'PROVIDER_INACTIVE',
+          message: 'Target technician account is deactivated and cannot accept dispatch handovers.',
+        };
+      }
+      if (targetProvider.duty_status === 'OFFLINE') {
+        return {
+          ok: false,
+          status: 409,
+          code: 'PROVIDER_OFFLINE',
+          message: 'Target technician is currently OFFLINE.',
+        };
+      }
+
+      const busyRes = await client.query<{ id: string }>(
+        `SELECT id FROM bookings
+         WHERE tenant_id = $1 AND assigned_provider_id = $2
+           AND status IN ('ASSIGNED', 'EN_ROUTE', 'ON_SITE')
+           AND id <> $3
+         LIMIT 1`,
+        [tenantId, newProviderId, bookingId]
+      );
+      if (busyRes.rows.length > 0) {
+        return {
+          ok: false,
+          status: 409,
+          code: 'PROVIDER_BUSY',
+          message: 'Target technician already has another active booking in progress.',
+        };
       }
 
       const previousProviderId = booking.assigned_provider_id;
 
-      // Reassign booking
+      // Reassign booking and issue a fresh 4-digit arrival PIN + clear prior arrival verification
+      const freshArrivalPin = crypto.randomInt(1000, 10000).toString();
       await client.query(
         `UPDATE bookings 
-         SET assigned_provider_id = $1, status = 'ASSIGNED', updated_at = NOW() 
+         SET assigned_provider_id = $1,
+             status = 'ASSIGNED',
+             customer_safety_pin = $3,
+             pin_verified_at = NULL,
+             geofence_arrival_at = NULL,
+             safety_pin_failed_attempts = 0,
+             safety_pin_locked_until = NULL,
+             safety_pin_last_failed_at = NULL,
+             updated_at = NOW() 
          WHERE id = $2`,
-        [newProviderId, bookingId]
+        [newProviderId, bookingId, freshArrivalPin]
       );
 
-      // Reset previous provider's duty status if they were on this job
-      if (previousProviderId) {
+      await client.query(
+        `UPDATE dispatch_broadcasts SET response = 'EXPIRED', responded_at = NOW()
+         WHERE booking_id = $1 AND response = 'PENDING'`,
+        [bookingId]
+      );
+
+      // Reset previous provider's duty status if they have no other active work orders
+      if (previousProviderId && previousProviderId !== newProviderId) {
         await client.query(
           `UPDATE provider_locations 
            SET duty_status = 'ONLINE', last_ping_at = NOW() 
-           WHERE provider_id = $1 AND tenant_id = $2`,
-          [previousProviderId, tenantId]
+           WHERE provider_id = $1 AND tenant_id = $2
+             AND NOT EXISTS (
+               SELECT 1 FROM bookings
+               WHERE assigned_provider_id = $1 AND tenant_id = $2 AND id <> $3
+                 AND status IN ('ASSIGNED', 'EN_ROUTE', 'ON_SITE')
+             )`,
+          [previousProviderId, tenantId, bookingId]
         );
       }
 
@@ -456,7 +605,7 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
           'ASSIGNED',
           adminUserId,
           'Emergency Dispatch Handover',
-          `Manual reassignment to ${providerRes.rows[0].full_name}. Reason: ${reason}`
+          `Manual reassignment to ${targetProvider.full_name}. Reason: ${reason}`
         ]
       );
 
@@ -475,21 +624,23 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
         ]
       );
 
-      await client.query('COMMIT');
+      return { ok: true, providerName: targetProvider.full_name, safetyPin: freshArrivalPin };
+    });
 
-      return reply.status(200).send(
-        successResponse({
-          bookingId,
-          assignedProviderId: newProviderId,
-          providerName: providerRes.rows[0].full_name,
-          message: 'Booking successfully reassigned to new technician.'
-        }, requestId)
+    if (!txOutcome.ok) {
+      return reply.status(txOutcome.status).send(
+        errorResponse(txOutcome.code, txOutcome.message, requestId)
       );
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
     }
+
+    return reply.status(200).send(
+      successResponse({
+        bookingId,
+        assignedProviderId: newProviderId,
+        providerName: txOutcome.providerName,
+        safetyPin: txOutcome.safetyPin,
+        message: 'Booking successfully reassigned to new technician.'
+      }, requestId)
+    );
   });
 }

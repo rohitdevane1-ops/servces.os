@@ -137,8 +137,9 @@ class BookingFlowNotifier extends StateNotifier<BookingFlowState> {
   Future<BookingModel?> confirmBookingAndLockEscrow() async {
     state = state.copyWith(isLoading: true);
     final newOrder = await _repository.createBookingRequest(
+      serviceId: state.selectedService?.id,
       serviceTitle: state.selectedService?.name ?? 'Home Service Request',
-      category: state.selectedService?.category ?? 'Plumbing Services',
+      category: state.selectedService?.category ?? 'Home Service',
       basePrice: state.basePrice,
       extraPartsTotal: state.extraPartsTotal,
       customerAddress: state.address,

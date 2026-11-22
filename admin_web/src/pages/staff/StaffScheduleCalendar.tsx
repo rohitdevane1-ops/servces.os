@@ -1,31 +1,32 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
-  Calendar, 
-  ChevronLeft, 
-  ChevronRight, 
-  Clock, 
   MapPin, 
   Plus, 
-  UserCheck 
 } from 'lucide-react';
 
 export const StaffScheduleCalendar: React.FC = () => {
-  const { bookings, technicians, navigateToStaffPage, addToast } = useAdmin();
+  const { bookings, navigateToStaffPage, setIsCreateJobModalOpen } = useAdmin();
 
   const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-  const [selectedDay, setSelectedDay] = useState('Wednesday');
+  const [selectedDay, setSelectedDay] = useState(() => {
+    const todayIdx = new Date().getDay();
+    return days[todayIdx === 0 ? 6 : todayIdx - 1];
+  });
 
   const dayIndexMap: Record<string, number> = {
     'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6, 'Sunday': 0
   };
 
-  const dayOrders = bookings.filter((order, idx) => {
+  const dayOrders = bookings.filter((order) => {
     if (order.scheduleDate.toLowerCase().includes(selectedDay.toLowerCase().substring(0, 3))) {
       return true;
     }
-    const targetIdx = dayIndexMap[selectedDay] ?? 3;
-    return (idx % 7) === (targetIdx % 7) || ((idx + 2) % 6) === (targetIdx % 6);
+    const parsed = new Date(order.scheduleDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.getDay() === dayIndexMap[selectedDay];
+    }
+    return false;
   });
 
   return (
@@ -47,7 +48,7 @@ export const StaffScheduleCalendar: React.FC = () => {
             Rescheduling Desk
           </button>
           <button
-            onClick={() => navigateToStaffPage(109)}
+            onClick={() => setIsCreateJobModalOpen(true)}
             className="px-4 py-2 bg-[#0C3832] text-white font-bold text-xs rounded-xl shadow-xs hover:bg-[#124e45] transition-all flex items-center gap-1.5 cursor-pointer"
           >
             <Plus className="w-4 h-4" />

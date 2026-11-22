@@ -1,23 +1,17 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { downloadCSV } from '../../utils/exportUtils';
 import { 
   Search, 
   UserPlus, 
-  Mail, 
-  Phone, 
   MapPin, 
   Eye, 
-  MoreVertical, 
   Star, 
-  DollarSign, 
-  ShoppingBag,
   Download
 } from 'lucide-react';
-import { Customer } from '../../types';
 
 export const Page18AllCustomers: React.FC = () => {
-  const { customers, navigateToPage, addToast, setSelectedCustomerId, openUserDossier, setIsCreateCustomerModalOpen } = useAdmin();
+  const { customers, navigateToPage, addToast, setSelectedCustomerId, setIsCreateCustomerModalOpen } = useAdmin();
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterTier, setFilterTier] = useState<string>('All');
 
@@ -166,7 +160,7 @@ export const Page18AllCustomers: React.FC = () => {
                         <div className="font-extrabold text-slate-900">{cust.name}</div>
                         <div className="text-[11px] text-amber-600 font-bold flex items-center gap-1 mt-0.5">
                           <Star className="w-3 h-3 fill-current text-amber-500" />
-                          ★ {cust.rating}
+                          â˜… {cust.rating}
                         </div>
                       </div>
                     </div>

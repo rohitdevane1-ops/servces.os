@@ -22,6 +22,58 @@ class TechDashboardScreen extends StatefulWidget {
 
 class _TechDashboardScreenState extends State<TechDashboardScreen> {
   bool _isOnline = true;
+  double _todayEarnings = 0.0;
+  int _completedToday = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDashboardStats();
+  }
+
+  Future<void> _loadDashboardStats() async {
+    try {
+      final earnings = await ApiClient.instance.fetchTechnicianEarnings();
+      if (earnings.isNotEmpty) {
+        final netCents = double.tryParse((earnings['totalEarnedCents'] ?? earnings['unpaidBalanceCents'] ?? earnings['totalNetEarnedCents'] ?? earnings['availableBalanceCents'] ?? 0).toString()) ?? 0.0;
+        final jobsCount = int.tryParse((earnings['completedJobsCount'] ?? earnings['completedJobs'] ?? 0).toString()) ?? 0;
+        if (mounted) {
+          setState(() {
+            _todayEarnings = netCents / 100.0;
+            _completedToday = jobsCount;
+          });
+        }
+        return;
+      }
+    } catch (_) {}
+
+    try {
+      final list = await ApiClient.instance.fetchBookings();
+      double netSum = 0.0;
+      int completedCount = 0;
+      for (final item in list) {
+        if (item is Map) {
+          final status = (item['status'] ?? '').toString().toUpperCase();
+          if (status == 'COMPLETED' || status == 'SETTLED') {
+            completedCount++;
+            final payoutRaw = double.tryParse((item['providerPayoutCents'] ?? 0).toString()) ?? 0.0;
+            if (payoutRaw > 0) {
+              netSum += payoutRaw / 100.0;
+            } else {
+              final totalRaw = double.tryParse((item['totalAmountCents'] ?? item['quotedPriceCents'] ?? 0).toString()) ?? 0.0;
+              netSum += (totalRaw / 100.0) * 0.85;
+            }
+          }
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _todayEarnings = netSum;
+          _completedToday = completedCount;
+        });
+      }
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -145,13 +197,13 @@ class _TechDashboardScreenState extends State<TechDashboardScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '\$0.00',
+                      ApiClient.instance.formatCurrency(_todayEarnings),
                       style: TextStyle(fontSize: 32, fontWeight: FontWeight.w900, color: textPrimary, letterSpacing: -0.5),
                     ),
                     const SizedBox(height: 12),
                     Row(
                       children: [
-                        _buildMetricPill('0 Jobs Today', Icons.check_circle_outline, textSecondary),
+                        _buildMetricPill('$_completedToday Jobs Completed', Icons.check_circle_outline, textSecondary),
                         const SizedBox(width: 12),
                         _buildMetricPill('Verified Pro ★', Icons.star_outline, AppColors.ratingAmber),
                         const SizedBox(width: 12),

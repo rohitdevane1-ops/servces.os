@@ -1,20 +1,13 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
   LifeBuoy, 
   MessageSquare, 
-  Clock, 
-  CheckCircle, 
-  AlertCircle, 
   Search, 
-  Eye, 
-  Send,
-  User
 } from 'lucide-react';
-import { SupportTicket } from '../../types';
 
 export const Page21CustomerSupportTickets: React.FC = () => {
-  const { tickets, navigateToPage, addToast, setSelectedTicketId } = useAdmin();
+  const { tickets, navigateToPage, setSelectedTicketId } = useAdmin();
   const [filterStatus, setFilterStatus] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
 

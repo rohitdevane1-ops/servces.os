@@ -107,4 +107,51 @@ describe('Mobile Client Authentication & Cryptographic Storage Security Suite (M
       'Flutter verifyOtp must call backend server'
     );
   });
+
+  it('Flutter and Android repositories and models safely parse PostgreSQL BIGINT string amounts and remove all legacy Supabase/fixture files (Phase 4)', () => {
+    // 1. Verify legacy Supabase and fixture files are permanently deleted
+    const deletedPaths = [
+      'serviceos/lib/core/network/supabase_service.dart',
+      'serviceos/lib/data/datasources/supabase_remote_datasource.dart',
+      'serviceos/lib/data/datasources/local_fixture_datasource.dart',
+      'admin_web/src/lib/supabaseClient.ts',
+      'admin_web/src/services/supabaseService.ts',
+    ];
+    for (const rel of deletedPaths) {
+      assert.equal(
+        fs.existsSync(path.join(repoRoot, rel)),
+        false,
+        `Legacy file ${rel} must be deleted`
+      );
+    }
+
+    // 2. Verify Flutter ServiceModel and BookingModel parse BIGINT string cents safely
+    const flutterServiceModel = fs.readFileSync(
+      path.join(repoRoot, 'serviceos/lib/data/models/service_model.dart'),
+      'utf-8'
+    );
+    assert.ok(
+      flutterServiceModel.includes('int.tryParse'),
+      'Flutter ServiceModel must safely parse BIGINT string price cents via int.tryParse'
+    );
+
+    const flutterBookingModel = fs.readFileSync(
+      path.join(repoRoot, 'serviceos/lib/data/models/booking_model.dart'),
+      'utf-8'
+    );
+    assert.ok(
+      flutterBookingModel.includes('double.tryParse'),
+      'Flutter BookingModel must safely parse BIGINT string amount cents via double.tryParse'
+    );
+
+    // 3. Verify Android ServiceRepository parses BIGINT string cents via toDoubleOrNull()
+    const androidServiceRepo = fs.readFileSync(
+      path.join(repoRoot, 'serviceos_android/app/src/main/kotlin/com/serviceos/app/data/repository/ServiceRepository.kt'),
+      'utf-8'
+    );
+    assert.ok(
+      androidServiceRepo.includes('toDoubleOrNull()'),
+      'Android ServiceRepository must safely parse BIGINT string cents via toDoubleOrNull()'
+    );
+  });
 });

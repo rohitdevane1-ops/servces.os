@@ -1,6 +1,5 @@
 const puppeteer = require('puppeteer-core');
 const fs = require('fs');
-const path = require('path');
 
 const browserPaths = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',

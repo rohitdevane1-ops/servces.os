@@ -5,10 +5,7 @@
 
 export * from './passwordPolicy';
 export * from './rateLimiter';
-export * from './totpService';
 export * from './rbac';
 export * from './sessionManager';
 export * from './securityAuditLogger';
-export * from './passwordResetService';
-export * from './otpService';
 export * from './apiSecurity';

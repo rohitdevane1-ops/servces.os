@@ -1,8 +1,16 @@
 /**
  * ServicePro OS — Enterprise REST API Client
  * Connects React Admin & Staff Portal to Fastify + TypeScript Backend
- * Standard: Dual-Vision Day/Night, OWASP ASVS v4.0.3, Strict Envelope Handling
+ * Standard: In-memory access JWT + HttpOnly refresh cookie, OWASP ASVS v4.0.3
  */
+
+import type {
+  CmsConfigData,
+  IntegrationConfigResponse,
+  PricingConfig,
+  SystemRuntimeConfig,
+  TenantConfig,
+} from '../types';
 
 export interface ApiResponse<T = any> {
   success: boolean;
@@ -27,107 +35,203 @@ export interface ApiResponse<T = any> {
 class ApiClient {
   private baseUrl: string;
   private tenantId: string | null = null;
+  private accessToken: string | null = null;
   private refreshPromise: Promise<string | null> | null = null;
+  private lastRefreshPayload: {
+    accessToken: string;
+    user: { id: string; email: string; role: string; tenantId: string };
+    permissions: string[];
+  } | null = null;
 
   constructor() {
-    this.baseUrl = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3000/api/v1';
+    const envBase = (import.meta as any).env?.VITE_API_BASE_URL;
+    this.baseUrl =
+      envBase || ((import.meta as any).env?.PROD ? '/api/v1' : 'http://localhost:3000/api/v1');
     const envTenant = (import.meta as any).env?.VITE_TENANT_ID;
     if (envTenant && envTenant !== '00000000-0000-0000-0000-000000000001') {
       this.tenantId = envTenant;
     }
+
+    // Purge any legacy client-stored tokens/sessions from previous builds
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem('servicepro_access_token');
+        localStorage.removeItem('servicepro_refresh_token');
+        localStorage.removeItem('servicepro_auth_session');
+        localStorage.removeItem('servicepro_user_role');
+        localStorage.removeItem('servicepro_user_email');
+        localStorage.removeItem('servicepro_lock_pin');
+        localStorage.removeItem('servicepro_security_pin');
+        localStorage.removeItem('servicepro_admin_pwd_hash');
+        localStorage.removeItem('servicepro_admin_pwd_salt');
+      } catch {
+        // ignore storage restrictions
+      }
+    }
+  }
+
+  public getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  public getApiOrigin(): string {
+    return this.baseUrl.replace(/\/api\/v1\/?$/, '');
   }
 
   public setTenantId(tenantId: string | null) {
     this.tenantId = tenantId;
   }
 
+  public getTenantId(): string | null {
+    return this.tenantId;
+  }
+
+  public getToken(): string | null {
+    return this.accessToken;
+  }
+
   public getAccessToken(): string | null {
-    if (typeof localStorage === 'undefined') return null;
-    return localStorage.getItem('servicepro_access_token');
+    return this.accessToken;
+  }
+
+  public setToken(accessToken: string | null) {
+    this.accessToken = accessToken;
   }
 
   public setAccessToken(accessToken: string) {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('servicepro_access_token', accessToken);
-    }
+    this.accessToken = accessToken;
+  }
+
+  public clearSession() {
+    this.accessToken = null;
+    this.lastRefreshPayload = null;
   }
 
   public clearTokens() {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem('servicepro_access_token');
-      localStorage.removeItem('servicepro_refresh_token');
-      localStorage.removeItem('servicepro_user_role');
-      localStorage.removeItem('servicepro_user_email');
+    this.clearSession();
+  }
+
+  public async refreshAccessToken(): Promise<string | null> {
+    if (!this.refreshPromise) {
+      this.refreshPromise = (async () => {
+        try {
+          const refreshHeaders: Record<string, string> = {};
+          if (this.tenantId) {
+            refreshHeaders['x-tenant-id'] = this.tenantId;
+          }
+
+          const refreshRes = await fetch(`${this.baseUrl}/auth/refresh`, {
+            method: 'POST',
+            credentials: 'include',
+            headers: refreshHeaders,
+          });
+
+          if (refreshRes.ok) {
+            const refreshData = await refreshRes.json();
+            if (refreshData?.success && refreshData?.data?.accessToken) {
+              this.accessToken = String(refreshData.data.accessToken);
+              if (refreshData.data.user?.tenantId) {
+                this.tenantId = String(refreshData.data.user.tenantId);
+              }
+              this.lastRefreshPayload = refreshData.data;
+              return this.accessToken;
+            }
+          }
+          this.clearSession();
+          return null;
+        } catch {
+          this.clearSession();
+          return null;
+        } finally {
+          this.refreshPromise = null;
+        }
+      })();
     }
+
+    return this.refreshPromise;
+  }
+
+  /**
+   * Silent boot restore using HttpOnly refresh_token cookie.
+   */
+  public async restoreSession(): Promise<{
+    accessToken: string;
+    user: { id: string; email: string; role: string; tenantId: string };
+    permissions: string[];
+  } | null> {
+    const token = await this.refreshAccessToken();
+    if (!token || !this.lastRefreshPayload) return null;
+    return this.lastRefreshPayload;
   }
 
   public async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<ApiResponse<T>> {
-    const url = `${this.baseUrl}${endpoint}`;
+    const isAbsolute = /^https?:\/\//i.test(endpoint);
+    const url = isAbsolute ? endpoint : `${this.baseUrl}${endpoint}`;
+    const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+
     const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>),
     };
+
+    // Fastify 5 rejects empty-body requests carrying Content-Type: application/json (FST_ERR_CTP_EMPTY_JSON_BODY)
+    if (options.body !== undefined && !isFormData && !headers['Content-Type'] && !headers['content-type']) {
+      headers['Content-Type'] = 'application/json';
+    }
 
     if (this.tenantId) {
       headers['x-tenant-id'] = this.tenantId;
     }
 
-    const token = this.getAccessToken();
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+    if (this.accessToken) {
+      headers['Authorization'] = `Bearer ${this.accessToken}`;
     }
 
     try {
       let res = await fetch(url, {
         ...options,
-        credentials: 'include', // Transmit and receive HttpOnly SameSite=Lax refresh cookies
+        credentials: 'include',
         headers,
       });
 
-      // Handle 401 token refresh rotation via single-flight HttpOnly cookie request (ADMIN-09 / BACK-14)
-      if (res.status === 401 && endpoint !== '/auth/login' && endpoint !== '/auth/refresh') {
-        if (!this.refreshPromise) {
-          this.refreshPromise = (async () => {
-            try {
-              const refreshHeaders: Record<string, string> = {
-                'Content-Type': 'application/json',
-              };
-              if (this.tenantId) {
-                refreshHeaders['x-tenant-id'] = this.tenantId;
-              }
+      const isAuthNoRetry =
+        endpoint === '/auth/login' ||
+        endpoint === '/auth/refresh' ||
+        endpoint === '/auth/demo-login' ||
+        endpoint === '/auth/logout';
 
-              const refreshRes = await fetch(`${this.baseUrl}/auth/refresh`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: refreshHeaders,
-              });
-
-              if (refreshRes.ok) {
-                const refreshData = await refreshRes.json();
-                if (refreshData.success && refreshData.data?.accessToken) {
-                  this.setAccessToken(refreshData.data.accessToken);
-                  return refreshData.data.accessToken as string;
-                }
-              }
-              this.clearTokens();
-              return null;
-            } catch {
-              this.clearTokens();
-              return null;
-            } finally {
-              this.refreshPromise = null;
-            }
-          })();
-        }
-
-        const newAccessToken = await this.refreshPromise;
+      if (res.status === 401 && !isAuthNoRetry) {
+        const newAccessToken = await this.refreshAccessToken();
         if (newAccessToken) {
           headers['Authorization'] = `Bearer ${newAccessToken}`;
           res = await fetch(url, { ...options, credentials: 'include', headers });
         }
+      }
+
+      if (res.status === 204) {
+        return {
+          success: true,
+          data: null,
+          error: null,
+          meta: { timestamp: new Date().toISOString(), requestId: 'client_204' },
+        };
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        return {
+          success: res.ok,
+          data: null,
+          error: res.ok
+            ? null
+            : {
+                code: `HTTP_${res.status}`,
+                message: `Server returned non-JSON response (${res.status})`,
+              },
+          meta: { timestamp: new Date().toISOString(), requestId: 'client_non_json' },
+        };
       }
 
       const json = await res.json();
@@ -149,9 +253,14 @@ class ApiClient {
   }
 
   // ==========================================================================
-  // AUTHENTICATION & INSTALLER
+  // AUTHENTICATION & MFA & PASSWORD RECOVERY
   // ==========================================================================
-  public async login(email: string, password: string, mfaCode?: string, captchaToken?: string) {
+  public async login(
+    email: string,
+    password: string,
+    role?: 'ADMIN' | 'STAFF' | 'TECHNICIAN' | 'CUSTOMER',
+    captchaToken?: string
+  ) {
     const headers: Record<string, string> = {};
     if (captchaToken) {
       headers['cf-turnstile-response'] = captchaToken;
@@ -161,13 +270,26 @@ class ApiClient {
     const res = await this.request<any>('/auth/login', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ email, password, mfaCode, captchaToken }),
+      body: JSON.stringify({ email, password, ...(role ? { role } : {}), ...(captchaToken ? { captchaToken } : {}) }),
     });
     if (res.success && res.data?.accessToken) {
-      this.setAccessToken(res.data.accessToken);
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('servicepro_user_role', res.data.user.role);
-        localStorage.setItem('servicepro_user_email', res.data.user.email);
+      this.accessToken = String(res.data.accessToken);
+      if (res.data.user?.tenantId) {
+        this.tenantId = String(res.data.user.tenantId);
+      }
+    }
+    return res;
+  }
+
+  public async demoLogin(role: 'ADMIN' | 'STAFF' | 'CUSTOMER' | 'TECHNICIAN') {
+    const res = await this.request<any>('/auth/demo-login', {
+      method: 'POST',
+      body: JSON.stringify({ role }),
+    });
+    if (res.success && res.data?.accessToken) {
+      this.accessToken = String(res.data.accessToken);
+      if (res.data.user?.tenantId) {
+        this.tenantId = String(res.data.user.tenantId);
       }
     }
     return res;
@@ -179,13 +301,85 @@ class ApiClient {
       body: JSON.stringify({ mfaSessionToken, totpCode }),
     });
     if (res.success && res.data?.accessToken) {
-      this.setAccessToken(res.data.accessToken);
-      if (typeof localStorage !== 'undefined' && res.data.user) {
-        localStorage.setItem('servicepro_user_role', res.data.user.role);
-        localStorage.setItem('servicepro_user_email', res.data.user.email);
+      this.accessToken = String(res.data.accessToken);
+      if (res.data.user?.tenantId) {
+        this.tenantId = String(res.data.user.tenantId);
       }
     }
     return res;
+  }
+
+  public async verifyMfaRecovery(mfaSessionToken: string, backupCode: string) {
+    const res = await this.request<any>('/auth/mfa/recovery', {
+      method: 'POST',
+      body: JSON.stringify({ mfaSessionToken, backupCode }),
+    });
+    if (res.success && res.data?.accessToken) {
+      this.accessToken = String(res.data.accessToken);
+      if (res.data.user?.tenantId) {
+        this.tenantId = String(res.data.user.tenantId);
+      }
+    }
+    return res;
+  }
+
+  public async setupMfa(currentTotpCode?: string) {
+    return this.request<{ secret: string; otpAuthUrl: string; instructions: string }>('/auth/mfa/setup', {
+      method: 'POST',
+      body: JSON.stringify(currentTotpCode ? { currentTotpCode } : {}),
+    });
+  }
+
+  public async confirmMfa(totpCode: string) {
+    return this.request<{ enabled: boolean; backupCodes: string[]; warning: string }>('/auth/mfa/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ totpCode }),
+    });
+  }
+
+  public async disableMfa(payload: {
+    currentPassword: string;
+    totpCode?: string;
+    backupCode?: string;
+  }) {
+    return this.request<{ disabled: boolean; message: string }>('/auth/mfa/disable', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async forgotPassword(email: string, captchaToken?: string) {
+    const headers: Record<string, string> = {};
+    if (captchaToken) {
+      headers['cf-turnstile-response'] = captchaToken;
+      headers['x-captcha-token'] = captchaToken;
+    }
+    return this.request<{ requested: boolean; message: string }>('/auth/forgot-password', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ email }),
+    });
+  }
+
+  public async resetPassword(token: string, newPassword: string) {
+    return this.request<{ reset: boolean; message: string }>('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, newPassword }),
+    });
+  }
+
+  public async reauthenticate(password: string) {
+    return this.request<{ verified: boolean; verifiedAt: string }>('/auth/reauthenticate', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    });
+  }
+
+  public async changePassword(currentPassword: string, newPassword: string) {
+    return this.request<any>('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
   }
 
   public async getMe() {
@@ -196,32 +390,110 @@ class ApiClient {
     try {
       await this.request('/auth/logout', {
         method: 'POST',
-        credentials: 'include',
+        body: JSON.stringify({}),
       });
     } finally {
-      this.clearTokens();
+      this.clearSession();
     }
   }
 
-  public async testDatabaseConnection(databaseUrl: string) {
-    return this.request<any>('/installer/test-db', {
-      method: 'POST',
-      body: JSON.stringify({ databaseUrl }),
+  // ==========================================================================
+  // SYSTEM, HEALTH & INSTALLER
+  // ==========================================================================
+  public async getHealth() {
+    return this.request<any>(`${this.getApiOrigin()}/health`);
+  }
+
+  public async getSystemConfig() {
+    return this.request<SystemRuntimeConfig>('/system/config');
+  }
+
+  public async updateSystemConfig(payload: {
+    name?: string;
+    primaryColor?: string;
+    currencyCode?: string;
+    currencySymbol?: string;
+    timezone?: string;
+    commissionBps?: number;
+    taxRateBps?: number;
+    taxName?: string;
+    countryCode?: string;
+    distanceUnit?: 'km' | 'mi';
+    supportPhone?: string | null;
+    supportWhatsapp?: string | null;
+    emergencyPhone?: string | null;
+    logoUrl?: string | null;
+    defaultLocale?: string;
+    defaultMapLat?: number;
+    defaultMapLng?: number;
+    pricingConfig?: {
+      surgeMultiplier?: number;
+      minCalloutFee?: number;
+      nightSurcharge?: number;
+      surgeActive?: boolean;
+    };
+    publicSettings?: Record<string, unknown>;
+  }) {
+    return this.request<{ updated: boolean; tenant: TenantConfig; pricingConfig?: Partial<PricingConfig> | null }>('/system/settings', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
     });
   }
 
-  public async provisionTurnkeyInstallation(data: {
-    tenantName: string;
-    subdomain: string;
-    adminEmail: string;
-    adminPassword: string;
-    adminFullName: string;
-    currencyCode: string;
-    defaultPlatformCommissionBps: number;
-    bootstrapToken: string;
+  public async getIntegrations() {
+    return this.request<IntegrationConfigResponse>('/system/integrations');
+  }
+
+  public async updateIntegrations(payload: {
+    stripeAccountId?: string | null;
+    stripeLiveMode?: boolean;
+    twilioEnabled?: boolean;
+    awsSesEnabled?: boolean;
+    fcmPushEnabled?: boolean;
+    publicSettings?: Record<string, unknown>;
+    secrets?: {
+      stripe?: string | Record<string, string | null> | null;
+      paytabs?: string | Record<string, string | null> | null;
+      telr?: string | Record<string, string | null> | null;
+      twilio?: string | Record<string, string | null> | null;
+      smtp?: string | Record<string, string | null> | null;
+      fcm?: string | Record<string, string | null> | null;
+    };
   }) {
+    return this.request<IntegrationConfigResponse>('/system/integrations', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async testInstallerDb() {
+    return this.request<{ connected: boolean; serverTime: string }>('/installer/test-db', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  public async provisionInstaller(
+    data: {
+      companyName: string;
+      subdomain?: string;
+      adminEmail: string;
+      adminPassword: string;
+      adminFullName: string;
+      currencyCode?: string;
+      currencySymbol?: string;
+      defaultTaxRateBps?: number;
+      taxName?: string;
+      platformCommissionPercent?: number;
+      primaryBrandColor?: string;
+    },
+    bootstrapToken: string
+  ) {
     return this.request<any>('/installer/provision', {
       method: 'POST',
+      headers: {
+        'x-bootstrap-token': bootstrapToken,
+      },
       body: JSON.stringify(data),
     });
   }
@@ -233,15 +505,31 @@ class ApiClient {
     return this.request<any[]>('/services/categories');
   }
 
-  public async createCategory(data: { name: string; iconName?: string; displayOrder?: number }) {
+  public async createCategory(data: { name: string; iconName?: string; bannerUrl?: string | null; displayOrder?: number }) {
     return this.request<any>('/services/categories', {
       method: 'POST',
       body: JSON.stringify(data),
     });
   }
 
+  public async updateCategory(
+    id: string,
+    data: { name?: string; iconName?: string; bannerUrl?: string | null; displayOrder?: number; isActive?: boolean }
+  ) {
+    return this.request<any>(`/services/categories/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  public async deleteCategory(id: string) {
+    return this.request<any>(`/services/categories/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   public async getServices(categoryId?: string) {
-    const query = categoryId ? `?categoryId=${categoryId}` : '';
+    const query = categoryId ? `?categoryId=${encodeURIComponent(categoryId)}` : '';
     return this.request<any[]>(`/services${query}`);
   }
 
@@ -260,23 +548,55 @@ class ApiClient {
     });
   }
 
+  public async updateService(
+    id: string,
+    data: {
+      categoryId?: string;
+      name?: string;
+      description?: string | null;
+      basePriceCents?: number;
+      estimatedDurationMinutes?: number;
+      isPopular?: boolean;
+      isActive?: boolean;
+    }
+  ) {
+    return this.request<any>(`/services/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  public async deleteService(id: string) {
+    return this.request<any>(`/services/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   // ==========================================================================
   // BOOKINGS & DISPATCH
   // ==========================================================================
-  public async getBookings(params: { page?: number; limit?: number; status?: string } = {}) {
+  public async getBookings(params: { page?: number; limit?: number; status?: string; search?: string } = {}) {
     const q = new URLSearchParams();
     if (params.page) q.set('page', params.page.toString());
     if (params.limit) q.set('limit', params.limit.toString());
     if (params.status) q.set('status', params.status);
-    return this.request<any[]>(`/bookings?${q.toString()}`);
+    if (params.search) q.set('search', params.search);
+    const qs = q.toString();
+    return this.request<any[]>(`/bookings${qs ? `?${qs}` : ''}`);
   }
 
   public async getBooking(id: string) {
-    return this.request<any>(`/bookings/${id}`);
+    return this.request<{
+      booking: any;
+      timeline: any[];
+      proofs: any | null;
+      invoiceItems: any[];
+    }>(`/bookings/${id}`);
   }
 
   public async createBooking(data: {
     serviceId: string;
+    customerId?: string;
     addressText: string;
     city?: string;
     state?: string;
@@ -293,47 +613,65 @@ class ApiClient {
     });
   }
 
-  public async cancelBooking(id: string, reason: string) {
+  public async rescheduleBooking(
+    id: string,
+    data: { scheduledStart: string; scheduledEnd?: string; reason?: string }
+  ) {
+    return this.request<any>(`/bookings/${id}/reschedule`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  }
+
+  public async assignBooking(id: string, providerId: string, reason?: string) {
+    return this.request<any>(`/bookings/${id}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ providerId, ...(reason ? { reason } : {}) }),
+    });
+  }
+
+  public async cancelBooking(id: string, reason: string = 'Cancelled by dispatcher') {
     return this.request<any>(`/bookings/${id}/cancel`, {
       method: 'POST',
       body: JSON.stringify({ reason }),
     });
   }
 
-  public async verifyArrivalPin(bookingId: string, safetyPin: string) {
-    return this.request<any>(`/bookings/${bookingId}/verify-arrival`, {
+  public async confirmBookingPayment(bookingId: string) {
+    return this.request<any>(`/bookings/${bookingId}/confirm-payment`, {
       method: 'POST',
-      body: JSON.stringify({ safetyPin }),
+      body: JSON.stringify({}),
     });
   }
 
-  public async completeWorkOrder(bookingId: string, data: {
-    beforePhotos?: string[];
-    afterPhotos?: string[];
-    customerSignatureUrl?: string;
-    workSummaryNotes?: string;
-  }) {
-    return this.request<any>(`/bookings/${bookingId}/complete`, {
-      method: 'POST',
-      body: JSON.stringify(data),
-    });
-  }
-
-  public async getRadar(params: { latitude: number; longitude: number; radiusKm?: number; tradeCategory?: string }) {
+  public async getDispatchRadar(
+    latitude: number,
+    longitude: number,
+    radiusKm?: number,
+    tradeCategory?: string
+  ) {
     const q = new URLSearchParams({
-      latitude: params.latitude.toString(),
-      longitude: params.longitude.toString(),
+      latitude: latitude.toString(),
+      longitude: longitude.toString(),
     });
-    if (params.radiusKm) q.set('radiusKm', params.radiusKm.toString());
-    if (params.tradeCategory) q.set('tradeCategory', params.tradeCategory);
+    if (radiusKm) q.set('radiusKm', radiusKm.toString());
+    if (tradeCategory) q.set('tradeCategory', tradeCategory);
     return this.request<any[]>(`/dispatch/radar?${q.toString()}`);
   }
 
-  public async handoverBooking(bookingId: string, newProviderId: string, reason: string) {
+  public async getRadar(params: { latitude: number; longitude: number; radiusKm?: number; tradeCategory?: string }) {
+    return this.getDispatchRadar(params.latitude, params.longitude, params.radiusKm, params.tradeCategory);
+  }
+
+  public async triggerHandover(bookingId: string, newProviderId: string, reason: string) {
     return this.request<any>('/dispatch/handover', {
       method: 'POST',
       body: JSON.stringify({ bookingId, newProviderId, reason }),
     });
+  }
+
+  public async handoverBooking(bookingId: string, newProviderId: string, reason: string) {
+    return this.triggerHandover(bookingId, newProviderId, reason);
   }
 
   // ==========================================================================
@@ -344,21 +682,54 @@ class ApiClient {
     if (params.page) q.set('page', params.page.toString());
     if (params.limit) q.set('limit', params.limit.toString());
     if (params.search) q.set('search', params.search);
-    return this.request<any[]>(`/crm/customers?${q.toString()}`);
+    const qs = q.toString();
+    return this.request<any[]>(`/crm/customers${qs ? `?${qs}` : ''}`);
   }
 
   public async getCustomer(id: string) {
     return this.request<any>(`/crm/customers/${id}`);
   }
 
-  public async getTechnicians(params: {
-    page?: number;
-    limit?: number;
-    status?: string;
-    tradeCategory?: string;
-    isVerified?: boolean;
-    search?: string;
-  } = {}) {
+  public async createCustomer(data: {
+    email: string;
+    password?: string;
+    fullName: string;
+    phone?: string;
+    defaultAddress?: string;
+    courtesyCreditCents?: number;
+  }) {
+    return this.request<any>('/crm/customers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  public async updateCustomer(
+    id: string,
+    data: {
+      fullName?: string;
+      phone?: string | null;
+      defaultAddress?: string | null;
+      courtesyCreditCents?: number;
+      isActive?: boolean;
+    }
+  ) {
+    return this.request<any>(`/crm/customers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  public async getTechnicians(
+    params: {
+      page?: number;
+      limit?: number;
+      status?: string;
+      tradeCategory?: string;
+      isVerified?: boolean;
+      search?: string;
+    } = {}
+  ) {
     const q = new URLSearchParams();
     if (params.page) q.set('page', params.page.toString());
     if (params.limit) q.set('limit', params.limit.toString());
@@ -366,11 +737,50 @@ class ApiClient {
     if (params.tradeCategory) q.set('tradeCategory', params.tradeCategory);
     if (params.isVerified !== undefined) q.set('isVerified', params.isVerified.toString());
     if (params.search) q.set('search', params.search);
-    return this.request<any[]>(`/crm/technicians?${q.toString()}`);
+    const qs = q.toString();
+    return this.request<any[]>(`/crm/technicians${qs ? `?${qs}` : ''}`);
   }
 
   public async getTechnician(id: string) {
     return this.request<any>(`/crm/technicians/${id}`);
+  }
+
+  public async createTechnician(data: {
+    email: string;
+    password?: string;
+    fullName: string;
+    phone?: string;
+    tradeCategory: string;
+    licenseNumber?: string;
+    hourlyRateCents?: number;
+    vehicleMakeModel?: string;
+    vehicleLicensePlate?: string;
+    isVerified?: boolean;
+  }) {
+    return this.request<any>('/crm/technicians', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  public async updateTechnician(
+    id: string,
+    data: {
+      fullName?: string;
+      phone?: string | null;
+      tradeCategory?: string;
+      licenseNumber?: string | null;
+      hourlyRateCents?: number;
+      vehicleMakeModel?: string | null;
+      vehicleLicensePlate?: string | null;
+      isVerified?: boolean;
+      isActive?: boolean;
+    }
+  ) {
+    return this.request<any>(`/crm/technicians/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
   }
 
   public async verifyTechnician(id: string, isVerified: boolean, notes?: string) {
@@ -391,52 +801,113 @@ class ApiClient {
     return this.request<any>(`/finances/overview${qs}`);
   }
 
+  public async getFinancialLedger() {
+    return this.request<any[]>('/finances/ledger');
+  }
+
+  public async getLedgerJournal() {
+    return this.getFinancialLedger();
+  }
+
   public async getInvoices(params: { page?: number; limit?: number; status?: string } = {}) {
     const q = new URLSearchParams();
     if (params.page) q.set('page', params.page.toString());
     if (params.limit) q.set('limit', params.limit.toString());
     if (params.status) q.set('status', params.status);
-    return this.request<any[]>(`/finances/invoices?${q.toString()}`);
+    const qs = q.toString();
+    return this.request<any[]>(`/finances/invoices${qs ? `?${qs}` : ''}`);
   }
 
   public async getInvoice(id: string) {
     return this.request<any>(`/finances/invoices/${id}`);
   }
 
-  public async getLedgerJournal() {
-    return this.request<any[]>('/finances/ledger');
+  public async getPayoutsOverview() {
+    return this.request<{
+      currency: string;
+      balances: Array<{
+        providerId: string;
+        fullName: string;
+        tradeCategory: string;
+        connectAccountMasked: string;
+        payoutsEnabled: boolean;
+        completedJobs: number;
+        grossRevenueCents: number;
+        totalEarnedCents: number;
+        totalDisbursedCents: number;
+        unpaidBalanceCents: number;
+      }>;
+      history: Array<{
+        id: string;
+        providerId: string;
+        providerName: string;
+        amountCents: number;
+        currency: string;
+        status: string;
+        transferId: string | null;
+        processedAt: string | null;
+        createdAt: string;
+      }>;
+    }>('/finances/payouts');
   }
 
-  public async triggerPayout(providerId: string, amountCents: number, description?: string, idempotencyKey?: string) {
+  public async triggerPayout(
+    providerId: string,
+    amountCents: number,
+    idempotencyKey: string,
+    description?: string
+  ) {
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(providerId);
     if (!isUUID) {
       return {
         success: false,
+        data: null,
         error: {
           code: 'INVALID_PROVIDER_ID',
           message: `Provider ID "${providerId}" is not a valid UUID format.`,
         },
-      } as ApiResponse<any>;
+        meta: { timestamp: new Date().toISOString(), requestId: `client_${Date.now()}` },
+      };
     }
 
-    const key = idempotencyKey || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `po_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
     return this.request<any>('/finances/payouts', {
       method: 'POST',
       headers: {
-        'idempotency-key': key,
+        'idempotency-key': idempotencyKey,
       },
       body: JSON.stringify({ providerId, amountCents, description }),
     });
   }
 
-  public async confirmBookingPayment(bookingId: string) {
-    return this.request<any>(`/bookings/${bookingId}/confirm-payment`, {
+  public async reconcilePayout(payoutId: string) {
+    return this.request<any>(`/finances/payouts/${payoutId}/reconcile`, {
       method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  public async createRefund(
+    payload: {
+      bookingId?: string;
+      invoiceId?: string;
+      transactionId?: string;
+      amountCents?: number;
+      reason: string;
+      notes?: string;
+    },
+    idempotencyKey: string
+  ) {
+    return this.request<any>('/finances/refunds', {
+      method: 'POST',
+      headers: {
+        'idempotency-key': idempotencyKey,
+      },
+      body: JSON.stringify({ ...payload, idempotencyKey }),
     });
   }
 
   // ==========================================================================
-  // SUPPORT & CMS
+  // SUPPORT, REVIEWS, CMS & UPLOADS
   // ==========================================================================
   public async getTickets(params: { page?: number; limit?: number; status?: string; priority?: string } = {}) {
     const q = new URLSearchParams();
@@ -444,11 +915,26 @@ class ApiClient {
     if (params.limit) q.set('limit', params.limit.toString());
     if (params.status) q.set('status', params.status);
     if (params.priority) q.set('priority', params.priority);
-    return this.request<any[]>(`/support/tickets?${q.toString()}`);
+    const qs = q.toString();
+    return this.request<any[]>(`/support/tickets${qs ? `?${qs}` : ''}`);
   }
 
   public async getTicket(id: string) {
     return this.request<any>(`/support/tickets/${id}`);
+  }
+
+  public async createTicket(payload: {
+    subject: string;
+    category?: string;
+    priority?: 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT';
+    bookingId?: string;
+    customerId?: string;
+    initialMessage: string;
+  }) {
+    return this.request<any>('/support/tickets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 
   public async postTicketMessage(ticketId: string, messageBody: string, attachmentsUrls: string[] = []) {
@@ -458,27 +944,33 @@ class ApiClient {
     });
   }
 
-  public async updateTicketStatus(ticketId: string, status?: string, assignedStaffId?: string | null) {
+  public async updateTicketStatus(
+    ticketId: string,
+    payload: { status?: 'OPEN' | 'IN_PROGRESS' | 'RESOLVED' | 'CLOSED'; assignedStaffId?: string | null }
+  ) {
     return this.request<any>(`/support/tickets/${ticketId}/status`, {
       method: 'PATCH',
-      body: JSON.stringify({ status, assignedStaffId }),
+      body: JSON.stringify(payload),
     });
   }
 
   public async getReviews(providerId?: string) {
-    const query = providerId ? `?providerId=${providerId}` : '';
+    const query = providerId ? `?providerId=${encodeURIComponent(providerId)}` : '';
     return this.request<any[]>(`/support/reviews${query}`);
   }
 
-  public async moderateReview(reviewId: string, isPublic: boolean, moderationFlagged: boolean) {
+  public async moderateReview(
+    reviewId: string,
+    payload: { isPublic: boolean; moderationFlagged: boolean }
+  ) {
     return this.request<any>(`/support/reviews/${reviewId}/moderate`, {
       method: 'PATCH',
-      body: JSON.stringify({ isPublic, moderationFlagged }),
+      body: JSON.stringify(payload),
     });
   }
 
   public async getCmsConfig() {
-    return this.request<any>('/support/settings/cms');
+    return this.request<CmsConfigData>('/support/settings/cms');
   }
 
   public async updateCmsConfig(data: {
@@ -492,6 +984,163 @@ class ApiClient {
       method: 'PUT',
       body: JSON.stringify(data),
     });
+  }
+
+  public async uploadFile(file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.request<{
+      url: string;
+      filename: string;
+      mimeType: string;
+      sizeBytes: number;
+      expiresAt: string;
+    }>('/uploads', {
+      method: 'POST',
+      body: formData,
+    });
+  }
+
+  public async triggerAutoDispatch(bookingId: string, options?: { radiusMeters?: number; ttlSeconds?: number }) {
+    return this.request<any>('/dispatch/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify({
+        bookingId,
+        ...(options?.radiusMeters !== undefined ? { radiusMeters: options.radiusMeters } : {}),
+        ...(options?.ttlSeconds !== undefined ? { ttlSeconds: options.ttlSeconds } : {}),
+      }),
+    });
+  }
+
+  public async completeBooking(
+    bookingId: string,
+    payload: {
+      beforePhotos?: string[];
+      afterPhotos?: string[];
+      customerSignatureUrl?: string;
+      workSummaryNotes?: string;
+    } = {}
+  ) {
+    return this.request<any>(`/bookings/${bookingId}/complete`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async createInvoice(payload: {
+    bookingId: string;
+    laborSubtotalCents?: number;
+    partsSubtotalCents?: number;
+    diagnosticFeeCents?: number;
+    discountCents?: number;
+    totalAmountCents?: number;
+    status?: 'DRAFT' | 'AUTHORIZED' | 'PAID';
+  }) {
+    return this.request<any>('/finances/invoices', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async getRefunds() {
+    return this.request<any[]>('/finances/refunds');
+  }
+
+  public async reconcileRefund(refundId: string) {
+    return this.request<any>(`/finances/refunds/${refundId}/reconcile`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
+  public async sendDirectSms(payload: {
+    recipientPhone: string;
+    recipientName?: string;
+    message: string;
+    bookingId?: string;
+  }) {
+    return this.request<{
+      id: string;
+      status: 'PENDING' | 'SENT' | 'DELIVERED' | 'FAILED';
+      delivered: boolean;
+      providerConfigured: boolean;
+      recipientPhone: string;
+      message: string;
+      errorMessage?: string | null;
+    }>('/support/sms/send', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async getIncidents() {
+    return this.request<any[]>('/support/incidents');
+  }
+
+  public async createIncident(payload: {
+    subject: string;
+    description: string;
+    severity?: 'LOW' | 'MEDIUM' | 'NORMAL' | 'HIGH' | 'URGENT' | 'CRITICAL';
+    bookingId?: string;
+    customerId?: string;
+  }) {
+    return this.request<any>('/support/incidents', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async resolveIncidentApi(id: string, resolutionNotes?: string) {
+    return this.request<any>(`/support/incidents/${id}/resolve`, {
+      method: 'PATCH',
+      body: JSON.stringify(resolutionNotes ? { resolutionNotes } : {}),
+    });
+  }
+
+  public async getTechnicianAvailability(techId: string) {
+    return this.request<{
+      providerId: string;
+      shifts: Array<{
+        id?: string;
+        dayOfWeek: number;
+        startTime: string;
+        endTime: string;
+        isActive: boolean;
+      }>;
+    }>(`/crm/technicians/${techId}/availability`);
+  }
+
+  public async updateTechnicianAvailability(
+    techId: string,
+    shifts: Array<{
+      dayOfWeek: number;
+      startTime: string;
+      endTime: string;
+      isActive: boolean;
+    }>
+  ) {
+    return this.request<{
+      providerId: string;
+      shifts: Array<{
+        id?: string;
+        dayOfWeek: number;
+        startTime: string;
+        endTime: string;
+        isActive: boolean;
+      }>;
+    }>(`/crm/technicians/${techId}/availability`, {
+      method: 'PUT',
+      body: JSON.stringify({ shifts }),
+    });
+  }
+
+  public async getAuditLogs(params?: { limit?: number; offset?: number; action?: string }) {
+    const qs = new URLSearchParams();
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.offset) qs.set('offset', String(params.offset));
+    if (params?.action) qs.set('action', params.action);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return this.request<any[]>(`/system/audit-logs${suffix}`);
   }
 }
 

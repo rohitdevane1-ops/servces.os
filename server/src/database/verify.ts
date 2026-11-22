@@ -1,10 +1,12 @@
-import { pool } from './pool.js';
+import { pool, withTenantTransaction } from './pool.js';
+import { isDemoModeEnabled } from '../middleware/demoGuard.js';
 
 export async function verifyDatabaseSchema(): Promise<{
   success: boolean;
   errors: string[];
   tablesFound: string[];
   extensions: string[];
+  mode?: 'DEMO_SANDBOX' | 'CLEAN_PRODUCTION';
 }> {
   const errors: string[] = [];
   const requiredTables = [
@@ -12,6 +14,7 @@ export async function verifyDatabaseSchema(): Promise<{
     'users',
     'user_sessions',
     'user_mfa_credentials',
+    'password_reset_tokens',
     'permissions',
     'role_permissions',
     'admin_profiles',
@@ -31,10 +34,13 @@ export async function verifyDatabaseSchema(): Promise<{
     'invoices',
     'invoice_items',
     'payment_transactions',
+    'payment_refunds',
     'webhook_events',
     'ledger_accounts',
     'ledger_entries',
     'provider_payouts',
+    'provider_payout_reversals',
+    'outbox_operations',
     'support_tickets',
     'ticket_messages',
     'customer_reviews',
@@ -80,20 +86,31 @@ export async function verifyDatabaseSchema(): Promise<{
       errors.push('Spatial index idx_provider_locations_gist missing on provider_locations');
     }
 
-    // 4. Verify Zero Fake / Demo Records
-    if (tablesFound.includes('users')) {
-      const userCountRes = await pool.query<{ count: string }>('SELECT COUNT(*) as count FROM users');
-      const count = parseInt(userCountRes.rows[0].count, 10);
-      if (count > 0) {
-        console.warn(`[Audit Notice] Database contains ${count} user record(s). (Verify genuine accounts vs demo data)`);
+    // 4. Verify Tenant-Scoped Records under FORCE ROW LEVEL SECURITY & Dual-DB Mode
+    const mode = isDemoModeEnabled() ? 'DEMO_SANDBOX' : 'CLEAN_PRODUCTION';
+    if (tablesFound.includes('tenants') && tablesFound.includes('users')) {
+      const tenantsRes = await pool.query<{ id: string; name: string; slug: string }>(
+        'SELECT id, name, slug FROM tenants ORDER BY created_at ASC'
+      );
+      let totalUsers = 0;
+      for (const t of tenantsRes.rows) {
+        const count = await withTenantTransaction(t.id, async (client) => {
+          const userCountRes = await client.query<{ count: string }>('SELECT COUNT(*) as count FROM users');
+          return parseInt(userCountRes.rows[0]?.count || '0', 10);
+        });
+        totalUsers += count;
       }
+      console.log(
+        `[Database Mode: ${mode}] Verified ${tenantsRes.rows.length} tenant(s) and ${totalUsers} total user account(s) under FORCE RLS.`
+      );
     }
 
     return {
       success: errors.length === 0,
       errors,
       tablesFound,
-      extensions
+      extensions,
+      mode
     };
   } catch (err: any) {
     return {
@@ -105,16 +122,18 @@ export async function verifyDatabaseSchema(): Promise<{
   }
 }
 
-if (process.argv[1] && process.argv[1].endsWith('verify.ts')) {
+if (process.argv[1] && /verify\.(ts|js)$/.test(process.argv[1])) {
   (async () => {
     console.log('Running Database Schema Verification...');
     const result = await verifyDatabaseSchema();
     if (result.success) {
       console.log('✓ Database verification passed! All tables and PostGIS spatial extensions confirmed.');
+      await pool.end();
       process.exit(0);
     } else {
       console.error('✗ Database verification failed with errors:');
       result.errors.forEach(e => console.error(`  - ${e}`));
+      await pool.end();
       process.exit(1);
     }
   })();

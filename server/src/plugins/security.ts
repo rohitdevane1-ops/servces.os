@@ -28,9 +28,16 @@ export default fp(async function securityPlugin(fastify: FastifyInstance) {
         return cb(null, true);
       }
 
-      // In non-production, permit local dev tooling
-      if (env.NODE_ENV !== 'production' && (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
-        return cb(null, true);
+      // In non-production, permit local dev tooling (strict hostname check)
+      if (env.NODE_ENV !== 'production') {
+        try {
+          const parsed = new URL(origin);
+          if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+            return cb(null, true);
+          }
+        } catch {
+          // Malformed origin rejected below
+        }
       }
 
       // Reject unauthorized origins with credentials (403, not 500)
@@ -47,7 +54,8 @@ export default fp(async function securityPlugin(fastify: FastifyInstance) {
       'idempotency-key',
       'x-client-platform',
       'x-captcha-token',
-      'cf-turnstile-response'
+      'cf-turnstile-response',
+      'x-bootstrap-token'
     ]
   });
 

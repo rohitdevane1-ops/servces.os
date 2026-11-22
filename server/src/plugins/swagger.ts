@@ -44,13 +44,15 @@ export default fp(async function swaggerPlugin(fastify: FastifyInstance) {
     }
   });
 
-  await fastify.register(swaggerUi, {
-    routePrefix: '/docs',
-    uiConfig: {
-      docExpansion: 'list',
-      deepLinking: true
-    },
-    staticCSP: true,
-    transformStaticCSP: (header) => header
-  });
+  if (process.env.NODE_ENV !== 'production') {
+    await fastify.register(swaggerUi, {
+      routePrefix: '/docs',
+      uiConfig: {
+        docExpansion: 'list',
+        deepLinking: true
+      },
+      staticCSP: true,
+      transformStaticCSP: (header) => header
+    });
+  }
 });

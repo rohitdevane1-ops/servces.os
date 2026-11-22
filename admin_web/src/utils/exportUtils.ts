@@ -11,10 +11,13 @@ export function downloadCSV(
   headersOrObjects: string[] | Record<string, any>[],
   maybeRows?: (string | number | boolean | null | undefined)[][]
 ): void {
-  // Format each cell with proper escaping for quotes, commas, and line breaks
+  // Format each cell with proper escaping for quotes, commas, line breaks, and CSV formula injection
   const formatCell = (val: string | number | boolean | null | undefined): string => {
     if (val === null || val === undefined) return '""';
-    const str = String(val);
+    let str = String(val);
+    if (/^[\s]*[=+\-@\t\r]/.test(str)) {
+      str = `'${str}`;
+    }
     if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
       return `"${str.replace(/"/g, '""')}"`;
     }
@@ -24,9 +27,13 @@ export function downloadCSV(
   let headers: string[] = [];
   let rows: (string | number | boolean | null | undefined)[][] = [];
 
-  if (Array.isArray(headersOrObjects) && headersOrObjects.length > 0 && typeof headersOrObjects[0] === 'object' && !Array.isArray(headersOrObjects[0])) {
-    const objectList = headersOrObjects as Record<string, any>[];
-    headers = Object.keys(objectList[0]);
+  if (Array.isArray(headersOrObjects) && headersOrObjects.length > 0 && headersOrObjects[0] !== null && typeof headersOrObjects[0] === 'object' && !Array.isArray(headersOrObjects[0])) {
+    const objectList = (headersOrObjects as Record<string, any>[]).filter(Boolean);
+    const headerSet = new Set<string>();
+    for (const obj of objectList) {
+      for (const k of Object.keys(obj)) headerSet.add(k);
+    }
+    headers = Array.from(headerSet);
     rows = objectList.map(obj => headers.map(h => obj[h]));
   } else if (Array.isArray(headersOrObjects) && maybeRows) {
     headers = headersOrObjects as string[];

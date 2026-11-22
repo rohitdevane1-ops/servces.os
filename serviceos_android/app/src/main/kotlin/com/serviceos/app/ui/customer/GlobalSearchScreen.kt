@@ -17,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.serviceos.app.data.model.ServiceItem
+import com.serviceos.app.data.network.ApiClient
 import com.serviceos.app.data.repository.ServiceRepository
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -107,7 +108,7 @@ fun GlobalSearchScreen(
                             )
                         }
                         Text(
-                            text = "$${item.basePrice.toInt()}",
+                            text = ApiClient.formatCurrency(item.basePrice),
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.primary

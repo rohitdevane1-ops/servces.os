@@ -38,7 +38,8 @@ const ServiceItemModel _defaultFallbackService = ServiceItemModel(
   description: 'Standard home service callout',
 );
 
-/// Central GoRouter configuration mapping mobile views with role enforcement & native back-stack support.
+/// Central GoRouter configuration mapping mobile views with strict 2-persona role enforcement.
+/// GEMINI.md Rule 1: Customer and Technician are the ONLY two user types in the mobile apps.
 class AppRouter {
   static final GoRouter router = createRouter(
     onThemeToggle: () {},
@@ -49,6 +50,26 @@ class AppRouter {
     required VoidCallback onThemeToggle,
     required bool Function() isDarkModeGetter,
   }) {
+    Map<String, dynamic>? activeBooking;
+
+    void setActiveFromModel(dynamic b) {
+      if (b == null) return;
+      try {
+        activeBooking = {
+          'bookingId': b.id,
+          'bookingReference': b.bookingReference,
+          'invoiceNumber': 'INV-${b.bookingReference}',
+          'serviceTitle': b.serviceTitle,
+          'customerAddress': b.customerAddress,
+          'safetyPin': b.safetyPin,
+          'techName': b.technicianName,
+          'basePrice': b.basePrice,
+          'diagnosticFee': 20.0,
+          'partsCost': b.extraPartsTotal,
+        };
+      } catch (_) {}
+    }
+
     return GoRouter(
       initialLocation: '/splash',
       redirect: (context, state) async {
@@ -58,28 +79,28 @@ class AppRouter {
 
         if (isPublicRoute) return null;
 
-        // Validate live server session and user role
         final user = await ApiClient.instance.validateSession();
         if (user == null) {
           return '/login';
         }
 
         final role = (user['role'] ?? '').toString().toUpperCase();
+        // Strictly 2 mobile user personas: CUSTOMER and TECHNICIAN
+        if (role != 'CUSTOMER' && role != 'TECHNICIAN') {
+          await ApiClient.instance.logout();
+          return '/login';
+        }
 
         final isTechRoute =
             state.matchedLocation.startsWith('/tech') ||
             state.matchedLocation.startsWith('/technician');
         final isCustomerRoute = state.matchedLocation.startsWith('/customer');
-        final isAdminRoute = state.matchedLocation.startsWith('/admin');
 
-        if (isTechRoute && role != 'TECHNICIAN' && role != 'ADMIN') {
+        if (isTechRoute && role != 'TECHNICIAN') {
           return '/customer/home';
         }
-        if (isCustomerRoute && role != 'CUSTOMER' && role != 'ADMIN') {
+        if (isCustomerRoute && role != 'CUSTOMER') {
           return '/tech/dashboard';
-        }
-        if (isAdminRoute && role != 'ADMIN') {
-          return role == 'TECHNICIAN' ? '/tech/dashboard' : '/customer/home';
         }
 
         return null;
@@ -94,15 +115,45 @@ class AppRouter {
         GoRoute(
           path: '/login',
           builder: (context, state) => LoginScreen(
-            onLoginSuccess: () => context.go('/role-gateway'),
+            onLoginSuccess: () async {
+              final savedRole = (await ApiClient.instance.getSavedUserRole() ?? '').toUpperCase();
+              if (!context.mounted) return;
+              if (savedRole == 'TECHNICIAN') {
+                context.go('/tech/dashboard');
+              } else if (savedRole == 'CUSTOMER') {
+                context.go('/customer/home');
+              } else {
+                context.go('/role-gateway');
+              }
+            },
             onSelectRole: () => context.go('/role-gateway'),
           ),
         ),
         GoRoute(
           path: '/role-gateway',
           builder: (context, state) => RoleGatewayScreen(
-            onSelectCustomer: () => context.go('/customer/home'),
-            onSelectTechnician: () => context.go('/tech/dashboard'),
+            onSelectCustomer: () async {
+              final role = (await ApiClient.instance.getSavedUserRole() ?? '').toUpperCase();
+              if (!context.mounted) return;
+              if (role == 'TECHNICIAN') {
+                context.go('/tech/dashboard');
+              } else if (role == 'CUSTOMER') {
+                context.go('/customer/home');
+              } else {
+                context.go('/login');
+              }
+            },
+            onSelectTechnician: () async {
+              final role = (await ApiClient.instance.getSavedUserRole() ?? '').toUpperCase();
+              if (!context.mounted) return;
+              if (role == 'TECHNICIAN') {
+                context.go('/tech/dashboard');
+              } else if (role == 'CUSTOMER') {
+                context.go('/customer/home');
+              } else {
+                context.go('/login');
+              }
+            },
           ),
         ),
 
@@ -139,18 +190,43 @@ class AppRouter {
               service: svc,
               onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
               onProceedToBooking: () => context.push('/customer/booking-wizard', extra: svc),
+              onConfigureBooking: (totalPrice, tierTitle) => context.push(
+                '/customer/booking-wizard',
+                extra: <String, dynamic>{
+                  'service': svc,
+                  'tierPrice': totalPrice,
+                  'tierTitle': tierTitle,
+                },
+              ),
             );
           },
         ),
         GoRoute(
           path: '/customer/booking-wizard',
           builder: (context, state) {
-            final svc = state.extra is ServiceItemModel
-                ? state.extra as ServiceItemModel
-                : _defaultFallbackService;
+            final extra = state.extra;
+            ServiceItemModel svc = _defaultFallbackService;
+            double? tierPrice;
+            String? tierTitle;
+            if (extra is ServiceItemModel) {
+              svc = extra;
+            } else if (extra is Map) {
+              if (extra['service'] is ServiceItemModel) {
+                svc = extra['service'] as ServiceItemModel;
+              }
+              if (extra['tierPrice'] is num) {
+                tierPrice = (extra['tierPrice'] as num).toDouble();
+              }
+              tierTitle = extra['tierTitle']?.toString();
+            }
             return BookingWizardScreen(
               service: svc,
+              selectedTierTitle: tierTitle,
+              selectedPackagePrice: tierPrice,
               onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
+              onBookingCreated: (created) {
+                activeBooking = created;
+              },
               onBookingConfirmed: () => context.go('/customer/dispatch-radar'),
             );
           },
@@ -159,8 +235,14 @@ class AppRouter {
           path: '/customer/my-bookings',
           builder: (context, state) => MyBookingsScreen(
             onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
-            onTrackLive: (_) => context.push('/customer/dispatch-radar'),
-            onViewInvoice: (_) => context.push('/customer/invoice'),
+            onTrackLive: (b) {
+              setActiveFromModel(b);
+              context.push('/customer/dispatch-radar');
+            },
+            onViewInvoice: (b) {
+              setActiveFromModel(b);
+              context.push('/customer/invoice');
+            },
           ),
         ),
         GoRoute(
@@ -169,20 +251,43 @@ class AppRouter {
             onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
             onChatWithTech: () => context.push('/common/chat'),
             onCompleteJob: () => context.push('/customer/completion'),
+            safetyPin: (activeBooking?['safetyPin'] ?? activeBooking?['safety_pin'])?.toString(),
           ),
         ),
         GoRoute(
           path: '/customer/completion',
           builder: (context, state) => WorkOrderCompletionScreen(
+            bookingId: (activeBooking?['bookingId'] ?? activeBooking?['id'])?.toString(),
             onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
             onSignOffComplete: () => context.go('/customer/invoice'),
           ),
         ),
         GoRoute(
           path: '/customer/invoice',
-          builder: (context, state) => InvoiceReceiptScreen(
-            onBack: () => context.canPop() ? context.pop() : context.go('/customer/my-bookings'),
-          ),
+          builder: (context, state) {
+            final ab = activeBooking;
+            final bookingRef = (ab?['bookingReference'] ?? ab?['booking_reference'] ?? '').toString();
+            final invNum = ab?['invoiceNumber']?.toString() ??
+                (bookingRef.isNotEmpty ? 'INV-$bookingRef' : '');
+            final partsCost = ((ab?['partsCost'] ?? ab?['extraPartsTotal'] ?? ab?['extra_parts_total'] ?? 0) as num).toDouble();
+            final laborCost = ((ab?['basePrice'] ?? ab?['base_price'] ?? 0) as num).toDouble();
+            final diagnosticFee = ((ab?['diagnosticFee'] ?? ab?['diagnostic_fee'] ?? 0) as num).toDouble();
+            return InvoiceReceiptScreen(
+              onBack: () => context.canPop() ? context.pop() : context.go('/customer/my-bookings'),
+              invoiceNumber: invNum,
+              bookingReference: bookingRef,
+              serviceName: (ab?['serviceTitle'] ?? ab?['service_title'] ?? 'Field Service Order').toString(),
+              customerAddress: (ab?['customerAddress'] ?? ab?['customer_address'] ?? 'Customer Service Address').toString(),
+              techName: (ab?['techName'] ?? ab?['technicianName'] ?? ab?['technician_name'] ?? 'Certified Technician').toString(),
+              laborCost: laborCost,
+              diagnosticFee: diagnosticFee,
+              parts: partsCost > 0
+                  ? [
+                      {'name': 'Approved Replacement Parts', 'price': partsCost},
+                    ]
+                  : const [],
+            );
+          },
         ),
         GoRoute(
           path: '/customer/profile',
@@ -190,7 +295,10 @@ class AppRouter {
             isDarkMode: isDarkModeGetter(),
             onThemeToggle: onThemeToggle,
             onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
-            onLogout: () => context.go('/login'),
+            onLogout: () async {
+              await ApiClient.instance.logout();
+              if (context.mounted) context.go('/login');
+            },
           ),
         ),
         GoRoute(

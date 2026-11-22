@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { downloadCSV } from '../../utils/exportUtils';
 import { apiClient } from '../../services/apiClient';
 import { 
@@ -20,31 +20,25 @@ import {
   Clock, 
   Calendar, 
   TrendingUp, 
-  ArrowUpRight, 
-  ChevronDown, 
-  Eye, 
-  Sparkles,
-  ArrowRight,
   Plus,
   AlertTriangle,
   RefreshCw,
-  DollarSign,
   ShieldCheck
 } from 'lucide-react';
 
 export const Page01MainDashboard: React.FC = () => {
-  const { bookings, technicians, categories, services, auditLogs, navigateToPage, addToast, pricingConfig, setIsCreateJobModalOpen } = useAdmin();
+  const { bookings, technicians, categories, auditLogs, navigateToPage, addToast, pricingConfig, setIsCreateJobModalOpen, tenantConfig, formatCurrency } = useAdmin();
   const [performanceCycle, setPerformanceCycle] = useState<'weekly' | 'monthly'>('weekly');
   const [timeRange, setTimeRange] = useState<string>('Last 30 Days');
+  const [refreshTick, setRefreshTick] = useState<number>(0);
   const [serverMetrics, setServerMetrics] = useState<any>(null);
   const [metricsLoading, setMetricsLoading] = useState<boolean>(true);
   const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [anchorNow] = useState<number>(() => Date.now());
 
   // Load authoritative financial metrics from Fastify backend (WEB-01) with date filtering
   useEffect(() => {
     let isMounted = true;
-    setMetricsLoading(true);
-    setMetricsError(null);
 
     const now = new Date();
     let startDate: Date;
@@ -79,11 +73,11 @@ export const Page01MainDashboard: React.FC = () => {
         setMetricsLoading(false);
       });
     return () => { isMounted = false; };
-  }, [timeRange]);
+  }, [timeRange, refreshTick]);
 
   // Filter bookings truthfully based on the selected date range
   const filteredBookings = React.useMemo(() => {
-    const now = new Date();
+    const now = new Date(anchorNow);
     let startDate: Date;
 
     if (timeRange === 'This Month') {
@@ -95,7 +89,7 @@ export const Page01MainDashboard: React.FC = () => {
       startDate = new Date(now.getFullYear(), 0, 1);
     } else {
       // Default: Last 30 Days
-      startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      startDate = new Date(anchorNow - 30 * 24 * 60 * 60 * 1000);
     }
 
     return bookings.filter(b => {
@@ -104,9 +98,8 @@ export const Page01MainDashboard: React.FC = () => {
       const d = new Date(dateStr);
       return isNaN(d.getTime()) || d >= startDate;
     });
-  }, [bookings, timeRange]);
+  }, [bookings, timeRange, anchorNow]);
 
-  const paidBookings = filteredBookings.filter(b => b.paymentStatus === 'Paid');
   const totalJobs = serverMetrics?.totalInvoicesCount != null
     ? Number(serverMetrics.totalInvoicesCount) 
     : (metricsError ? 0 : filteredBookings.length);
@@ -201,8 +194,8 @@ export const Page01MainDashboard: React.FC = () => {
                 ['Completed Jobs', String(completedJobs)],
                 ['Active In-Progress', String(inProgressJobs)],
                 ['Active On-Duty Technicians', String(technicians.filter(t => t.status === 'Available' || t.status === 'On Job').length)],
-                ['Gross Service Revenue', `$${grossRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`],
-                [`Platform Net Margin (${commission}%)`, `$${netCommission.toLocaleString('en-US', { minimumFractionDigits: 2 })}`]
+                ['Gross Service Revenue', formatCurrency(grossRevenue, serverMetrics?.currency)],
+                [`Platform Net Margin (${commission}%)`, formatCurrency(netCommission, serverMetrics?.currency)]
               ]);
               addToast(`Executive Summary Report downloaded as CSV spreadsheet!`, 'success');
             }}
@@ -230,7 +223,7 @@ export const Page01MainDashboard: React.FC = () => {
             </span>
           </div>
           <button
-            onClick={() => setTimeRange(timeRange)}
+            onClick={() => setRefreshTick(t => t + 1)}
             className="px-2.5 py-1 bg-rose-200 hover:bg-rose-300 text-rose-900 font-bold rounded-lg transition-colors cursor-pointer text-[11px]"
           >
             Retry Sync
@@ -243,7 +236,7 @@ export const Page01MainDashboard: React.FC = () => {
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>
-              <strong>Server Verified Metrics Active:</strong> Double-entry ledger verified Gross Volume: <strong>${grossRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong> | Settled: <strong>${settledRevenue.toLocaleString('en-US', { minimumFractionDigits: 2 })} USD</strong>
+              <strong>Server Verified Metrics Active:</strong> Double-entry ledger verified Gross Volume: <strong>{formatCurrency(grossRevenue, serverMetrics?.currency)}</strong> | Settled: <strong>{formatCurrency(settledRevenue, serverMetrics?.currency)}</strong>
             </span>
           </div>
           <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800">
@@ -431,7 +424,7 @@ export const Page01MainDashboard: React.FC = () => {
                             </div>
                             <div className="pt-1.5 border-t border-slate-800 text-[11px] text-emerald-400 font-bold flex items-center justify-between">
                               <span>Escrow Volume:</span>
-                              <span>${rev.toLocaleString()}.00 USD</span>
+                              <span>{formatCurrency(rev, serverMetrics?.currency || tenantConfig.currencyCode)}</span>
                             </div>
                           </div>
                         );
@@ -503,7 +496,7 @@ export const Page01MainDashboard: React.FC = () => {
                             <div className="bg-slate-900/95 backdrop-blur-md text-white p-2.5 rounded-xl shadow-lg border border-slate-700 text-xs">
                               <div className="font-bold text-slate-200">{data.name}</div>
                               <div className="text-emerald-400 font-extrabold mt-0.5">
-                                {data.value}% • {data.jobs} Active Bookings
+                                {data.value}% â€¢ {data.jobs} Active Bookings
                               </div>
                             </div>
                           );
@@ -560,7 +553,7 @@ export const Page01MainDashboard: React.FC = () => {
               onClick={() => navigateToPage(3)} 
               className="text-xs font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
             >
-              View All →
+              View All â†’
             </button>
           </div>
 
@@ -601,7 +594,7 @@ export const Page01MainDashboard: React.FC = () => {
               onClick={() => navigateToPage(22)} 
               className="text-xs font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
             >
-              View All →
+              View All â†’
             </button>
           </div>
 
@@ -632,7 +625,7 @@ export const Page01MainDashboard: React.FC = () => {
                   </div>
 
                   <div className="text-right">
-                    <div className="text-xs font-bold text-emerald-600">↑ {tech.onTimeRate}%</div>
+                    <div className="text-xs font-bold text-emerald-600">â†‘ {tech.onTimeRate}%</div>
                     <div className="text-[10px] text-slate-400">On-Time SLA</div>
                   </div>
                 </div>

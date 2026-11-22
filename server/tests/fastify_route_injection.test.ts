@@ -20,6 +20,9 @@ describe('Fastify Route Injection & End-to-End Contract Integration Suite (TEST-
       if (q.includes('SELECT 1')) {
         return { rows: [{ '?column?': 1 }], rowCount: 1 };
       }
+      if (q.includes('SELECT is_active FROM users')) {
+        return { rows: [{ is_active: true }], rowCount: 1 };
+      }
       if (q.includes('FROM tenants')) {
         return {
           rows: [{
@@ -53,6 +56,10 @@ describe('Fastify Route Injection & End-to-End Contract Integration Suite (TEST-
       return {
         query: async (text: any, params?: any[]) => {
           const q = typeof text === 'string' ? text : text?.text || '';
+          const trimmed = q.trim().toUpperCase();
+          if (trimmed === 'BEGIN' || trimmed === 'COMMIT' || trimmed === 'ROLLBACK' || q.includes('set_config')) {
+            return { rows: [], rowCount: 0 };
+          }
           if (q.includes('FROM bookings b')) {
             return {
               rows: [{
@@ -68,7 +75,7 @@ describe('Fastify Route Injection & End-to-End Contract Integration Suite (TEST-
               rowCount: 1,
             };
           }
-          return { rows: [], rowCount: 0 };
+          return (pool as any).query(text, params);
         },
         release: () => {},
       };
@@ -84,7 +91,7 @@ describe('Fastify Route Injection & End-to-End Contract Integration Suite (TEST-
     await app.close();
   });
 
-  it('GET /health returns HTTP 200 with standardized envelope', async () => {
+  it('GET /health and GET /api/v1/health return HTTP 200 with standardized envelope', async () => {
     const res = await app.inject({
       method: 'GET',
       url: '/health',
@@ -95,7 +102,30 @@ describe('Fastify Route Injection & End-to-End Contract Integration Suite (TEST-
     assert.equal(body.success, true);
     assert.equal(body.data.status, 'pass');
     assert.equal(body.data.database, 'healthy');
+    assert.equal(typeof body.data.demoMode, 'boolean');
     assert.ok(body.meta.requestId);
+
+    const apiHealthRes = await app.inject({
+      method: 'GET',
+      url: '/api/v1/health',
+    });
+    assert.equal(apiHealthRes.statusCode, 200);
+    const apiBody = JSON.parse(apiHealthRes.payload);
+    assert.equal(apiBody.success, true);
+    assert.equal(apiBody.data.status, 'pass');
+    assert.equal(apiBody.data.database, 'healthy');
+  });
+
+  it('GET /api/v1/system/config returns public tenant & demo mode metadata without requiring auth token', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/system/config',
+    });
+
+    assert.equal(res.statusCode, 200);
+    const body = JSON.parse(res.payload);
+    assert.equal(body.success, true);
+    assert.equal(typeof body.data.demoMode, 'boolean');
   });
 
   it('POST /api/v1/bookings/:id/confirm-payment rejects unauthenticated requests with HTTP 401 (PAY-01)', async () => {

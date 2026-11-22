@@ -11,6 +11,12 @@
     "build:web": "npm --prefix admin_web run build",
     "test": "npm --prefix server test",
     "db:migrate": "npm --prefix server run db:migrate",
-    "db:verify": "npm --prefix server run db:verify"
+    "db:rollback": "npm --prefix server run db:rollback",
+    "db:verify": "npm --prefix server run db:verify",
+    "seed:demo": "npm --prefix server run seed:demo",
+    "seed:prod": "npm --prefix server run seed:prod",
+    "validate:migrations": "node scripts/validate_migrations.cjs",
+    "validate:mobile": "node scripts/validate_dart_codebase.cjs",
+    "validate": "node scripts/validate_migrations.cjs && node scripts/validate_dart_codebase.cjs"
   }
 }

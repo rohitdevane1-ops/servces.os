@@ -1,21 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { 
-  Navigation, 
-  MapPin, 
   Share2, 
   ExternalLink, 
   Copy, 
   LocateFixed, 
-  Compass, 
   Radio, 
-  CheckCircle2, 
   Play, 
-  Pause,
-  Layers,
-  Phone
+  Pause
 } from 'lucide-react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
+import { formatCoordinates, formatDistance, formatSpeed } from '../../utils/formatters';
 
 interface RealDispatchMapProps {
   height?: string;
@@ -27,35 +22,51 @@ interface RealDispatchMapProps {
   customerCoords?: [number, number];
 }
 
+const DEFAULT_DUBAI_TECH_COORDS: [number, number] = [25.0805, 55.1403];
+const DEFAULT_DUBAI_CUSTOMER_COORDS: [number, number] = [25.1972, 55.2744];
+
 export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
   height = '480px',
   hasActiveRoute = false,
   technicianName = 'Assigned Technician',
   customerName = 'Customer',
-  customerAddress = 'Service Location',
-  techCoords = [37.7749, -122.4194],
-  customerCoords = [37.7849, -122.4094]
+  customerAddress = 'Dubai, UAE',
+  techCoords,
+  customerCoords
 }) => {
-  const { addToast } = useAdmin();
+  const { addToast, tenantConfig } = useAdmin();
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const techMarkerRef = useRef<L.Marker | null>(null);
   const customerMarkerRef = useRef<L.Marker | null>(null);
   const routePolylineRef = useRef<L.Polyline | null>(null);
 
-  const [techPos, setTechPos] = useState<[number, number]>(techCoords);
+  const fallbackTechCoords: [number, number] = techCoords || [
+    tenantConfig.defaultMapLat || DEFAULT_DUBAI_TECH_COORDS[0],
+    tenantConfig.defaultMapLng || DEFAULT_DUBAI_TECH_COORDS[1]
+  ];
+  const fallbackCustomerCoords: [number, number] = customerCoords || DEFAULT_DUBAI_CUSTOMER_COORDS;
+
+  const [techPos, setTechPos] = useState<[number, number]>(fallbackTechCoords);
   const [isLiveTracking, setIsLiveTracking] = useState<boolean>(hasActiveRoute);
-  const [speedMph, setSpeedMph] = useState<number>(hasActiveRoute ? 28 : 0);
+  const [speedKmh, setSpeedKmh] = useState<number>(hasActiveRoute ? 45 : 0);
   const [etaMinutes, setEtaMinutes] = useState<number>(hasActiveRoute ? 7 : 0);
-  const [distanceMiles, setDistanceMiles] = useState<number>(hasActiveRoute ? 1.8 : 0);
+  const [distanceKm, setDistanceKm] = useState<number>(hasActiveRoute ? 2.9 : 0);
   const [isUsingDeviceGps, setIsUsingDeviceGps] = useState<boolean>(false);
 
-  // Initialize Leaflet Map
+  const distanceUnit = tenantConfig.distanceUnit || 'km';
+  const [techLat, techLng] = fallbackTechCoords;
+  const [custLat, custLng] = fallbackCustomerCoords;
+  const defaultLat = tenantConfig.defaultMapLat || DEFAULT_DUBAI_TECH_COORDS[0];
+  const defaultLng = tenantConfig.defaultMapLng || DEFAULT_DUBAI_TECH_COORDS[1];
+
   useEffect(() => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
 
-    const mapCenter: [number, number] = hasActiveRoute ? techCoords : [37.7749, -122.4194];
+    const techPoint: [number, number] = [techLat, techLng];
+    const custPoint: [number, number] = [custLat, custLng];
+    const mapCenter: [number, number] = hasActiveRoute ? techPoint : [defaultLat, defaultLng];
 
     const map = L.map(mapContainerRef.current, {
       center: mapCenter,
@@ -63,21 +74,19 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
       zoomControl: true
     });
 
-    // High quality OpenStreetMap tiles
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '© OpenStreetMap contributors'
+      attribution: 'Â© OpenStreetMap contributors'
     }).addTo(map);
 
     if (hasActiveRoute) {
-      // Custom Technician Marker (Truck Icon + Pulse)
       const techIcon = L.divIcon({
         className: 'custom-tech-pin',
         html: `
           <div style="position: relative; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
             <div style="position: absolute; width: 36px; height: 36px; border-radius: 50%; background: rgba(16, 185, 129, 0.3); animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
             <div style="width: 32px; height: 32px; border-radius: 50%; background: #0C3832; border: 2.5px solid #10B981; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.3); color: white; font-size: 14px;">
-              🚚
+              ðŸšš
             </div>
           </div>
         `,
@@ -85,13 +94,12 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
         iconAnchor: [20, 20]
       });
 
-      // Custom Customer Marker (House Icon)
       const customerIcon = L.divIcon({
         className: 'custom-cust-pin',
         html: `
           <div style="position: relative; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;">
             <div style="width: 30px; height: 30px; border-radius: 50%; background: #E11D48; border: 2.5px solid #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.3); color: white; font-size: 13px;">
-              🏠
+              ðŸ 
             </div>
           </div>
         `,
@@ -99,25 +107,33 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
         iconAnchor: [18, 18]
       });
 
-      const techMarker = L.marker(techCoords, { icon: techIcon }).addTo(map);
-      techMarker.bindPopup(`
-        <div style="font-family: system-ui; font-size: 12px; padding: 2px;">
-          <strong style="color: #0C3832;">🚚 ${technicianName}</strong><br />
-          Status: En Route to Job<br />
-          Telemetry: Live Active
-        </div>
-      `);
+      const createSafePopup = (titleColor: string, titleText: string, lines: string[]) => {
+        const container = document.createElement('div');
+        container.style.fontFamily = 'system-ui';
+        container.style.fontSize = '12px';
+        container.style.padding = '2px';
+        const strong = document.createElement('strong');
+        strong.style.color = titleColor;
+        strong.textContent = titleText;
+        container.appendChild(strong);
+        for (const line of lines) {
+          container.appendChild(document.createElement('br'));
+          container.appendChild(document.createTextNode(line));
+        }
+        return container;
+      };
 
-      const customerMarker = L.marker(customerCoords, { icon: customerIcon }).addTo(map);
-      customerMarker.bindPopup(`
-        <div style="font-family: system-ui; font-size: 12px; padding: 2px;">
-          <strong style="color: #E11D48;">🏠 Customer: ${customerName}</strong><br />
-          ${customerAddress}
-        </div>
-      `);
+      const techMarker = L.marker(techPoint, { icon: techIcon }).addTo(map);
+      techMarker.bindPopup(
+        createSafePopup('#0C3832', `ðŸšš ${technicianName}`, ['Status: En Route to Job', 'Telemetry: Live Active'])
+      );
 
-      // Route Polyline connecting Tech to Customer
-      const route = L.polyline([techCoords, customerCoords], {
+      const customerMarker = L.marker(custPoint, { icon: customerIcon }).addTo(map);
+      customerMarker.bindPopup(
+        createSafePopup('#E11D48', `ðŸ  Customer: ${customerName}`, [customerAddress])
+      );
+
+      const route = L.polyline([techPoint, custPoint], {
         color: '#10B981',
         weight: 5,
         opacity: 0.85,
@@ -135,44 +151,41 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
       map.remove();
       mapInstanceRef.current = null;
     };
-  }, [hasActiveRoute, techCoords, customerCoords, technicianName, customerName, customerAddress]);
+  }, [hasActiveRoute, techLat, techLng, custLat, custLng, defaultLat, defaultLng, technicianName, customerName, customerAddress]);
 
-  // Real-time GPS movement simulation (only when route is active)
+  const techPosRef = useRef<[number, number]>(techPos);
+  useEffect(() => {
+    techPosRef.current = techPos;
+  }, [techPos]);
+
   useEffect(() => {
     if (!hasActiveRoute || !isLiveTracking) return;
 
     const interval = setInterval(() => {
-      setTechPos(prev => {
-        const dLat = (customerCoords[0] - prev[0]) * 0.08;
-        const dLng = (customerCoords[1] - prev[1]) * 0.08;
-        
-        if (Math.abs(dLat) < 0.0001 && Math.abs(dLng) < 0.0001) {
-          setEtaMinutes(1);
-          setDistanceMiles(0.1);
-          setSpeedMph(12);
-          return prev;
-        }
+      const prev = techPosRef.current;
+      const dLat = (custLat - prev[0]) * 0.08;
+      const dLng = (custLng - prev[1]) * 0.08;
 
-        const newLat = prev[0] + dLat;
-        const newLng = prev[1] + dLng;
-        const nextPos: [number, number] = [newLat, newLng];
+      if (Math.abs(dLat) < 0.0001 && Math.abs(dLng) < 0.0001) {
+        setEtaMinutes(1);
+        setDistanceKm(0.2);
+        setSpeedKmh(20);
+        return;
+      }
 
-        if (techMarkerRef.current) {
-          techMarkerRef.current.setLatLng(nextPos);
-        }
-
-        setDistanceMiles(prevDist => Math.max(0.1, +(prevDist - 0.1).toFixed(1)));
-        setEtaMinutes(prevEta => Math.max(1, prevEta - 1));
-        setSpeedMph(Math.floor(22 + Math.random() * 8));
-
-        return nextPos;
-      });
+      const nextPos: [number, number] = [prev[0] + dLat, prev[1] + dLng];
+      if (techMarkerRef.current) {
+        techMarkerRef.current.setLatLng(nextPos);
+      }
+      setTechPos(nextPos);
+      setDistanceKm(prevDist => Math.max(0.2, +(prevDist - 0.15).toFixed(1)));
+      setEtaMinutes(prevEta => Math.max(1, prevEta - 1));
+      setSpeedKmh(Math.floor(35 + Math.random() * 14));
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [hasActiveRoute, isLiveTracking, customerCoords]);
+  }, [hasActiveRoute, isLiveTracking, custLat, custLng]);
 
-  // Use Browser Real Hardware GPS
   const handleUseDeviceGps = () => {
     if (!navigator.geolocation) {
       addToast('Geolocation is not supported by your browser', 'warning');
@@ -193,7 +206,7 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
           mapInstanceRef.current.setView(deviceCoords, 16);
         }
 
-        addToast(`Real GPS locked! Lat: ${latitude.toFixed(4)}, Lng: ${longitude.toFixed(4)} (Accuracy: ±${Math.round(accuracy)}m)`, 'success');
+        addToast(`Real GPS locked! ${formatCoordinates(latitude, longitude)} (Accuracy: Â±${Math.round(accuracy)}m)`, 'success');
       },
       (err) => {
         addToast(`GPS Error: ${err.message}. Showing default map coordinates.`, 'warning');
@@ -202,15 +215,12 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
     );
   };
 
-  // Google Maps Live Directions URL
-  const googleMapsDirectionsUrl = `https://www.google.com/maps/dir/?api=1&origin=${techPos[0]},${techPos[1]}&destination=${customerCoords[0]},${customerCoords[1]}&travelmode=driving`;
-  
-  // Google Maps Single Pin Share URL
+  const googleMapsDirectionsUrl = `https://www.google.com/maps/dir/?api=1&origin=${techPos[0]},${techPos[1]}&destination=${fallbackCustomerCoords[0]},${fallbackCustomerCoords[1]}&travelmode=driving`;
   const googleMapsShareUrl = `https://www.google.com/maps/search/?api=1&query=${techPos[0]},${techPos[1]}`;
 
   const copyGoogleMapsLink = () => {
     navigator.clipboard.writeText(googleMapsShareUrl);
-    addToast('Google Maps live tracking link copied to clipboard! Ready to share with customer via SMS.', 'success');
+    addToast('Google Maps live tracking link copied to clipboard!', 'success');
   };
 
   const copyDirectionsLink = () => {
@@ -237,15 +247,14 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
             </div>
             <div className="text-[10px] text-slate-500">
               {hasActiveRoute ? (
-                <>Technician: <strong className="text-slate-700">{technicianName}</strong> → Customer: <strong className="text-slate-700">{customerName}</strong></>
+                <>Technician: <strong className="text-slate-700">{technicianName}</strong> â†’ Customer: <strong className="text-slate-700">{customerName}</strong></>
               ) : (
-                'Radar standing by • Telemetry activates automatically when order is en route'
+                'Radar standing by â€¢ Telemetry activates automatically when order is en route'
               )}
             </div>
           </div>
         </div>
 
-        {/* Live Action Buttons */}
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
@@ -303,25 +312,27 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
         <div ref={mapContainerRef} className="w-full h-full z-0" />
 
         {/* Floating Telemetry HUD on Map */}
-        <div className="absolute top-3 left-3 z-10 bg-white/95 backdrop-blur-md p-3 rounded-2xl border border-slate-200/90 shadow-md text-xs space-y-1.5 min-w-[220px]">
+        <div className="absolute top-3 left-3 z-10 bg-white/95 backdrop-blur-md p-3 rounded-2xl border border-slate-200/90 shadow-md text-xs space-y-1.5 min-w-[230px]">
           <div className="flex items-center justify-between font-extrabold text-slate-900 border-b border-slate-100 pb-1">
             <span className="flex items-center gap-1 text-[11px]">
               <span className={`w-2 h-2 rounded-full ${hasActiveRoute ? 'bg-emerald-500 animate-ping' : 'bg-slate-400'}`}></span>
               GPS Telemetry
             </span>
-            <span className="text-[10px] text-emerald-700 font-bold">{speedMph} MPH</span>
+            <span className="text-[10px] text-emerald-700 font-bold">{formatSpeed(speedKmh, distanceUnit)}</span>
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-600">
             <span>Coordinates:</span>
             <span className="font-mono text-[10px] font-bold text-slate-800">
-              {hasActiveRoute ? `${techPos[0].toFixed(4)}° N, ${Math.abs(techPos[1]).toFixed(4)}° W` : 'Stationary Hub'}
+              {hasActiveRoute ? formatCoordinates(techPos[0], techPos[1]) : 'Stationary Hub'}
             </span>
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-600">
             <span>Distance to Doorstep:</span>
-            <span className="font-bold text-slate-900">{hasActiveRoute ? `${distanceMiles} miles` : 'No active route'}</span>
+            <span className="font-bold text-slate-900">
+              {hasActiveRoute ? formatDistance(distanceKm, distanceUnit) : 'No active route'}
+            </span>
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-600">
@@ -351,7 +362,7 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
           </div>
         )}
 
-        {/* Floating Simulation Play/Pause Toggle (only when route is active) */}
+        {/* Floating Simulation Play/Pause Toggle */}
         {hasActiveRoute && (
           <div className="absolute bottom-3 right-3 z-10 flex items-center gap-2">
             <button
@@ -382,11 +393,9 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
       {/* Footer Info Bar */}
       <div className="p-3 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-emerald-700 font-bold">✓ Google Maps API Connected</span>
-          <span>•</span>
+          <span className="text-emerald-700 font-bold">âœ“ OpenStreetMap &amp; PostGIS Spatial Engine Active</span>
+          <span>â€¢</span>
           <span>Geofence radius: 50m</span>
-          <span>•</span>
-          <span>Signal: Supabase WebSocket (18ms)</span>
         </div>
 
         <div className="flex items-center gap-3">

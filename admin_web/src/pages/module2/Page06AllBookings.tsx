@@ -1,26 +1,18 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { downloadCSV } from '../../utils/exportUtils';
-import { 
-  Search, 
-  Filter, 
-  Download, 
-  Plus, 
-  Calendar, 
-  MapPin, 
-  Clock, 
-  MoreVertical, 
-  Eye, 
-  UserCheck, 
-  CheckCircle2, 
-  AlertCircle,
-  XCircle,
-  FileText
+import {
+  Search,
+  Download,
+  Plus,
+  MapPin,
+  Clock,
+  Eye,
+  UserCheck,
 } from 'lucide-react';
-import { BookingStatus, Booking } from '../../types';
 
 export const Page06AllBookings: React.FC = () => {
-  const { bookings, navigateToPage, openAssignModal, setIsCreateJobModalOpen, updateBookingStatus, addToast, setSelectedBookingId } = useAdmin();
+  const { bookings, navigateToPage, openAssignModal, setIsCreateJobModalOpen, updateBookingStatus, addToast, setSelectedBookingId, formatCurrency } = useAdmin();
   const [selectedStatus, setSelectedStatus] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedBookings, setSelectedBookings] = useState<string[]>([]);
@@ -77,7 +69,7 @@ export const Page06AllBookings: React.FC = () => {
                 'Time': b.scheduleTime,
                 'Technician': b.technicianName,
                 'Status': b.status,
-                'Estimate': '$' + b.estimate
+                'Estimate': formatCurrency(b.estimate)
               })));
               addToast('All bookings exported to CSV spreadsheet!', 'success');
             }}
@@ -144,10 +136,14 @@ export const Page06AllBookings: React.FC = () => {
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold text-slate-700">{selectedBookings.length} selected</span>
               <button
-                onClick={() => {
-                  selectedBookings.forEach(id => updateBookingStatus(id, 'Completed'));
+                onClick={async () => {
+                  const targets = [...selectedBookings];
+                  const results = await Promise.all(targets.map(id => updateBookingStatus(id, 'Completed')));
+                  const okCount = results.filter(r => r.ok).length;
                   setSelectedBookings([]);
-                  addToast(`Marked ${selectedBookings.length} jobs as Completed`, 'success');
+                  if (okCount > 0) {
+                    addToast(`Completed ${okCount} of ${targets.length} selected job(s).`, 'success');
+                  }
                 }}
                 className="px-2.5 py-1 bg-emerald-100 text-emerald-800 font-bold text-xs rounded-lg hover:bg-emerald-200 cursor-pointer"
               >
@@ -240,7 +236,7 @@ export const Page06AllBookings: React.FC = () => {
                   </td>
 
                   <td className="py-3.5 px-4">
-                    <div className="font-extrabold text-slate-900">${b.estimate}</div>
+                    <div className="font-extrabold text-slate-900">{formatCurrency(b.estimate)}</div>
                     <span className={`inline-block px-1.5 py-0.2 rounded text-[10px] font-bold mt-0.5 ${
                       b.paymentStatus === 'Paid' ? 'bg-emerald-100 text-emerald-800' :
                       b.paymentStatus === 'Pending' ? 'bg-amber-100 text-amber-800' :

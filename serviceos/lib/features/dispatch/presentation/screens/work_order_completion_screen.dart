@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
+import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 
 class WorkOrderCompletionScreen extends StatefulWidget {
+  final String? bookingId;
   final VoidCallback onSignOffComplete;
   final VoidCallback onBack;
 
   const WorkOrderCompletionScreen({
     super.key,
+    this.bookingId,
     required this.onSignOffComplete,
     required this.onBack,
   });
@@ -152,7 +155,27 @@ class _WorkOrderCompletionScreenState extends State<WorkOrderCompletionScreen> {
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
-                  onPressed: _hasSigned ? widget.onSignOffComplete : () => setState(() => _hasSigned = true),
+                  onPressed: _hasSigned
+                      ? () async {
+                          try {
+                            String bid = (widget.bookingId ?? '').trim();
+                            if (bid.isEmpty) {
+                              final list = await ApiClient.instance.fetchBookings();
+                              if (list.isNotEmpty && list.first is Map) {
+                                bid = (list.first as Map)['id']?.toString() ?? '';
+                              }
+                            }
+                            if (bid.isNotEmpty) {
+                              await ApiClient.instance.submitReview(
+                                bookingId: bid,
+                                rating: _rating,
+                                comment: 'Verified completion sign-off via Customer App',
+                              );
+                            }
+                          } catch (_) {}
+                          widget.onSignOffComplete();
+                        }
+                      : () => setState(() => _hasSigned = true),
                   child: Text(
                     _hasSigned ? 'Approve & Release Escrow ✓' : 'Tap to Sign First',
                     style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),

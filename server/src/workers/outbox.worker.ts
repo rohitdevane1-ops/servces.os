@@ -1,9 +1,11 @@
 import pg from 'pg';
 import Stripe from 'stripe';
 import crypto from 'node:crypto';
-import { pool } from '../database/pool.js';
+import { pool, withTenantTransaction } from '../database/pool.js';
 import { env } from '../config/env.js';
 import { getStripe, isDefinitiveStripeError } from '../services/stripeClient.js';
+import { getTenantPaymentGateway, resolveTenantIntegrationSecrets } from '../services/paymentGateway.js';
+import { broadcastBookingToNearbyProviders } from '../modules/dispatch/dispatch.service.js';
 
 export interface OutboxJob {
   id: string;
@@ -46,66 +48,66 @@ export class OutboxWorker {
     this.workerId = opts.workerId ?? `worker-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
   }
 
+  private activeJobs = new Set<Promise<unknown>>();
+
   public start(): void {
     if (this.running) return;
     this.running = true;
     this.timer = setInterval(() => {
       if (!this.running || this.inFlight) return;
       this.inFlight = true;
-      this.processNextJob()
+      const p = this.processNextJob()
         .catch((err) => {
           console.error('[OutboxWorker Error]', err);
         })
         .finally(() => {
           this.inFlight = false;
+          this.activeJobs.delete(p);
         });
+      this.activeJobs.add(p);
     }, this.pollIntervalMs);
     if (typeof this.timer.unref === 'function') {
       this.timer.unref();
     }
   }
 
-  public stop(): void {
+  public nudge(): void {
+    if (!this.running || this.inFlight) return;
+    this.inFlight = true;
+    const p = this.processNextJob()
+      .catch(() => {})
+      .finally(() => {
+        this.inFlight = false;
+        this.activeJobs.delete(p);
+      });
+    this.activeJobs.add(p);
+  }
+
+  public async stop(): Promise<void> {
     this.running = false;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this.activeJobs.size > 0) {
+      await Promise.allSettled([...this.activeJobs]);
+    }
   }
 
   public async claimNextJob(): Promise<OutboxJob | null> {
     const res = await this.pool.query<OutboxJob>(
-      `UPDATE outbox_operations
-       SET status = 'PROCESSING',
-           locked_by = $1,
-           lease_expires_at = NOW() + ($2::text || ' milliseconds')::interval,
-           attempts = attempts + 1,
-           updated_at = NOW()
-       WHERE id = (
-         SELECT id FROM outbox_operations
-         WHERE (status = 'PENDING' AND next_attempt_at <= NOW())
-            OR (status = 'PROCESSING' AND lease_expires_at < NOW())
-         ORDER BY next_attempt_at ASC, created_at ASC
-         LIMIT 1
-         FOR UPDATE SKIP LOCKED
-       )
-       RETURNING id, tenant_id, aggregate_type, aggregate_id, operation_type, payload,
-                 idempotency_key, status, attempts, max_attempts, next_attempt_at,
-                 locked_by, lease_expires_at`,
+      `SELECT * FROM rls_claim_next_outbox_job($1, $2)`,
       [this.workerId, this.leaseMs]
     );
     return res.rows[0] ?? null;
   }
 
   public async renewLease(jobId: string): Promise<boolean> {
-    const res = await this.pool.query(
-      `UPDATE outbox_operations
-       SET lease_expires_at = NOW() + ($3::text || ' milliseconds')::interval,
-           updated_at = NOW()
-       WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'`,
+    const res = await this.pool.query<{ renewed: boolean }>(
+      `SELECT rls_renew_outbox_lease($1, $2, $3) AS renewed`,
       [jobId, this.workerId, this.leaseMs]
     );
-    return (res.rowCount ?? 0) === 1;
+    return res.rows[0]?.renewed === true;
   }
 
   public async processNextJob(): Promise<{ processed: boolean; jobId?: string; status?: string }> {
@@ -135,83 +137,138 @@ export class OutboxWorker {
         throw new Error(`Unsupported outbox operation type: ${job.operation_type}`);
       }
 
-      const stripe = getStripe(env.STRIPE_SECRET_KEY);
-      const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
-        amount: Number(payload.amountCents),
-        currency: (payload.currency || 'usd').toLowerCase(),
-        capture_method: 'manual',
-        metadata: {
-          tenantId: payload.tenantId,
-          bookingId: payload.bookingId,
-          bookingRef: payload.bookingRef,
-          customerId: payload.customerId,
-          transactionId: payload.transactionId,
-        },
-      };
-      if (payload.paymentMethodId) {
-        paymentIntentParams.payment_method = payload.paymentMethodId;
-        paymentIntentParams.confirm = true;
-        paymentIntentParams.return_url = 'https://serviceproos.com/booking/complete';
-      }
+      const secrets = await resolveTenantIntegrationSecrets(job.tenant_id, this.pool);
+      let pi: { id: string; status: string };
+      const useExternalNonStripe = env.PAYMENT_GATEWAY === 'paytabs' || env.PAYMENT_GATEWAY === 'telr';
 
-      const pi = await stripe.paymentIntents.create(paymentIntentParams, {
-        idempotencyKey: job.idempotency_key,
-      });
+      if (useExternalNonStripe) {
+        const { gateway } = await getTenantPaymentGateway(job.tenant_id, env.PAYMENT_GATEWAY, this.pool);
+        const preAuth = await gateway.createPreAuth({
+          amountCents: Number(payload.amountCents),
+          currency: (payload.currency || env.DEFAULT_CURRENCY_CODE || 'aed').toUpperCase(),
+          idempotencyKey: job.idempotency_key,
+          paymentMethodId: payload.paymentMethodId || undefined,
+          metadata: {
+            tenantId: payload.tenantId,
+            bookingId: payload.bookingId,
+            bookingRef: payload.bookingRef,
+            customerId: payload.customerId,
+            transactionId: payload.transactionId,
+          },
+        });
+        pi = { id: preAuth.providerReferenceId, status: preAuth.status };
+      } else {
+        const stripe = getStripe(secrets.stripeSecretKey ?? env.STRIPE_SECRET_KEY);
+        const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
+          amount: Number(payload.amountCents),
+          currency: (payload.currency || env.DEFAULT_CURRENCY_CODE || 'aed').toLowerCase(),
+          capture_method: 'manual',
+          metadata: {
+            tenantId: payload.tenantId,
+            bookingId: payload.bookingId,
+            bookingRef: payload.bookingRef,
+            customerId: payload.customerId,
+            transactionId: payload.transactionId,
+          },
+        };
+        if (payload.paymentMethodId) {
+          paymentIntentParams.payment_method = payload.paymentMethodId;
+          paymentIntentParams.confirm = true;
+          paymentIntentParams.return_url = `${env.APP_BASE_URL.replace(/\/$/, '')}/booking/complete`;
+        }
+
+        const createdPi = await stripe.paymentIntents.create(paymentIntentParams, {
+          idempotencyKey: job.idempotency_key,
+        });
+        pi = { id: createdPi.id, status: createdPi.status };
+      }
 
       if (leaseLost) {
         return { processed: true, jobId: job.id, status: 'LEASE_LOST' };
       }
 
-      const client = await this.pool.connect();
-      try {
-        await client.query('BEGIN');
-
-        const completeRes = await client.query(
-          `UPDATE outbox_operations
-           SET status = 'COMPLETED',
-               completed_at = NOW(),
-               lease_expires_at = NULL,
-               last_error = NULL,
-               updated_at = NOW()
-           WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
-           RETURNING id`,
-          [job.id, this.workerId]
-        );
-
-        if (completeRes.rowCount === 0) {
-          await client.query('ROLLBACK');
-          return { processed: true, jobId: job.id, status: 'LEASE_LOST' };
-        }
-
-        await client.query(
-          `UPDATE payment_transactions
-           SET stripe_payment_intent_id = COALESCE(stripe_payment_intent_id, $1),
-               status = CASE
-                 WHEN status = 'PENDING' AND $2 = 'requires_capture' THEN 'REQUIRES_CAPTURE'
-                 ELSE status
-               END,
-               updated_at = NOW()
-           WHERE id = $3 AND tenant_id = $4`,
-          [pi.id, pi.status, payload.transactionId, payload.tenantId]
-        );
-
-        if (pi.status === 'requires_capture') {
-          await client.query(
-            `UPDATE invoices
-             SET status = 'AUTHORIZED', updated_at = NOW()
-             WHERE id = $1 AND tenant_id = $2 AND status = 'DRAFT'`,
-            [payload.invoiceId, payload.tenantId]
+      const txOutcome = await withTenantTransaction<'LEASE_LOST' | 'CANCELLED' | 'COMPLETED'>(
+        job.tenant_id,
+        async (client) => {
+          const completeRes = await client.query(
+            `UPDATE outbox_operations
+             SET status = 'COMPLETED',
+                 completed_at = NOW(),
+                 lease_expires_at = NULL,
+                 last_error = NULL,
+                 updated_at = NOW()
+             WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
+             RETURNING id`,
+            [job.id, this.workerId]
           );
-        }
 
-        await client.query('COMMIT');
-        return { processed: true, jobId: job.id, status: 'COMPLETED' };
-      } catch (dbErr) {
-        await client.query('ROLLBACK');
-        throw dbErr;
-      } finally {
-        client.release();
+          if (completeRes.rowCount === 0) {
+            return 'LEASE_LOST';
+          }
+
+          // Check if booking was cancelled while this outbox job was PROCESSING
+          const bkCheck = await client.query<{ status: string }>(
+            `SELECT status FROM bookings WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+            [payload.bookingId, payload.tenantId]
+          );
+          if (bkCheck.rows[0]?.status === 'CANCELLED') {
+            await client.query(
+              `UPDATE outbox_operations SET status = 'CANCELLED', updated_at = NOW() WHERE id = $1`,
+              [job.id]
+            );
+            await client.query(
+              `UPDATE payment_transactions
+               SET stripe_payment_intent_id = COALESCE(stripe_payment_intent_id, $1),
+                   status = 'VOIDED',
+                   updated_at = NOW()
+               WHERE id = $2 AND tenant_id = $3`,
+              [pi.id, payload.transactionId, payload.tenantId]
+            );
+            return 'CANCELLED';
+          }
+
+          await client.query(
+            `UPDATE payment_transactions
+             SET stripe_payment_intent_id = COALESCE(stripe_payment_intent_id, $1),
+                 status = CASE
+                   WHEN status = 'PENDING' AND $2 = 'requires_capture' THEN 'REQUIRES_CAPTURE'
+                   ELSE status
+                 END,
+                 updated_at = NOW()
+             WHERE id = $3 AND tenant_id = $4`,
+            [pi.id, pi.status, payload.transactionId, payload.tenantId]
+          );
+
+          if (pi.status === 'requires_capture') {
+            await client.query(
+              `UPDATE invoices
+               SET status = 'AUTHORIZED', updated_at = NOW()
+               WHERE id = $1 AND tenant_id = $2 AND status = 'DRAFT'`,
+              [payload.invoiceId, payload.tenantId]
+            );
+            await broadcastBookingToNearbyProviders(client, payload.tenantId, payload.bookingId);
+          }
+
+          return 'COMPLETED';
+        },
+        this.pool
+      );
+
+      if (txOutcome === 'LEASE_LOST') {
+        return { processed: true, jobId: job.id, status: 'LEASE_LOST' };
       }
+      if (txOutcome === 'CANCELLED') {
+        try {
+          if (!useExternalNonStripe) {
+            const stripe = getStripe(secrets.stripeSecretKey ?? env.STRIPE_SECRET_KEY);
+            await stripe.paymentIntents.cancel(pi.id);
+          }
+        } catch {
+          // Best-effort cancellation of PI for already-cancelled booking
+        }
+        return { processed: true, jobId: job.id, status: 'CANCELLED' };
+      }
+      return { processed: true, jobId: job.id, status: 'COMPLETED' };
     } catch (err: any) {
       if (leaseLost) {
         return { processed: true, jobId: job.id, status: 'LEASE_LOST' };
@@ -221,82 +278,91 @@ export class OutboxWorker {
       const errMsg = String(err?.message || 'Unknown Stripe outbox error');
 
       if (isDefinitiveStripeError(err)) {
-        const client = await this.pool.connect();
-        try {
-          await client.query('BEGIN');
-          const failRes = await client.query(
-            `UPDATE outbox_operations
-             SET status = 'FAILED',
-                 last_error = $3,
-                 lease_expires_at = NULL,
-                 updated_at = NOW()
-             WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
-             RETURNING id`,
-            [job.id, this.workerId, errMsg]
-          );
+        await withTenantTransaction(
+          job.tenant_id,
+          async (client) => {
+            const failRes = await client.query(
+              `UPDATE outbox_operations
+               SET status = 'FAILED',
+                   last_error = $3,
+                   lease_expires_at = NULL,
+                   updated_at = NOW()
+               WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
+               RETURNING id`,
+              [job.id, this.workerId, errMsg]
+            );
 
-          if (failRes.rowCount === 1) {
-            await client.query(
-              `UPDATE payment_transactions
-               SET status = 'FAILED', error_message = $1, updated_at = NOW()
-               WHERE id = $2 AND status = 'PENDING'`,
-              [errMsg, payload.transactionId]
-            );
-            await client.query(
-              `UPDATE invoices
-               SET status = 'VOID', updated_at = NOW()
-               WHERE id = $1 AND status = 'DRAFT'`,
-              [payload.invoiceId]
-            );
-            await client.query(
-              `UPDATE bookings
-               SET status = 'CANCELLED', cancellation_reason = $1, updated_at = NOW()
-               WHERE id = $2 AND status = 'REQUESTED'`,
-              [`Payment authorization declined: ${errMsg}`, payload.bookingId]
-            );
-          }
-
-          await client.query('COMMIT');
-          return { processed: true, jobId: job.id, status: 'FAILED' };
-        } catch (dbErr) {
-          await client.query('ROLLBACK');
-          throw dbErr;
-        } finally {
-          client.release();
-        }
+            if (failRes.rowCount === 1) {
+              await client.query(
+                `UPDATE payment_transactions
+                 SET status = 'FAILED', error_message = $1, updated_at = NOW()
+                 WHERE id = $2 AND status = 'PENDING'`,
+                [errMsg, payload.transactionId]
+              );
+              await client.query(
+                `UPDATE invoices
+                 SET status = 'VOID', updated_at = NOW()
+                 WHERE id = $1 AND status = 'DRAFT'`,
+                [payload.invoiceId]
+              );
+              await client.query(
+                `UPDATE bookings
+                 SET status = 'CANCELLED', cancellation_reason = $1, updated_at = NOW()
+                 WHERE id = $2 AND status = 'REQUESTED'`,
+                [`Payment authorization declined: ${errMsg}`, payload.bookingId]
+              );
+            }
+          },
+          this.pool
+        );
+        return { processed: true, jobId: job.id, status: 'FAILED' };
       }
 
       if (job.attempts >= job.max_attempts) {
-        const recRes = await this.pool.query(
-          `UPDATE outbox_operations
-           SET status = 'REQUIRES_RECONCILIATION',
-               last_error = $3,
-               lease_expires_at = NULL,
-               updated_at = NOW()
-           WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
-           RETURNING id`,
-          [job.id, this.workerId, errMsg]
+        const recCount = await withTenantTransaction(
+          job.tenant_id,
+          async (client) => {
+            const recRes = await client.query(
+              `UPDATE outbox_operations
+               SET status = 'REQUIRES_RECONCILIATION',
+                   last_error = $3,
+                   lease_expires_at = NULL,
+                   updated_at = NOW()
+               WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
+               RETURNING id`,
+              [job.id, this.workerId, errMsg]
+            );
+            return recRes.rowCount ?? 0;
+          },
+          this.pool
         );
-        if (recRes.rowCount === 0) {
+        if (recCount === 0) {
           return { processed: true, jobId: job.id, status: 'LEASE_LOST' };
         }
         return { processed: true, jobId: job.id, status: 'REQUIRES_RECONCILIATION' };
       }
 
       const delayMs = this.baseBackoffMs * Math.pow(2, Math.max(0, job.attempts - 1));
-      const retryRes = await this.pool.query(
-        `UPDATE outbox_operations
-         SET status = 'PENDING',
-             locked_by = NULL,
-             lease_expires_at = NULL,
-             last_error = $3,
-             next_attempt_at = NOW() + ($4::text || ' milliseconds')::interval,
-             updated_at = NOW()
-         WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
-         RETURNING id`,
-        [job.id, this.workerId, errMsg, delayMs]
+      const retryCount = await withTenantTransaction(
+        job.tenant_id,
+        async (client) => {
+          const retryRes = await client.query(
+            `UPDATE outbox_operations
+             SET status = 'PENDING',
+                 locked_by = NULL,
+                 lease_expires_at = NULL,
+                 last_error = $3,
+                 next_attempt_at = NOW() + ($4::text || ' milliseconds')::interval,
+                 updated_at = NOW()
+             WHERE id = $1 AND locked_by = $2 AND status = 'PROCESSING'
+             RETURNING id`,
+            [job.id, this.workerId, errMsg, delayMs]
+          );
+          return retryRes.rowCount ?? 0;
+        },
+        this.pool
       );
-      if (retryRes.rowCount === 0) {
+      if (retryCount === 0) {
         return { processed: true, jobId: job.id, status: 'LEASE_LOST' };
       }
       return { processed: true, jobId: job.id, status: 'RETRY_SCHEDULED' };
@@ -306,4 +372,6 @@ export class OutboxWorker {
   }
 }
 
-export const outboxWorker = new OutboxWorker(pool);
+export const outboxWorker = new OutboxWorker(pool, {
+  pollIntervalMs: env.OUTBOX_POLL_INTERVAL_MS,
+});

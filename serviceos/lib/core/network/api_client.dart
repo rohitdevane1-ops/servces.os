@@ -1,10 +1,10 @@
-import 'dart:convert';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// ServiceOS — Unified Fastify REST API Client (Dio)
-/// Handles JWT token lifecycle, refresh rotation, and tenant isolation
+/// Handles JWT token lifecycle, refresh rotation, tenant config, and demo sandbox isolation.
 class ApiClient {
   static ApiClient? _instance;
   static ApiClient get instance => _instance ??= ApiClient._();
@@ -21,19 +21,47 @@ class ApiClient {
         : 'http://10.0.2.2:3000/api/v1',
   );
 
+  static const bool _compiledDemoMode = bool.fromEnvironment('DEMO_MODE', defaultValue: false);
+
   String? _tenantId = const String.fromEnvironment('TENANT_ID', defaultValue: '');
+  Future<String?>? _refreshInFlight;
+
+  bool _isDemoMode = _compiledDemoMode;
+  String _currencyCode = 'AED';
+  String _currencySymbol = 'AED ';
+  String _distanceUnit = 'km';
+  double _vatPercent = 5.0;
+  String _taxName = 'VAT';
+
+  bool get isDemoMode => _isDemoMode;
+  String get currencyCode => _currencyCode;
+  String get currencySymbol => _currencySymbol;
+  String get distanceUnit => _distanceUnit;
+  double get vatPercent => _vatPercent;
+  String get taxName => _taxName;
+
+  String formatCurrency(num amount) {
+    final safe = amount.isFinite ? amount.toDouble() : 0.0;
+    final symbol = _currencySymbol.trim();
+    if (symbol == '\$' || symbol == '€' || symbol == '£' || symbol == '₹') {
+      return '$symbol${safe.toStringAsFixed(2)}';
+    }
+    return '${_currencyCode.trim()} ${safe.toStringAsFixed(2)}';
+  }
 
   ApiClient._() {
+    if (kReleaseMode && !_defaultBaseUrl.startsWith('https://')) {
+      throw StateError('API_BASE_URL must use HTTPS in release builds (got: $_defaultBaseUrl)');
+    }
     _dio = Dio(
       BaseOptions(
         baseUrl: _defaultBaseUrl,
         connectTimeout: const Duration(seconds: 15),
         receiveTimeout: const Duration(seconds: 15),
         headers: {
-          'Content-Type': 'application/json',
           'Accept': 'application/json',
           'x-client-platform': 'flutter',
-          if (_tenantId != null && _tenantId!.isNotEmpty && _tenantId != '00000000-0000-0000-0000-000000000001')
+          if (_tenantId != null && _tenantId!.isNotEmpty)
             'x-tenant-id': _tenantId!,
         },
       ),
@@ -43,6 +71,11 @@ class ApiClient {
       InterceptorsWrapper(
         onRequest: (options, handler) async {
           options.headers['x-client-platform'] = 'flutter';
+          if (options.data != null && options.data is! FormData) {
+            options.headers['Content-Type'] = 'application/json';
+          } else {
+            options.headers.remove('Content-Type');
+          }
           final token = await _storage.read(key: 'serviceos_access_token');
           if (token != null && token.isNotEmpty) {
             options.headers['Authorization'] = 'Bearer $token';
@@ -50,38 +83,26 @@ class ApiClient {
           return handler.next(options);
         },
         onError: (DioException error, handler) async {
-          if (error.response?.statusCode == 401) {
-            final refreshToken = await _storage.read(key: 'serviceos_refresh_token');
-            if (refreshToken != null && refreshToken.isNotEmpty) {
-              try {
-                final refreshResponse = await _dio.post(
-                  '/auth/refresh',
-                  data: {'refreshToken': refreshToken},
-                );
-
-                if (refreshResponse.statusCode == 200 &&
-                    refreshResponse.data['success'] == true) {
-                  final newAccess = refreshResponse.data['data']['accessToken'];
-                  final newRefresh = refreshResponse.data['data']['refreshToken'];
-
-                  await _storage.write(key: 'serviceos_access_token', value: newAccess);
-                  await _storage.write(key: 'serviceos_refresh_token', value: newRefresh);
-
-                  // Retry original request with new token
-                  final opts = error.requestOptions;
-                  opts.headers['Authorization'] = 'Bearer $newAccess';
-                  final cloneReq = await _dio.request(
-                    opts.path,
-                    options: Options(method: opts.method, headers: opts.headers),
-                    data: opts.data,
-                    queryParameters: opts.queryParameters,
-                  );
-                  return handler.resolve(cloneReq);
-                }
-              } catch (_) {
-                await _storage.delete(key: 'serviceos_access_token');
-                await _storage.delete(key: 'serviceos_refresh_token');
-              }
+          final reqPath = error.requestOptions.path;
+          final alreadyRetried = error.requestOptions.extra['_retried'] == true;
+          if (error.response?.statusCode == 401 &&
+              !alreadyRetried &&
+              reqPath != '/auth/refresh' &&
+              reqPath != '/auth/login' &&
+              reqPath != '/auth/demo-login') {
+            final newAccess = await (_refreshInFlight ??= _performSingleFlightRefresh());
+            _refreshInFlight = null;
+            if (newAccess != null && newAccess.isNotEmpty) {
+              final opts = error.requestOptions;
+              opts.headers['Authorization'] = 'Bearer $newAccess';
+              opts.extra['_retried'] = true;
+              final cloneReq = await _dio.request(
+                opts.path,
+                options: Options(method: opts.method, headers: opts.headers, extra: opts.extra),
+                data: opts.data,
+                queryParameters: opts.queryParameters,
+              );
+              return handler.resolve(cloneReq);
             }
           }
           return handler.next(error);
@@ -90,9 +111,40 @@ class ApiClient {
     );
   }
 
+  Future<String?> _performSingleFlightRefresh() async {
+    final refreshToken = await _storage.read(key: 'serviceos_refresh_token');
+    if (refreshToken == null || refreshToken.isEmpty) return null;
+    try {
+      final refreshResponse = await _dio.post(
+        '/auth/refresh',
+        data: {'refreshToken': refreshToken},
+        options: Options(extra: {'_retried': true}),
+      );
+      final respData = refreshResponse.data is Map ? refreshResponse.data['data'] : null;
+      final tokensObj = respData is Map && respData['tokens'] is Map ? respData['tokens'] : respData;
+      final newAccess = tokensObj is Map ? tokensObj['accessToken']?.toString() : null;
+      final newRefresh = tokensObj is Map ? tokensObj['refreshToken']?.toString() : null;
+      if (refreshResponse.statusCode == 200 &&
+          refreshResponse.data['success'] == true &&
+          newAccess != null &&
+          newAccess.isNotEmpty) {
+        await _storage.write(key: 'serviceos_access_token', value: newAccess);
+        if (newRefresh != null && newRefresh.isNotEmpty) {
+          await _storage.write(key: 'serviceos_refresh_token', value: newRefresh);
+        }
+        return newAccess;
+      }
+    } catch (_) {
+      await _storage.delete(key: 'serviceos_access_token');
+      await _storage.delete(key: 'serviceos_refresh_token');
+      await _storage.delete(key: 'serviceos_user_role');
+    }
+    return null;
+  }
+
   void setTenantId(String? tenantId) {
     _tenantId = tenantId;
-    if (tenantId != null && tenantId.isNotEmpty && tenantId != '00000000-0000-0000-0000-000000000001') {
+    if (tenantId != null && tenantId.isNotEmpty) {
       _dio.options.headers['x-tenant-id'] = tenantId;
     } else {
       _dio.options.headers.remove('x-tenant-id');
@@ -101,7 +153,57 @@ class ApiClient {
 
   Future<String?> getAccessToken() => _storage.read(key: 'serviceos_access_token');
   Future<String?> getRefreshToken() => _storage.read(key: 'serviceos_refresh_token');
-  Future<void> logout() => _storage.deleteAll();
+  Future<String?> getSavedUserRole() => _storage.read(key: 'serviceos_user_role');
+
+  Future<void> _saveAuthPayload(Map<String, dynamic>? data) async {
+    if (data == null) return;
+    final accessToken = data['accessToken'] ?? (data['tokens'] is Map ? data['tokens']['accessToken'] : null);
+    final refreshToken = data['refreshToken'] ?? (data['tokens'] is Map ? data['tokens']['refreshToken'] : null);
+    final userObj = data['user'] is Map ? data['user'] as Map : null;
+    final role = userObj?['role']?.toString();
+    final tenant = userObj?['tenantId']?.toString() ?? data['tenantId']?.toString();
+
+    if (accessToken != null) {
+      await _storage.write(key: 'serviceos_access_token', value: accessToken.toString());
+    }
+    if (refreshToken != null) {
+      await _storage.write(key: 'serviceos_refresh_token', value: refreshToken.toString());
+    }
+    if (role != null && role.isNotEmpty) {
+      await _storage.write(key: 'serviceos_user_role', value: role.toUpperCase());
+    }
+    if (tenant != null && tenant.isNotEmpty) {
+      setTenantId(tenant);
+    }
+  }
+
+  // ==========================================================================
+  // SYSTEM RUNTIME & TENANT CONFIG
+  // ==========================================================================
+  Future<Map<String, dynamic>> fetchSystemConfig() async {
+    try {
+      final response = await _dio.get('/system/config');
+      if (response.data is Map && response.data['success'] == true) {
+        final data = Map<String, dynamic>.from(response.data['data'] as Map? ?? {});
+        if (data['demoMode'] is bool) {
+          _isDemoMode = _compiledDemoMode || (data['demoMode'] as bool);
+        }
+        final tenant = data['tenant'] is Map ? Map<String, dynamic>.from(data['tenant'] as Map) : null;
+        if (tenant != null) {
+          _currencyCode = (tenant['currencyCode'] ?? data['defaultCurrency'] ?? 'AED').toString();
+          _currencySymbol = (tenant['currencySymbol'] ?? '$_currencyCode ').toString();
+          _distanceUnit = (tenant['distanceUnit'] ?? data['defaultDistanceUnit'] ?? 'km').toString();
+          _taxName = (tenant['taxName'] ?? data['defaultTaxName'] ?? 'VAT').toString();
+          final vatVal = tenant['vatPercent'] ?? data['defaultVatPercent'];
+          if (vatVal != null) {
+            _vatPercent = double.tryParse(vatVal.toString()) ?? 5.0;
+          }
+        }
+        return data;
+      }
+    } catch (_) {}
+    return {};
+  }
 
   // ==========================================================================
   // AUTHENTICATION
@@ -113,20 +215,27 @@ class ApiClient {
       if (mfaCode != null) 'mfaCode': mfaCode,
     });
 
-    if (response.data['success'] == true) {
-      final data = response.data['data'] as Map<String, dynamic>?;
-      if (data != null) {
-        final accessToken = data['accessToken'] ?? data['tokens']?['accessToken'];
-        final refreshToken = data['refreshToken'] ?? data['tokens']?['refreshToken'];
-        if (accessToken != null) {
-          await _storage.write(key: 'serviceos_access_token', value: accessToken.toString());
-        }
-        if (refreshToken != null) {
-          await _storage.write(key: 'serviceos_refresh_token', value: refreshToken.toString());
-        }
-      }
+    if (response.data is Map && response.data['success'] == true) {
+      final data = response.data['data'] is Map
+          ? Map<String, dynamic>.from(response.data['data'] as Map)
+          : null;
+      await _saveAuthPayload(data);
     }
-    return response.data;
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> demoLogin(String role) async {
+    final normalizedRole = role.toUpperCase() == 'TECHNICIAN' ? 'TECHNICIAN' : 'CUSTOMER';
+    final response = await _dio.post('/auth/demo-login', data: {
+      'role': normalizedRole,
+    });
+    if (response.data is Map && response.data['success'] == true) {
+      final data = response.data['data'] is Map
+          ? Map<String, dynamic>.from(response.data['data'] as Map)
+          : null;
+      await _saveAuthPayload(data);
+    }
+    return Map<String, dynamic>.from(response.data as Map);
   }
 
   Future<Map<String, dynamic>> verifyMfa(String mfaSessionToken, String totpCode) async {
@@ -135,20 +244,28 @@ class ApiClient {
       'totpCode': totpCode,
     });
 
-    if (response.data['success'] == true) {
-      final data = response.data['data'] as Map<String, dynamic>?;
-      if (data != null) {
-        final accessToken = data['accessToken'] ?? data['tokens']?['accessToken'];
-        final refreshToken = data['refreshToken'] ?? data['tokens']?['refreshToken'];
-        if (accessToken != null) {
-          await _storage.write(key: 'serviceos_access_token', value: accessToken.toString());
-        }
-        if (refreshToken != null) {
-          await _storage.write(key: 'serviceos_refresh_token', value: refreshToken.toString());
-        }
-      }
+    if (response.data is Map && response.data['success'] == true) {
+      final data = response.data['data'] is Map
+          ? Map<String, dynamic>.from(response.data['data'] as Map)
+          : null;
+      await _saveAuthPayload(data);
     }
-    return response.data;
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> verifyMfaRecovery(String mfaSessionToken, String backupCode) async {
+    final response = await _dio.post('/auth/mfa/recovery', data: {
+      'mfaSessionToken': mfaSessionToken,
+      'backupCode': backupCode,
+    });
+
+    if (response.data is Map && response.data['success'] == true) {
+      final data = response.data['data'] is Map
+          ? Map<String, dynamic>.from(response.data['data'] as Map)
+          : null;
+      await _saveAuthPayload(data);
+    }
+    return Map<String, dynamic>.from(response.data as Map);
   }
 
   Future<void> logout() async {
@@ -160,14 +277,24 @@ class ApiClient {
     }
     await _storage.delete(key: 'serviceos_access_token');
     await _storage.delete(key: 'serviceos_refresh_token');
+    await _storage.delete(key: 'serviceos_user_role');
   }
 
   Future<Map<String, dynamic>> getMe() async {
     final response = await _dio.get('/auth/me');
-    return response.data;
+    return Map<String, dynamic>.from(response.data as Map);
   }
 
-  /// Refreshes the active session using the persisted refresh token.
+  Future<Map<String, dynamic>> getPaymentIntent(String bookingId) async {
+    final response = await _dio.get('/bookings/$bookingId/payment-intent');
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> confirmPayment(String bookingId) async {
+    final response = await _dio.post('/bookings/$bookingId/confirm-payment', data: {});
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
   Future<Map<String, dynamic>> refreshToken() async {
     final token = await getRefreshToken();
     if (token == null || token.trim().isEmpty) {
@@ -176,16 +303,11 @@ class ApiClient {
 
     try {
       final response = await _dio.post('/auth/refresh', data: {'refreshToken': token.trim()});
-      if (response.data['success'] == true) {
-        final data = response.data['data'];
-        final newAccess = data['accessToken'] ?? data['tokens']?['accessToken'];
-        final newRefresh = data['refreshToken'] ?? data['tokens']?['refreshToken'];
-        if (newAccess != null) {
-          await _storage.write(key: 'serviceos_access_token', value: newAccess.toString());
-        }
-        if (newRefresh != null) {
-          await _storage.write(key: 'serviceos_refresh_token', value: newRefresh.toString());
-        }
+      if (response.data is Map && response.data['success'] == true) {
+        final data = response.data['data'] is Map
+            ? Map<String, dynamic>.from(response.data['data'] as Map)
+            : null;
+        await _saveAuthPayload(data);
         return {'success': true, 'data': data};
       }
       return {'success': false, 'error': response.data['error']};
@@ -212,7 +334,15 @@ class ApiClient {
     try {
       final me = await getMe();
       if (me['success'] == true && me['data']?['user'] != null) {
-        return me['data']['user'] as Map<String, dynamic>;
+        final userMap = Map<String, dynamic>.from(me['data']['user'] as Map);
+        final role = (userMap['role'] ?? '').toString().toUpperCase();
+        // GEMINI.md Rule 1: Strictly 2 Mobile Personas (CUSTOMER & TECHNICIAN only).
+        if (role != 'CUSTOMER' && role != 'TECHNICIAN') {
+          await logout();
+          return null;
+        }
+        await _storage.write(key: 'serviceos_user_role', value: role);
+        return userMap;
       }
     } catch (_) {
       try {
@@ -220,7 +350,14 @@ class ApiClient {
         if (refreshed['success'] == true) {
           final me = await getMe();
           if (me['success'] == true && me['data']?['user'] != null) {
-            return me['data']['user'] as Map<String, dynamic>;
+            final userMap = Map<String, dynamic>.from(me['data']['user'] as Map);
+            final role = (userMap['role'] ?? '').toString().toUpperCase();
+            if (role != 'CUSTOMER' && role != 'TECHNICIAN') {
+              await logout();
+              return null;
+            }
+            await _storage.write(key: 'serviceos_user_role', value: role);
+            return userMap;
           }
         }
       } catch (_) {}
@@ -234,18 +371,19 @@ class ApiClient {
   // ==========================================================================
   Future<List<dynamic>> fetchCategories() async {
     final response = await _dio.get('/services/categories');
-    return response.data['data'] ?? [];
+    return response.data['data'] as List<dynamic>? ?? [];
   }
 
   Future<List<dynamic>> fetchServices({String? categoryId, String? search}) async {
     final response = await _dio.get(
       '/services',
       queryParameters: {
-        if (categoryId != null) 'categoryId': categoryId,
-        if (search != null) 'search': search,
+        if (categoryId != null && categoryId.isNotEmpty && categoryId.toLowerCase() != 'all')
+          'categoryId': categoryId,
+        if (search != null && search.trim().isNotEmpty) 'search': search.trim(),
       },
     );
-    return response.data['data'] ?? [];
+    return response.data['data'] as List<dynamic>? ?? [];
   }
 
   // ==========================================================================
@@ -253,12 +391,36 @@ class ApiClient {
   // ==========================================================================
   Future<Map<String, dynamic>> createBooking(Map<String, dynamic> bookingData) async {
     final response = await _dio.post('/bookings', data: bookingData);
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 
   Future<Map<String, dynamic>> fetchBookingPaymentIntent(String bookingId) async {
     final response = await _dio.get('/bookings/$bookingId/payment-intent');
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
+  }
+
+  Future<Map<String, dynamic>> waitForPaymentIntentAndConfirm(
+    String bookingId, {
+    int maxAttempts = 10,
+    Duration pollDelay = const Duration(milliseconds: 500),
+  }) async {
+    for (int i = 0; i < maxAttempts; i++) {
+      try {
+        final intent = await fetchBookingPaymentIntent(bookingId);
+        final outboxStatus = (intent['outboxStatus'] ?? '').toString().toUpperCase();
+        final piId = intent['paymentIntentId']?.toString() ?? '';
+        if (piId.isNotEmpty || outboxStatus == 'COMPLETED') {
+          break;
+        }
+        if (outboxStatus == 'FAILED' || (intent['status']?.toString().toUpperCase() == 'FAILED')) {
+          throw Exception(intent['error']?.toString() ?? 'Payment pre-authorization failed');
+        }
+      } catch (_) {
+        if (i == maxAttempts - 1) rethrow;
+      }
+      await Future.delayed(pollDelay);
+    }
+    return confirmPayment(bookingId);
   }
 
   Future<List<dynamic>> fetchBookings({String? status, int page = 1, int limit = 20}) async {
@@ -270,17 +432,17 @@ class ApiClient {
         'limit': limit,
       },
     );
-    return response.data['data'] ?? [];
+    return response.data['data'] as List<dynamic>? ?? [];
   }
 
   Future<Map<String, dynamic>> fetchBookingDetails(String bookingId) async {
     final response = await _dio.get('/bookings/$bookingId');
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 
   Future<Map<String, dynamic>> cancelBooking(String bookingId, String reason) async {
     final response = await _dio.post('/bookings/$bookingId/cancel', data: {'reason': reason});
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 
   Future<Map<String, dynamic>> verifyArrivalPin(String bookingId, String safetyPin) async {
@@ -288,7 +450,7 @@ class ApiClient {
       '/bookings/$bookingId/verify-arrival',
       data: {'safetyPin': safetyPin},
     );
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 
   Future<Map<String, dynamic>> completeWorkOrder(
@@ -307,7 +469,25 @@ class ApiClient {
         if (workSummaryNotes != null) 'workSummaryNotes': workSummaryNotes,
       },
     );
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
+  }
+
+  // ==========================================================================
+  // MEDIA UPLOAD (BEFORE/AFTER PHOTOS & SIGNATURES)
+  // ==========================================================================
+  Future<String?> uploadMediaBytes(Uint8List bytes, String filename, {String mimeType = 'image/png'}) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(
+        bytes,
+        filename: filename,
+      ),
+    });
+    final response = await _dio.post('/uploads', data: formData);
+    if (response.data is Map && response.data['success'] == true) {
+      final data = response.data['data'] as Map?;
+      return data?['url']?.toString();
+    }
+    return null;
   }
 
   // ==========================================================================
@@ -328,12 +508,12 @@ class ApiClient {
         if (tradeCategory != null) 'tradeCategory': tradeCategory,
       },
     );
-    return response.data['data'] ?? [];
+    return response.data['data'] as List<dynamic>? ?? [];
   }
 
   Future<List<dynamic>> fetchPendingBroadcasts() async {
     final response = await _dio.get('/dispatch/broadcasts/pending');
-    return response.data['data'] ?? [];
+    return response.data['data'] as List<dynamic>? ?? [];
   }
 
   Future<Map<String, dynamic>> acceptBroadcast(String broadcastId) async {
@@ -341,7 +521,7 @@ class ApiClient {
       '/dispatch/broadcasts/accept',
       data: {'broadcastId': broadcastId},
     );
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 
   Future<Map<String, dynamic>> declineBroadcast(String broadcastId, {String? reason}) async {
@@ -352,7 +532,7 @@ class ApiClient {
         if (reason != null) 'reason': reason,
       },
     );
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 
   // ==========================================================================
@@ -382,6 +562,11 @@ class ApiClient {
     );
   }
 
+  Future<Map<String, dynamic>> fetchTechnicianEarnings() async {
+    final response = await _dio.get('/crm/technicians/me/earnings');
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
+  }
+
   // ==========================================================================
   // REVIEWS & SUPPORT
   // ==========================================================================
@@ -398,12 +583,12 @@ class ApiClient {
         if (comment != null) 'comment': comment,
       },
     );
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 
   Future<List<dynamic>> fetchTickets() async {
     final response = await _dio.get('/support/tickets');
-    return response.data['data'] ?? [];
+    return response.data['data'] as List<dynamic>? ?? [];
   }
 
   Future<Map<String, dynamic>> openSupportTicket({
@@ -423,6 +608,6 @@ class ApiClient {
         if (bookingId != null) 'bookingId': bookingId,
       },
     );
-    return response.data['data'] ?? {};
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 }

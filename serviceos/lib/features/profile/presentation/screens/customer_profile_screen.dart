@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 
 /// Screen C36, C37, C38, C39: Customer Profile, Addresses, Payment Methods & Theme Engine
@@ -31,6 +32,27 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
 
   final List<Map<String, dynamic>> _addresses = [];
   final List<Map<String, dynamic>> _cards = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    try {
+      final res = await ApiClient.instance.getMe();
+      if (res['success'] == true && res['data'] is Map && mounted) {
+        final rawData = res['data'] as Map<String, dynamic>;
+        final userMap = rawData['user'] is Map ? Map<String, dynamic>.from(rawData['user'] as Map) : rawData;
+        setState(() {
+          _name = (userMap['fullName'] ?? userMap['full_name'] ?? userMap['email'] ?? '').toString();
+          _email = (userMap['email'] ?? '').toString();
+          _phone = (userMap['phone'] ?? '').toString();
+        });
+      }
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -138,7 +160,7 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
                 children: [
                   CircleAvatar(
                     radius: 36,
-                    backgroundColor: (isDark ? AppColors.nightPrimary : AppColors.dayPrimary).withValues(alpha: 0.14),
+                    backgroundColor: (isDark ? AppColors.nightPrimary : AppColors.dayPrimary).withOpacity(0.14),
                     child: Icon(
                       Icons.person_outline,
                       size: 32,

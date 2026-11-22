@@ -2,23 +2,31 @@ import Stripe from 'stripe';
 import { env } from '../config/env.js';
 
 let testStripeOverride: Stripe | null = null;
+let cachedStripeClient: Stripe | null = null;
+let cachedStripeKey: string | null = null;
 
 /** Override the Stripe SDK client in tests. Pass null to restore default behavior. */
 export function setStripeForTest(mock: Stripe | null): void {
   testStripeOverride = mock;
 }
 
-/** Return the active Stripe SDK client (or the test override if registered). */
+/** Return the active Stripe SDK client (cached singleton per key, or test override). */
 export function getStripe(secretKey?: string): Stripe {
   if (testStripeOverride) {
     return testStripeOverride;
   }
-  return new Stripe(secretKey ?? env.STRIPE_SECRET_KEY ?? '');
+  const key = secretKey ?? env.STRIPE_SECRET_KEY ?? '';
+  if (!cachedStripeClient || cachedStripeKey !== key) {
+    cachedStripeClient = new Stripe(key);
+    cachedStripeKey = key;
+  }
+  return cachedStripeClient;
 }
 
-/** True when a Stripe secret key is configured or a test Stripe mock is active. */
-export function hasStripeConfigured(): boolean {
-  return Boolean(testStripeOverride || env.STRIPE_SECRET_KEY);
+/** True when a Stripe secret key (env or tenant override) is configured or a test Stripe mock is active. */
+export function hasStripeConfigured(overrideKey?: string): boolean {
+  const key = overrideKey ?? env.STRIPE_SECRET_KEY;
+  return Boolean(testStripeOverride || (key && !key.includes('your_stripe')));
 }
 
 /**

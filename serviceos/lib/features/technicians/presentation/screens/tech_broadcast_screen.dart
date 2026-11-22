@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 
 class TechBroadcastScreen extends StatefulWidget {
   final VoidCallback onAccept;
   final VoidCallback onDecline;
+  final String? broadcastId;
   final double netPayout;
   final String jobTitle;
   final String distanceText;
@@ -13,6 +16,7 @@ class TechBroadcastScreen extends StatefulWidget {
     super.key,
     required this.onAccept,
     required this.onDecline,
+    this.broadcastId,
     this.netPayout = 0.00,
     this.jobTitle = 'On-Demand Service Request',
     this.distanceText = 'Proximity calculated upon dispatch',
@@ -24,7 +28,93 @@ class TechBroadcastScreen extends StatefulWidget {
 }
 
 class _TechBroadcastScreenState extends State<TechBroadcastScreen> {
-  int _secondsRemaining = 48;
+  Timer? _countdownTimer;
+  int _secondsRemaining = 60;
+  bool _isActing = false;
+  String? _activeBroadcastId;
+  double _netPayout = 0.00;
+  String _jobTitle = '';
+  String _distanceText = '';
+  String _customerInfo = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _activeBroadcastId = widget.broadcastId;
+    _netPayout = widget.netPayout;
+    _jobTitle = widget.jobTitle;
+    _distanceText = widget.distanceText;
+    _customerInfo = widget.customerInfo;
+    _loadPendingOffer();
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      if (_secondsRemaining > 0) {
+        setState(() => _secondsRemaining--);
+      } else {
+        t.cancel();
+      }
+    });
+  }
+
+  Future<void> _loadPendingOffer() async {
+    try {
+      final list = await ApiClient.instance.fetchPendingBroadcasts();
+      if (!mounted || list.isEmpty || list.first is! Map) return;
+      final offer = Map<String, dynamic>.from(list.first as Map);
+      final cents = double.tryParse((offer['providerPayoutCents'] ?? offer['quotedPriceCents'] ?? 0).toString()) ?? 0.0;
+      setState(() {
+        _activeBroadcastId = (offer['broadcastId'] ?? offer['id'])?.toString() ?? _activeBroadcastId;
+        if (cents > 0) {
+          _netPayout = offer['providerPayoutCents'] != null ? cents / 100.0 : (cents / 100.0) * 0.85;
+        }
+        _jobTitle = (offer['serviceName'] ?? offer['title'] ?? _jobTitle).toString();
+        _distanceText = (offer['addressText'] ?? offer['distanceText'] ?? _distanceText).toString();
+        _customerInfo = (offer['customerName'] ?? offer['customerInfo'] ?? _customerInfo).toString();
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _handleAccept() async {
+    if (_isActing) return;
+    setState(() => _isActing = true);
+    try {
+      if (_activeBroadcastId != null && _activeBroadcastId!.isNotEmpty) {
+        await ApiClient.instance.acceptBroadcast(_activeBroadcastId!);
+      }
+      if (mounted) widget.onAccept();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Unable to accept dispatch offer: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isActing = false);
+    }
+  }
+
+  Future<void> _handleDecline() async {
+    if (_isActing) return;
+    setState(() => _isActing = true);
+    try {
+      if (_activeBroadcastId != null && _activeBroadcastId!.isNotEmpty) {
+        await ApiClient.instance.declineBroadcast(_activeBroadcastId!, reason: 'Declined by technician');
+      }
+    } catch (_) {}
+    if (mounted) {
+      setState(() => _isActing = false);
+      widget.onDecline();
+    }
+  }
+
+  @override
+  void dispose() {
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,7 +130,7 @@ class _TechBroadcastScreenState extends State<TechBroadcastScreen> {
         centerTitle: true,
         leading: IconButton(
           icon: const Icon(Icons.close),
-          onPressed: widget.onDecline,
+          onPressed: _isActing ? null : _handleDecline,
         ),
       ),
       body: SafeArea(
@@ -91,7 +181,7 @@ class _TechBroadcastScreenState extends State<TechBroadcastScreen> {
                   children: [
                     const Text('GUARANTEED NET PAYOUT (85% ESCROW)', style: TextStyle(color: Color(0xFF10B981), fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
                     const SizedBox(height: 4),
-                    Text('\$${widget.netPayout.toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF10B981), fontSize: 36, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
+                    Text(ApiClient.instance.formatCurrency(_netPayout), style: const TextStyle(color: Color(0xFF10B981), fontSize: 36, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
                     const SizedBox(height: 4),
                     Text('Direct Stripe Express deposit immediately upon customer sign-off.', style: TextStyle(color: textSecondary, fontSize: 12)),
                   ],
@@ -111,11 +201,11 @@ class _TechBroadcastScreenState extends State<TechBroadcastScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(widget.jobTitle, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary)),
+                    Text(_jobTitle, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: textPrimary)),
                     const SizedBox(height: 8),
-                    _buildParamRow(Icons.location_on_outlined, widget.distanceText, textSecondary),
+                    _buildParamRow(Icons.location_on_outlined, _distanceText, textSecondary),
                     const SizedBox(height: 6),
-                    _buildParamRow(Icons.person_outline, widget.customerInfo, textSecondary),
+                    _buildParamRow(Icons.person_outline, _customerInfo, textSecondary),
                     const SizedBox(height: 6),
                     _buildParamRow(Icons.home_outlined, 'Access Instructions Provided in Work Order', textSecondary),
                   ],
@@ -134,7 +224,7 @@ class _TechBroadcastScreenState extends State<TechBroadcastScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
-                      onPressed: widget.onDecline,
+                      onPressed: _isActing ? null : _handleDecline,
                       child: const Text('Decline', style: TextStyle(fontWeight: FontWeight.w700)),
                     ),
                   ),
@@ -148,7 +238,7 @@ class _TechBroadcastScreenState extends State<TechBroadcastScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
-                      onPressed: widget.onAccept,
+                      onPressed: _isActing ? null : _handleAccept,
                       child: const Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [

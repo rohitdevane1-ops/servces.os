@@ -5,6 +5,8 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import com.serviceos.app.data.network.ApiClient
+import com.serviceos.app.data.repository.BookingRepository
+import com.serviceos.app.data.repository.ServiceRepository
 import com.serviceos.app.ui.common.*
 import com.serviceos.app.ui.customer.*
 import com.serviceos.app.ui.technician.*
@@ -13,7 +15,7 @@ sealed class Screen(val route: String) {
     object Splash : Screen("splash")
     object Login : Screen("login")
     object RoleGateway : Screen("role_gateway")
-    
+
     // Customer
     object CustomerHome : Screen("customer_home")
     object CustomerSearch : Screen("customer_search")
@@ -49,16 +51,23 @@ fun ServiceOSNavHost(
     var resolvedDestination by remember { mutableStateOf(Screen.Splash.route) }
 
     LaunchedEffect(Unit) {
+        ApiClient.fetchSystemConfig()
+        ServiceRepository.refreshFromBackend()
+
         if (!ApiClient.getAccessToken().isNullOrBlank()) {
             val result = ApiClient.validateSession()
             result.onSuccess { res ->
                 val data = res.optJSONObject("data")
                 val user = data?.optJSONObject("user")
                 val role = user?.optString("role")?.uppercase()
+                BookingRepository.syncFromBackend()
                 resolvedDestination = when (role) {
                     "TECHNICIAN" -> Screen.TechDashboard.route
-                    "CUSTOMER", "ADMIN" -> Screen.CustomerHome.route
-                    else -> Screen.Login.route
+                    "CUSTOMER" -> Screen.CustomerHome.route
+                    else -> {
+                        ApiClient.clearTokens()
+                        Screen.Login.route
+                    }
                 }
             }.onFailure {
                 resolvedDestination = Screen.Login.route
@@ -89,8 +98,10 @@ fun ServiceOSNavHost(
                     val destination = when (role.uppercase()) {
                         "TECHNICIAN" -> Screen.TechDashboard.route
                         "CUSTOMER" -> Screen.CustomerHome.route
-                        "ADMIN", "TENANT_ADMIN", "SYSTEM_ADMIN" -> Screen.RoleGateway.route
-                        else -> Screen.CustomerHome.route
+                        else -> {
+                            ApiClient.clearTokens()
+                            Screen.Login.route
+                        }
                     }
                     navController.navigate(destination) {
                         popUpTo(Screen.Login.route) { inclusive = true }
@@ -102,27 +113,23 @@ fun ServiceOSNavHost(
             val role = ApiClient.getUserRole()?.uppercase()
             RoleGatewayScreen(
                 onSelectCustomer = {
-                    if (role == "TECHNICIAN") {
-                        // Technician accounts must stay within technician workspace
-                        navController.navigate(Screen.TechDashboard.route) {
-                            popUpTo(Screen.RoleGateway.route) { inclusive = true }
-                        }
-                    } else {
-                        navController.navigate(Screen.CustomerHome.route) {
-                            popUpTo(Screen.RoleGateway.route) { inclusive = true }
-                        }
+                    val target = when (role) {
+                        "CUSTOMER" -> Screen.CustomerHome.route
+                        "TECHNICIAN" -> Screen.TechDashboard.route
+                        else -> Screen.Login.route
+                    }
+                    navController.navigate(target) {
+                        popUpTo(Screen.RoleGateway.route) { inclusive = true }
                     }
                 },
                 onSelectTechnician = {
-                    if (role == "CUSTOMER") {
-                        // Customer accounts cannot access technician dispatch workspace
-                        navController.navigate(Screen.CustomerHome.route) {
-                            popUpTo(Screen.RoleGateway.route) { inclusive = true }
-                        }
-                    } else {
-                        navController.navigate(Screen.TechDashboard.route) {
-                            popUpTo(Screen.RoleGateway.route) { inclusive = true }
-                        }
+                    val target = when (role) {
+                        "TECHNICIAN" -> Screen.TechDashboard.route
+                        "CUSTOMER" -> Screen.CustomerHome.route
+                        else -> Screen.Login.route
+                    }
+                    navController.navigate(target) {
+                        popUpTo(Screen.RoleGateway.route) { inclusive = true }
                     }
                 }
             )
@@ -133,37 +140,75 @@ fun ServiceOSNavHost(
             CustomerDiscoverScreen(
                 onThemeToggle = onThemeToggle,
                 onSearchClick = { navController.navigate(Screen.CustomerSearch.route) },
-                onCategoryClick = { navController.navigate(Screen.CustomerCategoryFeed.route) },
-                onServiceClick = { navController.navigate(Screen.CustomerServiceDetail.route) },
-                onBookService = { navController.navigate(Screen.CustomerBookingWizard.route) }
+                onCategoryClick = { cat ->
+                    ServiceRepository.selectCategory(cat)
+                    navController.navigate(Screen.CustomerCategoryFeed.route)
+                },
+                onServiceClick = { svc ->
+                    ServiceRepository.selectService(svc)
+                    navController.navigate(Screen.CustomerServiceDetail.route)
+                },
+                onBookService = { svc ->
+                    ServiceRepository.selectService(svc)
+                    navController.navigate(Screen.CustomerBookingWizard.route)
+                },
+                onOpenBookings = { navController.navigate(Screen.CustomerMyBookings.route) },
+                onOpenSupport = { navController.navigate(Screen.CustomerSupport.route) },
+                onOpenProfile = { navController.navigate(Screen.CustomerProfile.route) }
             )
         }
         composable(Screen.CustomerSearch.route) {
             GlobalSearchScreen(
                 onBack = { navController.popBackStack() },
-                onServiceClick = { navController.navigate(Screen.CustomerServiceDetail.route) }
+                onServiceClick = { svc ->
+                    ServiceRepository.selectService(svc)
+                    navController.navigate(Screen.CustomerServiceDetail.route)
+                }
             )
         }
         composable(Screen.CustomerCategoryFeed.route) {
+            val cat = ServiceRepository.selectedCategory
             CategoryFeedScreen(
+                categoryName = cat?.name ?: "Home Services",
+                initialCategoryId = cat?.id,
                 onBack = { navController.popBackStack() },
-                onServiceClick = { navController.navigate(Screen.CustomerServiceDetail.route) }
+                onServiceClick = { svc ->
+                    ServiceRepository.selectService(svc)
+                    navController.navigate(Screen.CustomerServiceDetail.route)
+                }
             )
         }
         composable(Screen.CustomerServiceDetail.route) {
-            ServiceDetailScreen(
-                onBack = { navController.popBackStack() },
-                onBookNow = { navController.navigate(Screen.CustomerBookingWizard.route) }
-            )
+            val svc = ServiceRepository.selectedService
+            if (svc != null) {
+                ServiceDetailScreen(
+                    service = svc,
+                    onBack = { navController.popBackStack() },
+                    onBookNow = { navController.navigate(Screen.CustomerBookingWizard.route) }
+                )
+            } else {
+                ServiceDetailScreen(
+                    onBack = { navController.popBackStack() },
+                    onBookNow = { navController.navigate(Screen.CustomerBookingWizard.route) }
+                )
+            }
         }
         composable(Screen.CustomerBookingWizard.route) {
+            val svc = ServiceRepository.selectedService
             BookingWizardScreen(
+                serviceId = svc?.id ?: "",
+                serviceTitle = svc?.title ?: "On-Demand Home Service",
+                categoryName = ServiceRepository.selectedCategory?.name ?: "Home Service",
+                baseLabor = svc?.basePrice ?: 149.0,
+                dispatchFee = 20.0,
                 onBack = { navController.popBackStack() },
                 onConfirmed = { navController.navigate(Screen.CustomerDispatchRadar.route) }
             )
         }
         composable(Screen.CustomerDispatchRadar.route) {
+            val activeBooking = BookingRepository.activeBooking
             LiveDispatchRadarScreen(
+                safetyPin = activeBooking?.safetyPin ?: "",
                 onBack = { navController.popBackStack() },
                 onChatClick = { navController.navigate(Screen.InAppChat.route) },
                 onCompleteClick = { navController.navigate(Screen.CustomerCompletion.route) }
@@ -178,12 +223,20 @@ fun ServiceOSNavHost(
         composable(Screen.CustomerMyBookings.route) {
             MyBookingsScreen(
                 onBack = { navController.popBackStack() },
-                onTrackLive = { navController.navigate(Screen.CustomerDispatchRadar.route) },
-                onViewInvoice = { navController.navigate(Screen.CustomerInvoice.route) }
+                onTrackLive = { booking ->
+                    BookingRepository.selectBooking(booking)
+                    navController.navigate(Screen.CustomerDispatchRadar.route)
+                },
+                onViewInvoice = { booking ->
+                    BookingRepository.selectBooking(booking)
+                    navController.navigate(Screen.CustomerInvoice.route)
+                }
             )
         }
         composable(Screen.CustomerInvoice.route) {
+            val activeBooking = BookingRepository.activeBooking
             InvoiceReceiptScreen(
+                invoiceNo = activeBooking?.reference ?: "",
                 onBack = { navController.popBackStack() }
             )
         }
@@ -191,7 +244,12 @@ fun ServiceOSNavHost(
             CustomerProfileScreen(
                 onBack = { navController.popBackStack() },
                 onThemeToggle = onThemeToggle,
-                onLogout = { navController.navigate(Screen.Login.route) }
+                onLogout = {
+                    ApiClient.clearTokens()
+                    navController.navigate(Screen.Login.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                }
             )
         }
         composable(Screen.CustomerSupport.route) {
@@ -211,13 +269,22 @@ fun ServiceOSNavHost(
             )
         }
         composable(Screen.TechBroadcast.route) {
+            val activeBooking = BookingRepository.activeBooking
+            val total = activeBooking?.totalAmount ?: 0.0
             TechBroadcastScreen(
+                netPayout = if (total > 0.0) total * 0.85 else 0.0,
+                escrowTotal = total,
+                jobTitle = activeBooking?.serviceTitle ?: "Field Service Order",
+                distanceText = activeBooking?.customerAddress?.ifBlank { "Verified Service Location" } ?: "Verified Service Location",
                 onAccept = { navController.navigate(Screen.TechJobExecution.route) },
                 onDecline = { navController.popBackStack() }
             )
         }
         composable(Screen.TechJobExecution.route) {
+            val activeBooking = BookingRepository.activeBooking
             TechJobExecutionScreen(
+                workOrderNumber = activeBooking?.reference ?: "",
+                hourlyRate = activeBooking?.baseAmount ?: 149.0,
                 onJobCompleted = { navController.navigate(Screen.TechWallet.route) },
                 onOpenChat = { navController.navigate(Screen.InAppChat.route) }
             )

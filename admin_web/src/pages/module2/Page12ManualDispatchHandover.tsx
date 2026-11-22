@@ -1,20 +1,14 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
   Zap, 
   RotateCcw, 
   UserCheck, 
   MapPin, 
-  Clock, 
-  AlertTriangle, 
-  Phone, 
   ShieldAlert, 
-  CheckCircle, 
   Send, 
   UserX,
-  Navigation
 } from 'lucide-react';
-import { Booking } from '../../types';
 
 export const Page12ManualDispatchHandover: React.FC = () => {
   const { bookings, technicians, auditLogs, openAssignModal, emergencyHandover, addToast, selectedBookingId } = useAdmin();
@@ -112,7 +106,7 @@ export const Page12ManualDispatchHandover: React.FC = () => {
                   <div className="flex items-center justify-between text-[11px] text-slate-500">
                     <span className="flex items-center gap-1">
                       <MapPin className="w-3 h-3 text-slate-400" />
-                      {job.customerName} • {job.customerAddress}
+                      {job.customerName} â€¢ {job.customerAddress}
                     </span>
                     <span className="font-bold text-slate-700">${job.estimate}</span>
                   </div>
@@ -167,7 +161,7 @@ export const Page12ManualDispatchHandover: React.FC = () => {
                 ) : (
                   bookings.filter(b => b.technicianName !== 'Unassigned').map(b => (
                     <option key={b.id} value={b.id}>
-                      #{b.jobNo} — {b.serviceName} (Current: {b.technicianName})
+                      #{b.jobNo} â€” {b.serviceName} (Current: {b.technicianName})
                     </option>
                   ))
                 )}
@@ -202,7 +196,7 @@ export const Page12ManualDispatchHandover: React.FC = () => {
                 ) : (
                   technicians.filter(t => t.status === 'Available').map(t => (
                     <option key={t.id} value={t.id}>
-                      {t.name} — {t.specialization} (★ {t.rating} • Match: 96%)
+                      {t.name} â€” {t.specialization} (â˜… {t.rating} â€¢ Match: 96%)
                     </option>
                   ))
                 )}

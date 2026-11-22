@@ -10,11 +10,11 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.serviceos.app.data.network.ApiClient
+import com.serviceos.app.data.repository.BookingRepository
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -22,6 +22,13 @@ fun InvoiceReceiptScreen(
     invoiceNo: String = "",
     onBack: () -> Unit = {}
 ) {
+    val booking = BookingRepository.activeBooking
+    val baseAmount = booking?.baseAmount ?: 149.0
+    val partsAmount = booking?.extraPartsAmount ?: 0.0
+    val taxAmount = booking?.taxAmount ?: (baseAmount * 0.05)
+    val totalAmount = booking?.totalAmount ?: (baseAmount + partsAmount + taxAmount)
+    val resolvedInvoiceNo = invoiceNo.ifBlank { booking?.reference ?: "INV-10001" }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -66,17 +73,16 @@ fun InvoiceReceiptScreen(
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold)
                     )
                     Text(
-                        text = if (invoiceNo.isNotEmpty()) "Invoice: $invoiceNo • Paid via Escrow Settlement" else "Settled via Escrow Payment",
+                        text = "Invoice: $resolvedInvoiceNo • Settled via Escrow Payment",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
 
                     Divider(modifier = Modifier.padding(vertical = 14.dp))
 
-                    InvoiceRow("Labor Service Charge", "$0.00")
-                    InvoiceRow("Diagnostic Dispatch Fee", "$0.00")
-                    InvoiceRow("Authorized Replacement Parts", "$0.00")
-                    InvoiceRow("Applicable Sales Tax", "$0.00")
+                    InvoiceRow(booking?.serviceTitle ?: "Labor Service Charge", ApiClient.formatCurrency(baseAmount))
+                    InvoiceRow("Authorized Replacement Parts", ApiClient.formatCurrency(partsAmount))
+                    InvoiceRow("VAT (${ApiClient.vatPercent}%)", ApiClient.formatCurrency(taxAmount))
                     InvoiceRow("Escrow Protection Guarantee", "Active")
 
                     Divider(modifier = Modifier.padding(vertical = 14.dp))
@@ -90,7 +96,7 @@ fun InvoiceReceiptScreen(
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold)
                         )
                         Text(
-                            text = "$0.00",
+                            text = ApiClient.formatCurrency(totalAmount),
                             style = MaterialTheme.typography.headlineSmall.copy(
                                 fontWeight = FontWeight.Black,
                                 color = MaterialTheme.colorScheme.primary

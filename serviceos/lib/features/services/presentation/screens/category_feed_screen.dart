@@ -113,12 +113,22 @@ class _CategoryFeedScreenState extends State<CategoryFeedScreen> {
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
-                  : ListView.separated(
-                      padding: const EdgeInsets.all(16),
-                      itemCount: _services.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 12),
-                      itemBuilder: (context, index) {
-                        final service = _services[index];
+                  : Builder(
+                      builder: (context) {
+                        final visibleServices = _selectedSubFilter == 'All'
+                            ? _services
+                            : _services.where((s) {
+                                final q = _selectedSubFilter.toLowerCase();
+                                return s.name.toLowerCase().contains(q) ||
+                                    s.category.toLowerCase().contains(q) ||
+                                    s.description.toLowerCase().contains(q);
+                              }).toList();
+                        return ListView.separated(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: visibleServices.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 12),
+                          itemBuilder: (context, index) {
+                            final service = visibleServices[index];
                         return Container(
                           padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(

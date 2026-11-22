@@ -120,7 +120,7 @@ fun TechOnboardingScreen(
                 }
                 3 -> {
                     Text("3. Hourly Rate & Travel Geofence", style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold))
-                    Text("Base Labor Rate: $${hourlyRate.toInt()} / hr", fontWeight = FontWeight.SemiBold)
+                    Text("Base Labor Rate: ${com.serviceos.app.data.network.ApiClient.formatCurrency(hourlyRate.toDouble())} / hr", fontWeight = FontWeight.SemiBold)
                     Slider(
                         value = hourlyRate,
                         onValueChange = { hourlyRate = it },

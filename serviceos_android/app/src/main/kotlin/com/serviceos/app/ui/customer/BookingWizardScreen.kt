@@ -14,20 +14,60 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.serviceos.app.data.network.ApiClient
+import com.serviceos.app.data.repository.BookingRepository
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BookingWizardScreen(
+    serviceId: String = "",
+    serviceTitle: String = "On-Demand Home Service",
+    categoryName: String = "Home Service",
     onBack: () -> Unit = {},
     onConfirmed: () -> Unit = {},
-    baseLabor: Double = 0.0,
-    dispatchFee: Double = 0.0
+    baseLabor: Double = 149.0,
+    dispatchFee: Double = 20.0
 ) {
-    var step by remember { mutableStateOf(1) } // 1: Problem, 2: Address, 3: Schedule, 4: Payment
+    val coroutineScope = rememberCoroutineScope()
+    var step by remember { mutableStateOf(1) }
     var issueDetails by remember { mutableStateOf("") }
     var serviceAddress by remember { mutableStateOf("") }
     var accessNotes by remember { mutableStateOf("") }
-    val totalEscrow = baseLabor + dispatchFee
+    var isEmergency by remember { mutableStateOf(true) }
+    var isSubmitting by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val subtotal = baseLabor + dispatchFee
+    val taxAmount = subtotal * (ApiClient.vatPercent / 100.0)
+    val totalEscrow = subtotal + taxAmount
+
+    fun handleSubmitBooking() {
+        val trimmedAddress = serviceAddress.trim()
+        if (trimmedAddress.length < 5) {
+            errorMessage = "Please enter a valid service address (minimum 5 characters)."
+            step = 2
+            return
+        }
+        isSubmitting = true
+        errorMessage = null
+        coroutineScope.launch {
+            val result = BookingRepository.createAndAuthorizeBooking(
+                serviceId = serviceId,
+                serviceTitle = serviceTitle,
+                categoryName = categoryName,
+                addressText = trimmedAddress,
+                baseAmount = subtotal,
+                isEmergency = isEmergency
+            )
+            isSubmitting = false
+            result.onSuccess {
+                onConfirmed()
+            }.onFailure { err ->
+                errorMessage = err.message ?: "Unable to create booking. Verify connection and try again."
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -53,8 +93,9 @@ fun BookingWizardScreen(
             ) {
                 Box(modifier = Modifier.padding(16.dp)) {
                     Button(
+                        enabled = !isSubmitting,
                         onClick = {
-                            if (step < 4) step++ else onConfirmed()
+                            if (step < 4) step++ else handleSubmitBooking()
                         },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
@@ -65,8 +106,10 @@ fun BookingWizardScreen(
                             .height(48.dp)
                     ) {
                         Text(
-                            text = if (step == 4) {
-                                if (totalEscrow > 0.0) "Authorize & Find Pro ($${String.format(java.util.Locale.US, "%.2f", totalEscrow)}) →" else "Authorize & Find Pro →"
+                            text = if (isSubmitting) {
+                                "Authorizing Escrow..."
+                            } else if (step == 4) {
+                                "Authorize & Find Pro (${ApiClient.formatCurrency(totalEscrow)}) →"
                             } else "Continue →",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
@@ -90,10 +133,19 @@ fun BookingWizardScreen(
                 color = MaterialTheme.colorScheme.primary
             )
 
+            if (!errorMessage.isNullOrBlank()) {
+                Text(
+                    text = errorMessage ?: "",
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
+            }
+
             when (step) {
                 1 -> {
                     Text(
-                        text = "1. Describe the Issue",
+                        text = "1. Describe the Issue ($serviceTitle)",
                         style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -114,7 +166,7 @@ fun BookingWizardScreen(
                     OutlinedTextField(
                         value = serviceAddress,
                         onValueChange = { serviceAddress = it },
-                        label = { Text("Address") },
+                        label = { Text("Property Address") },
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
@@ -137,15 +189,19 @@ fun BookingWizardScreen(
                     ) {
                         Row(
                             modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = "Emergency Dispatch: Within 60 Minutes",
-                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Emergency Dispatch: Within 60 Minutes",
+                                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Switch(checked = isEmergency, onCheckedChange = { isEmergency = it })
                         }
                     }
                 }
@@ -162,10 +218,14 @@ fun BookingWizardScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Base Labor: $${String.format(java.util.Locale.US, "%.2f", baseLabor)}")
-                            Text("Diagnostic Dispatch: $${String.format(java.util.Locale.US, "%.2f", dispatchFee)}")
+                            Text("Base Labor: ${ApiClient.formatCurrency(baseLabor)}")
+                            Text("Diagnostic Dispatch: ${ApiClient.formatCurrency(dispatchFee)}")
+                            Text("VAT (${ApiClient.vatPercent}%): ${ApiClient.formatCurrency(taxAmount)}")
                             Divider(modifier = Modifier.padding(vertical = 8.dp))
-                            Text("Total Escrow Authorization: $${String.format(java.util.Locale.US, "%.2f", totalEscrow)}", fontWeight = FontWeight.Bold)
+                            Text(
+                                "Total Escrow Authorization: ${ApiClient.formatCurrency(totalEscrow)}",
+                                fontWeight = FontWeight.Bold
+                            )
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 "Funds held securely in escrow. Released only upon your signature sign-off.",

@@ -2,7 +2,13 @@ package com.serviceos.app.data.model
 
 enum class BookingStatus(val label: String) {
     REQUESTED("Matching Pro"),
+    BROADCASTING("Broadcasting"),
+    SCHEDULED("Scheduled"),
+    ASSIGNED("Assigned"),
+    CONFIRMED("Confirmed"),
+    DISPATCHED("Dispatched"),
     EN_ROUTE("En Route"),
+    ON_SITE("On Site"),
     IN_PROGRESS("In Progress"),
     COMPLETED("Completed"),
     CANCELLED("Cancelled")

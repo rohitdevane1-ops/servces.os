@@ -1,23 +1,16 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
-import { 
-  Calendar, 
-  ChevronLeft, 
-  ChevronRight, 
-  Filter, 
-  Clock, 
-  MapPin, 
-  Plus, 
-  User, 
-  Layers, 
-  SlidersHorizontal,
+import { useAdmin } from '../../context/adminContextCore';
+import {
+  ChevronLeft,
+  ChevronRight,
+  MapPin,
   Zap
 } from 'lucide-react';
 
 export const Page11DispatchBoard: React.FC = () => {
-  const { technicians, bookings, navigateToPage, openAssignModal, addToast, setSelectedBookingId } = useAdmin();
-  const [boardDate, setBoardDate] = useState<Date>(new Date(2026, 9, 24)); // Thursday, Oct 24, 2026
-  const [filterDept, setFilterDept] = useState<string>('All');
+  const { technicians, bookings, navigateToPage, addToast, setSelectedBookingId } = useAdmin();
+  const [boardDate, setBoardDate] = useState<Date>(() => new Date());
+  const [filterDept] = useState<string>('All');
 
   const formatDateDisplay = (d: Date) => {
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
@@ -42,7 +35,7 @@ export const Page11DispatchBoard: React.FC = () => {
   };
 
   const handleToday = () => {
-    const today = new Date(2026, 9, 24);
+    const today = new Date();
     setBoardDate(today);
     addToast(`Reset dispatch board to Today (${formatDateDisplay(today)})`, 'info');
   };
@@ -115,34 +108,46 @@ export const Page11DispatchBoard: React.FC = () => {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="text-[10px] uppercase font-bold text-slate-400">Scheduled Techs</div>
-          <div className="text-lg font-extrabold text-slate-900 mt-0.5">14 of 16 Online</div>
+          <div className="text-lg font-extrabold text-slate-900 mt-0.5">
+            {technicians.filter(t => t.status !== 'Offline').length} of {technicians.length} Online
+          </div>
         </div>
         <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="text-[10px] uppercase font-bold text-slate-400">Capacity Load</div>
-          <div className="text-lg font-extrabold text-emerald-600 mt-0.5">84% Utilized</div>
+          <div className="text-lg font-extrabold text-emerald-600 mt-0.5">
+            {technicians.length > 0
+              ? Math.min(100, Math.round((bookings.filter(b => b.status === 'In Progress' || b.status === 'Scheduled').length / technicians.length) * 100))
+              : 0}% Utilized
+          </div>
         </div>
         <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="text-[10px] uppercase font-bold text-slate-400">Total Booked Hours</div>
-          <div className="text-lg font-extrabold text-slate-900 mt-0.5">68.5 Hours</div>
+          <div className="text-lg font-extrabold text-slate-900 mt-0.5">
+            {(bookings.filter(b => b.status === 'In Progress' || b.status === 'Scheduled').length * 2).toFixed(1)} Hours
+          </div>
         </div>
         <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="text-[10px] uppercase font-bold text-slate-400">Unassigned Backlog</div>
-          <div className="text-lg font-extrabold text-rose-600 mt-0.5">4 Jobs Pending</div>
+          <div className="text-lg font-extrabold text-rose-600 mt-0.5">
+            {bookings.filter(b => b.status === 'Pending' || b.technicianName === 'Unassigned').length} Jobs Pending
+          </div>
         </div>
       </div>
 
-      {/* Gantt Timeline Board matching Screenshot 02 & Screenshot 03 */}
+      {/* Gantt Timeline Board */}
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
         {/* Timeline Header */}
         <div className="grid grid-cols-12 border-b border-slate-200 bg-slate-50/70 text-xs font-bold text-slate-600 divide-x divide-slate-200">
           <div className="col-span-3 p-3 text-slate-500 uppercase tracking-wider text-[11px]">
             Field Technician / Pro
           </div>
-          {HOURS.map((hr, idx) => (
-            <div key={idx} className="col-span-1.5 p-3 text-center text-[11px] font-mono font-bold text-slate-500">
-              {hr}
-            </div>
-          ))}
+          <div className="col-span-9 grid grid-cols-6 divide-x divide-slate-200">
+            {HOURS.map((hr, idx) => (
+              <div key={idx} className="p-3 text-center text-[11px] font-mono font-bold text-slate-500">
+                {hr}
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Technician Timeline Rows */}
@@ -160,7 +165,7 @@ export const Page11DispatchBoard: React.FC = () => {
                     <div className="text-[11px] text-slate-400">{tech.specialization}</div>
                     <div className="text-[10px] font-bold text-emerald-600 flex items-center gap-1 mt-0.5">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                      ★ {tech.rating} ({tech.jobsCompleted})
+                      â˜… {tech.rating} ({tech.jobsCompleted})
                     </div>
                   </div>
                 </div>
@@ -193,7 +198,7 @@ export const Page11DispatchBoard: React.FC = () => {
                       <div className="text-xs font-extrabold text-slate-900 truncate mt-0.5">{job.serviceName}</div>
                       <div className="text-[11px] text-slate-500 truncate flex items-center gap-1 mt-0.5">
                         <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
-                        {job.customerName} • {job.customerAddress}
+                        {job.customerName} â€¢ {job.customerAddress}
                       </div>
                     </div>
                   ))

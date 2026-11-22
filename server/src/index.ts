@@ -1,14 +1,19 @@
 import { buildApp } from './app.js';
 import { env } from './config/env.js';
+import { pool } from './database/pool.js';
 import { outboxWorker } from './workers/outbox.worker.js';
 
 async function start() {
   const app = await buildApp();
 
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     app.log.info({ signal }, 'Shutting down server and outbox worker...');
-    outboxWorker.stop();
+    await outboxWorker.stop();
     await app.close();
+    await pool.end();
     process.exit(0);
   };
 
@@ -27,7 +32,7 @@ async function start() {
     console.log(` Health Check: http://${env.HOST}:${env.PORT}/health             `);
     console.log(`================================================================`);
   } catch (err) {
-    outboxWorker.stop();
+    await outboxWorker.stop();
     app.log.error(err);
     process.exit(1);
   }

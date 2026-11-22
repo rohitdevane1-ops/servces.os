@@ -255,7 +255,11 @@ describe('ServiceOS Full Production Remediation Integration Suite (Real PostgreS
     assert.equal(created.status, 'PENDING_PAYMENT');
 
     // Client GET payment-intent before worker runs -> 202 PROVISIONING; non-owner blocked 403
-    const otherCustToken = AuthService.generateAccessToken({ id: w2.customerId, tenantId: w1.tenantId, role: 'CUSTOMER', email: 'o@a.test' });
+    const otherCustRow = await db.pool.query(
+      `INSERT INTO users (tenant_id, email, password_hash, role, is_active) VALUES ($1, 'other-owner@a.test', 'x', 'CUSTOMER', TRUE) RETURNING id`,
+      [w1.tenantId]
+    );
+    const otherCustToken = AuthService.generateAccessToken({ id: otherCustRow.rows[0].id, tenantId: w1.tenantId, role: 'CUSTOMER', email: 'other-owner@a.test' });
     const forbiddenRes = await app.inject({
       method: 'GET',
       url: `/api/v1/bookings/${created.bookingId}/payment-intent`,
@@ -468,7 +472,11 @@ describe('ServiceOS Full Production Remediation Integration Suite (Real PostgreS
       method: 'POST',
       url: `/api/v1/bookings/${b.bookingId}/complete`,
       headers: { authorization: `Bearer ${techToken1}`, 'x-tenant-id': w1.tenantId },
-      payload: { beforePhotos: ['b1.jpg'], afterPhotos: ['a1.jpg'], workSummaryNotes: 'Done' },
+      payload: {
+        beforePhotos: ['https://cdn.serviceos.test/b1.jpg'],
+        afterPhotos: ['https://cdn.serviceos.test/a1.jpg'],
+        workSummaryNotes: 'Done',
+      },
     });
     assert.equal(compRes.statusCode, 200);
 

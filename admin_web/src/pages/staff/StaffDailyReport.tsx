@@ -1,16 +1,11 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { downloadCSV } from '../../utils/exportUtils';
 import { 
-  FileSpreadsheet, 
   CheckCircle2, 
-  Clock, 
-  ArrowRightLeft, 
-  TrendingUp, 
   Download, 
   Send,
   ShieldCheck,
-  Star
 } from 'lucide-react';
 
 export const StaffDailyReport: React.FC = () => {
@@ -18,6 +13,7 @@ export const StaffDailyReport: React.FC = () => {
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedAt, setSubmittedAt] = useState<string | null>(null);
+  const [reportYear] = useState(() => new Date().getFullYear());
 
   const totalHandled = bookings.length;
   const completedToday = bookings.filter(b => b.status === 'Completed').length;
@@ -86,7 +82,7 @@ export const StaffDailyReport: React.FC = () => {
             {isSubmitted ? (
               <>
                 <CheckCircle2 className="w-4 h-4 text-emerald-300" />
-                <span>✓ Report Sealed &amp; Submitted</span>
+                <span>âœ“ Report Sealed &amp; Submitted</span>
               </>
             ) : (
               <>
@@ -113,7 +109,7 @@ export const StaffDailyReport: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-emerald-200/80 mt-0.5">
-                Submitted by {userProfile.name || 'Operations Coordinator'} at {submittedAt || '5:00 PM'} • Reference: <span className="font-mono text-emerald-300">#REP-{new Date().getFullYear()}-9284</span>
+                Submitted by {userProfile.name || 'Operations Coordinator'} at {submittedAt || '5:00 PM'} â€¢ Reference: <span className="font-mono text-emerald-300">#REP-{reportYear}-9284</span>
               </p>
             </div>
           </div>
@@ -217,7 +213,7 @@ export const StaffDailyReport: React.FC = () => {
                   </td>
                   <td className="py-3 px-4 font-bold text-slate-900">{t.currentJobsCount} active</td>
                   <td className="py-3 px-4 font-bold text-emerald-700">{t.onTimeRate}%</td>
-                  <td className="py-3 px-4 font-bold text-slate-800">★ {t.rating}</td>
+                  <td className="py-3 px-4 font-bold text-slate-800">â˜… {t.rating}</td>
                 </tr>
               ))}
             </tbody>

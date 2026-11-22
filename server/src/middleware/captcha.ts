@@ -16,14 +16,14 @@ export async function verifyCaptcha(request: FastifyRequest, reply: FastifyReply
   const isEnforced = env.CAPTCHA_ENFORCED === 'true';
   const secretKey = env.CAPTCHA_SECRET_KEY;
 
-  // Extract CAPTCHA token from headers or body
+  // Extract CAPTCHA token from headers or body (guard against non-string JSON payloads)
   const body = (request.body as Record<string, any>) || {};
-  const captchaToken = (
-    (request.headers['cf-turnstile-response'] as string) ||
-    (request.headers['x-captcha-token'] as string) ||
-    body.captchaToken ||
-    body['cf-turnstile-response']
-  )?.trim();
+  const rawCandidate =
+    request.headers['cf-turnstile-response'] ??
+    request.headers['x-captcha-token'] ??
+    body.captchaToken ??
+    body['cf-turnstile-response'];
+  const captchaToken = typeof rawCandidate === 'string' ? rawCandidate.trim() : undefined;
 
   // SEC-01: Permit designated test tokens strictly in automated test environment (NODE_ENV === 'test').
   // Staging, preview, and production environments never accept bypass tokens.
@@ -73,7 +73,7 @@ export async function verifyCaptcha(request: FastifyRequest, reply: FastifyReply
   try {
     const formData = new URLSearchParams();
     formData.append('secret', secretKey);
-    formData.append('response', captchaToken);
+    formData.append('response', captchaToken || '');
     formData.append('remoteip', request.ip);
 
     const res = await fetch(verifyUrl, {

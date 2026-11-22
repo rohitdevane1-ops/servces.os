@@ -10,6 +10,11 @@ services:
     ports:
       - "${POSTGRES_BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
 
+  postgres_demo:
+    profiles: ["demo"]
+    ports:
+      - "${POSTGRES_BIND_IP:-127.0.0.1}:${DEMO_POSTGRES_PORT:-5433}:5432"
+
   redis:
     ports:
       - "${REDIS_BIND_IP:-127.0.0.1}:${REDIS_PORT:-6379}:6379"

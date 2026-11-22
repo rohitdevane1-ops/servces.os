@@ -1,24 +1,17 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
-  FolderPlus, 
   Layers, 
   Edit2, 
-  Trash2, 
   Plus, 
-  Sparkles, 
   Wrench, 
-  Zap, 
-  Droplet, 
-  Home, 
-  ShieldCheck,
   X,
   Check
 } from 'lucide-react';
 import { ServiceCategory } from '../../types';
 
 export const Page14ServiceCategories: React.FC = () => {
-  const { categories, navigateToPage, addToast, setIsCreateCategoryModalOpen, updateCategory, pricingConfig } = useAdmin();
+  const { categories, addToast, setIsCreateCategoryModalOpen, updateCategory, pricingConfig } = useAdmin();
   const [editingCategory, setEditingCategory] = useState<ServiceCategory | null>(null);
   const [editName, setEditName] = useState('');
 

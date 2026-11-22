@@ -1,35 +1,43 @@
-import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
-import { 
-  Globe, 
-  Save, 
-  Image, 
-  Sparkles, 
-  Tag, 
-  CheckCircle, 
-  Upload, 
-  Layout, 
-  ShieldCheck,
-  Smartphone
-} from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { useAdmin } from '../../context/adminContextCore';
+import { Save, Globe, Sparkles, Tag, ShieldCheck } from 'lucide-react';
 
 export const Page34WebsiteContentManagement: React.FC = () => {
-  const { addToast, navigateToPage, cmsConfig, updateCmsConfig } = useAdmin();
+  const { navigateToPage, cmsConfig, updateCmsConfig, isDemoMode } = useAdmin();
+  const [heroHeading, setHeroHeading] = useState(cmsConfig.heroHeading);
+  const [heroSubheading, setHeroSubheading] = useState(cmsConfig.heroSubheading);
+  const [searchPlaceholder, setSearchPlaceholder] = useState(
+    cmsConfig.searchPlaceholder || 'Search certified home services...'
+  );
+  const [promoCoupon, setPromoCoupon] = useState(cmsConfig.promoCoupon);
+  const [promoDiscount, setPromoDiscount] = useState(cmsConfig.promoDiscount);
+  const [isSaving, setIsSaving] = useState(false);
 
-  const [heroHeading, setHeroHeading] = useState<string>(cmsConfig.heroHeading);
-  const [heroSubheading, setHeroSubheading] = useState<string>(cmsConfig.heroSubheading);
-  const [promoCoupon, setPromoCoupon] = useState<string>(cmsConfig.promoCoupon);
-  const [promoDiscount, setPromoDiscount] = useState<number>(cmsConfig.promoDiscount);
-  const [heroGraphicName, setHeroGraphicName] = useState<string>(cmsConfig.heroGraphicName || 'serviceos_master_ui.jpg');
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setHeroHeading(cmsConfig.heroHeading);
+      setHeroSubheading(cmsConfig.heroSubheading);
+      setSearchPlaceholder(cmsConfig.searchPlaceholder || 'Search certified home services...');
+      setPromoCoupon(cmsConfig.promoCoupon);
+      setPromoDiscount(cmsConfig.promoDiscount);
+    });
+    return () => {
+      active = false;
+    };
+  }, [cmsConfig]);
 
-  const handleSave = () => {
-    updateCmsConfig({
+  const handlePublish = async () => {
+    setIsSaving(true);
+    await updateCmsConfig({
       heroHeading,
       heroSubheading,
+      searchPlaceholder,
       promoCoupon,
       promoDiscount,
-      heroGraphicName
     });
+    setIsSaving(false);
   };
 
   return (
@@ -37,138 +45,131 @@ export const Page34WebsiteContentManagement: React.FC = () => {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Website Content Management</h1>
-          <p className="text-xs text-slate-500 mt-1">Configure mobile app hero banners, promotional coupon codes, trust badges, and marketing copy</p>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+            Website &amp; App Content Management (CMS)
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Manage customer app hero banners, search placeholders, and active promo codes in PostgreSQL (`tenant_cms_configs`)
+          </p>
         </div>
 
         <button
-          onClick={handleSave}
-          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+          disabled={isSaving || isDemoMode}
+          onClick={() => void handlePublish()}
+          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
         >
           <Save className="w-3.5 h-3.5" />
-          Publish Content Live
+          {isSaving ? 'Publishing to Server...' : 'Publish Live to Mobile & Web'}
         </button>
       </div>
 
+      {isDemoMode && (
+        <div className="p-3.5 bg-indigo-50 border border-indigo-200 rounded-2xl text-xs text-indigo-900 flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0" />
+          <span>
+            <strong>Interactive Sandbox Guard:</strong> CMS configuration updates are read-only in Demo Mode.
+          </span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column (2 Cols): CMS Forms */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Hero Banner Section */}
           <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
-            <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
-              <Layout className="w-4 h-4 text-purple-600" />
-              1. Hero Banner Content (Master Day Vision Banner)
+            <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-purple-600" />
+              1. Customer Mobile App Hero Banner
             </h2>
 
-            <div className="space-y-3 text-xs">
+            <div className="space-y-3">
               <div>
-                <label className="font-bold text-slate-700 block mb-1">Hero Main Title</label>
+                <label className="text-xs font-bold text-slate-700 block mb-1">Hero Main Headline</label>
                 <input
                   type="text"
                   value={heroHeading}
-                  onChange={e => setHeroHeading(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
+                  onChange={(e) => setHeroHeading(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
                 />
               </div>
 
               <div>
-                <label className="font-bold text-slate-700 block mb-1">Hero Subtitle Copy</label>
+                <label className="text-xs font-bold text-slate-700 block mb-1">Hero Supporting Subheadline</label>
                 <textarea
                   rows={2}
                   value={heroSubheading}
-                  onChange={e => setHeroSubheading(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-slate-700 focus:outline-none"
+                  onChange={(e) => setHeroSubheading(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-700 focus:outline-none focus:border-emerald-500"
                 />
               </div>
 
               <div>
-                <label className="font-bold text-slate-700 block mb-1">Hero Graphic Image Asset</label>
-                <div className="p-4 border-2 border-dashed border-slate-200 rounded-xl flex items-center justify-between bg-slate-50">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center font-bold">
-                      <Image className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="font-bold text-slate-800">{heroGraphicName}</div>
-                      <div className="text-[11px] text-slate-400">Smiling woman graphic banner • 1200x600 px</div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = heroGraphicName === 'serviceos_master_ui.jpg' ? 'serviceos_hero_alt.jpg' : 'serviceos_master_ui.jpg';
-                      setHeroGraphicName(next);
-                      addToast(`Switched hero asset to ${next}!`, 'info');
-                    }}
-                    className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-700 font-bold hover:bg-slate-100 cursor-pointer"
-                  >
-                    Switch Asset
-                  </button>
-                </div>
+                <label className="text-xs font-bold text-slate-700 block mb-1">Search Bar Placeholder Text</label>
+                <input
+                  type="text"
+                  value={searchPlaceholder}
+                  onChange={(e) => setSearchPlaceholder(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 focus:outline-none focus:border-emerald-500"
+                />
               </div>
             </div>
           </div>
 
-          {/* Promotional Coupon Banner */}
           <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
-            <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+            <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
               <Tag className="w-4 h-4 text-emerald-600" />
-              2. Promotional Campaign Coupon Banner
+              2. Active Promo Coupon Banner
             </h2>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="font-bold text-slate-700 block mb-1">Coupon Promo Code</label>
+                <label className="text-xs font-bold text-slate-700 block mb-1">Active Promo Code</label>
                 <input
                   type="text"
                   value={promoCoupon}
-                  onChange={e => setPromoCoupon(e.target.value.toUpperCase())}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-mono font-bold text-slate-900 focus:outline-none"
+                  onChange={(e) => setPromoCoupon(e.target.value.toUpperCase())}
+                  placeholder="e.g. WELCOME20"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-mono font-bold text-emerald-700 focus:outline-none"
                 />
               </div>
 
               <div>
-                <label className="font-bold text-slate-700 block mb-1">Discount Value (% Off)</label>
+                <label className="text-xs font-bold text-slate-700 block mb-1">Discount Percentage (%)</label>
                 <input
                   type="number"
+                  min={0}
+                  max={100}
                   value={promoDiscount}
-                  onChange={e => setPromoDiscount(Number(e.target.value))}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 font-bold text-slate-900 focus:outline-none"
+                  onChange={(e) => setPromoDiscount(Number(e.target.value))}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-bold text-slate-900 focus:outline-none"
                 />
               </div>
             </div>
           </div>
         </div>
 
-        {/* Right Column (1 Col): Live Mobile Preview */}
+        {/* Right 1 Col: Live Mobile Preview */}
         <div className="space-y-6">
           <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
-            <div className="flex items-center gap-2">
-              <Smartphone className="w-4 h-4 text-purple-600" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-600">Mobile Day Vision Banner</h3>
-            </div>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+              <Globe className="w-3.5 h-3.5 text-blue-600" /> Live Customer App Preview
+            </h3>
 
-            <div className="p-4 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 text-white space-y-3 shadow-sm">
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-white/20 backdrop-blur-xs">
-                🏷️ Use Code {promoCoupon} ({promoDiscount}% OFF)
-              </span>
-
-              <div>
-                <h4 className="text-base font-extrabold leading-tight">{heroHeading}</h4>
-                <p className="text-[11px] opacity-80 mt-1 line-clamp-2">{heroSubheading}</p>
+            <div className="p-5 rounded-2xl bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 border border-purple-100 space-y-3">
+              {promoCoupon && (
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-purple-600 text-white uppercase">
+                  Use Code: {promoCoupon} ({promoDiscount}% OFF)
+                </span>
+              )}
+              <div className="text-base font-extrabold text-slate-900 leading-snug">{heroHeading}</div>
+              <p className="text-xs text-slate-600 leading-relaxed">{heroSubheading}</p>
+              <div className="px-3 py-2 bg-white/90 rounded-xl border border-purple-200 text-[11px] text-slate-400">
+                {searchPlaceholder}
               </div>
-
-              <div className="pt-1">
-                <button 
-                  onClick={() => {
-                    navigateToPage(6);
-                    addToast('Previewing customer mobile booking experience...', 'info');
-                  }}
-                  className="px-3.5 py-1.5 bg-white hover:bg-slate-100 text-indigo-700 font-extrabold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
-                >
-                  Book A Service →
-                </button>
-              </div>
+              <button
+                onClick={() => navigateToPage(13)}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer transition-colors"
+              >
+                Explore Services â†’
+              </button>
             </div>
           </div>
         </div>

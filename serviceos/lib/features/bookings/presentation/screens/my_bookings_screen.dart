@@ -74,6 +74,17 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
     final textSecondary = isDark ? AppColors.nightTextSecondary : AppColors.dayTextSecondary;
     final borderColor = isDark ? AppColors.nightBorder : AppColors.dayBorder;
 
+    final activeCount = _allBookings.where((b) =>
+        b.status == BookingStatus.inProgress ||
+        b.status == BookingStatus.enRoute ||
+        b.status == BookingStatus.arrived ||
+        b.status == BookingStatus.assigned).length;
+    final scheduledCount = _allBookings.where((b) =>
+        b.status == BookingStatus.requested || b.status == BookingStatus.broadcasting).length;
+    final completedCount = _allBookings.where((b) =>
+        b.status == BookingStatus.completed || b.status == BookingStatus.settled).length;
+    final cancelledCount = _allBookings.where((b) => b.status == BookingStatus.cancelled).length;
+
     return Scaffold(
       backgroundColor: canvasColor,
       appBar: AppBar(
@@ -137,11 +148,11 @@ class _MyBookingsScreenState extends State<MyBookingsScreen>
                 unselectedLabelColor: textSecondary,
                 labelStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500, fontSize: 14),
-                tabs: const [
-                  Tab(text: 'Active (2)'),
-                  Tab(text: 'Scheduled (1)'),
-                  Tab(text: 'Completed (4)'),
-                  Tab(text: 'Cancelled (0)'),
+                tabs: [
+                  Tab(text: 'Active ($activeCount)'),
+                  Tab(text: 'Scheduled ($scheduledCount)'),
+                  Tab(text: 'Completed ($completedCount)'),
+                  Tab(text: 'Cancelled ($cancelledCount)'),
                 ],
               ),
             ],

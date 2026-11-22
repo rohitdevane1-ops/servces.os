@@ -1,95 +1,89 @@
-import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
-import { 
-  ArrowLeft, 
-  Send, 
-  CheckCircle, 
-  Paperclip, 
-  Smile, 
-  User, 
-  ShieldCheck, 
-  Clock, 
-  Zap, 
-  Phone
-} from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useAdmin } from '../../context/adminContextCore';
+import { apiClient } from '../../services/apiClient';
+import { ArrowLeft, Send, CheckCircle, User, ShieldCheck, RefreshCw } from 'lucide-react';
 
-interface ChatMessage {
+interface ServerTicketMessage {
   id: string;
-  sender: 'Customer' | 'Admin' | 'System' | 'Technician';
-  senderName: string;
-  text: string;
-  time: string;
+  senderId: string;
+  senderEmail: string;
+  senderRole: string;
+  messageBody: string;
+  attachmentsUrls: string[];
+  createdAt: string;
 }
 
 export const Page32TicketDetailsConversation: React.FC = () => {
-  const { navigateToPage, addToast, tickets, selectedTicketId } = useAdmin();
+  const { navigateToPage, addToast, tickets, selectedTicketId, setSelectedTicketId, updateTicketStatus } = useAdmin();
+  const activeTicketSummary = tickets.find((t) => t.id === selectedTicketId) || tickets[0];
 
-  const ticket = tickets.find(t => t.id === selectedTicketId) || tickets[0] || null;
+  const [ticketDetail, setTicketDetail] = useState<any | null>(null);
+  const [messages, setMessages] = useState<ServerTicketMessage[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [replyText, setReplyText] = useState<string>('');
+  const [isSending, setIsSending] = useState<boolean>(false);
 
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    if (!ticket) return [];
-    return [
-      { 
-        id: `m-init-${ticket.id}`, 
-        sender: 'Customer', 
-        senderName: ticket.customerName, 
-        text: `Inquiry regarding ticket #${ticket.ticketNo}: ${ticket.subject}`, 
-        time: ticket.createdAt || 'Recent' 
-      }
-    ];
-  });
+  const loadThread = useCallback(async (ticketId: string) => {
+    setLoading(true);
+    const res = await apiClient.getTicket(ticketId);
+    if (res.success && res.data) {
+      setTicketDetail(res.data);
+      setMessages(Array.isArray(res.data.messages) ? res.data.messages : []);
+    } else {
+      setTicketDetail(null);
+      setMessages([]);
+    }
+    setLoading(false);
+  }, []);
 
-  const [inputMessage, setInputMessage] = useState<string>('');
+  useEffect(() => {
+    const ticketId = activeTicketSummary?.id;
+    if (!ticketId) return;
+    let active = true;
+    Promise.resolve().then(() => {
+      if (active) void loadThread(ticketId);
+    });
+    return () => {
+      active = false;
+    };
+  }, [activeTicketSummary?.id, loadThread]);
 
-  if (!ticket) {
+  if (!activeTicketSummary) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigateToPage(31)}
-            className="p-2 bg-white border border-slate-200 hover:border-slate-300 rounded-xl text-slate-600 shadow-2xs transition-colors cursor-pointer"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <div>
-            <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Support Conversation Desk</h1>
-            <p className="text-xs text-slate-500 mt-1">Real-time triage bridge between customer, assigned technician, and desk supervisor</p>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-2xl p-12 border border-slate-200/80 shadow-xs text-center flex flex-col items-center justify-center max-w-xl mx-auto my-12">
-          <div className="w-16 h-16 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mb-4">
-            <CheckCircle className="w-8 h-8" />
-          </div>
-          <h2 className="text-lg font-bold text-slate-900">No Support Ticket Selected</h2>
-          <p className="text-xs text-slate-500 mt-2 max-w-sm">
-            There are currently no open support tickets or no specific ticket conversation was selected from the queue.
-          </p>
-          <div className="flex items-center gap-3 mt-6">
-            <button
-              onClick={() => navigateToPage(31)}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer"
-            >
-              ← Support Tickets Queue
-            </button>
-          </div>
-        </div>
+      <div className="bg-white rounded-2xl p-12 border border-slate-200/80 text-center space-y-4">
+        <div className="text-lg font-extrabold text-slate-900">No Support Ticket Selected</div>
+        <p className="text-xs text-slate-500">
+          Select an open or resolved support ticket from the Support Ticket Dashboard to view the conversation thread.
+        </p>
+        <button
+          onClick={() => navigateToPage(31)}
+          className="px-4 py-2 bg-slate-900 text-white font-bold text-xs rounded-xl cursor-pointer"
+        >
+          â† Back to Ticket Dashboard
+        </button>
       </div>
     );
   }
 
-  const sendMessage = () => {
-    if (!inputMessage.trim()) return;
-    const newMsg: ChatMessage = {
-      id: `m-${Date.now()}`,
-      sender: 'Admin',
-      senderName: 'Dispatch Supervisor',
-      text: inputMessage.trim(),
-      time: 'Just now'
-    };
-    setMessages(prev => [...prev, newMsg]);
-    setInputMessage('');
-    addToast('Message dispatched to customer and technician mobile apps!', 'success');
+  const handleSendReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!replyText.trim()) return;
+    setIsSending(true);
+    const res = await apiClient.postTicketMessage(activeTicketSummary.id, replyText.trim());
+    setIsSending(false);
+    if (!res.success) {
+      addToast(res.error?.message || 'Failed to send reply.', 'error');
+      return;
+    }
+    setReplyText('');
+    addToast(`Reply posted to Ticket #${activeTicketSummary.ticketNo}.`, 'success');
+    await loadThread(activeTicketSummary.id);
+  };
+
+  const handleResolveToggle = async () => {
+    const nextStatus = activeTicketSummary.status === 'Resolved' ? 'Open' : 'Resolved';
+    await updateTicketStatus(activeTicketSummary.id, nextStatus);
+    await loadThread(activeTicketSummary.id);
   };
 
   return (
@@ -105,133 +99,154 @@ export const Page32TicketDetailsConversation: React.FC = () => {
           </button>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Ticket #{ticket.ticketNo}: Live Conversation</h1>
-              <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                ticket.priority === 'Urgent' ? 'bg-rose-100 text-rose-800' :
-                ticket.priority === 'High' ? 'bg-amber-100 text-amber-800' :
-                'bg-blue-100 text-blue-800'
-              }`}>
-                Priority: {ticket.priority}
+              <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+                Ticket #{activeTicketSummary.ticketNo}
+              </h1>
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                  activeTicketSummary.status === 'Resolved'
+                    ? 'bg-emerald-100 text-emerald-800'
+                    : activeTicketSummary.status === 'In Progress'
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-rose-100 text-rose-800'
+                }`}
+              >
+                {activeTicketSummary.status}
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              Direct three-way operational bridge: Customer ({ticket.customerName}), Assigned Technician, and Desk Supervisor
+              {activeTicketSummary.subject} â€¢ Customer: {activeTicketSummary.customerName}
             </p>
           </div>
         </div>
 
-        <button
-          onClick={() => {
-            addToast(`Ticket #${ticket.ticketNo} marked resolved and archived.`, 'success');
-            navigateToPage(31);
-          }}
-          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
-        >
-          <CheckCircle className="w-3.5 h-3.5" />
-          Mark Resolved &amp; Close Ticket
-        </button>
+        <div className="flex items-center gap-2">
+          <select
+            value={activeTicketSummary.id}
+            onChange={(e) => setSelectedTicketId(e.target.value)}
+            className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 cursor-pointer"
+          >
+            {tickets.map((t) => (
+              <option key={t.id} value={t.id}>
+                #{t.ticketNo} â€” {t.customerName}
+              </option>
+            ))}
+          </select>
+
+          <button
+            onClick={() => void loadThread(activeTicketSummary.id)}
+            className="p-2 bg-white border border-slate-200 hover:border-slate-300 rounded-xl text-slate-600 cursor-pointer"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-emerald-600' : ''}`} />
+          </button>
+
+          <button
+            onClick={() => void handleResolveToggle()}
+            className={`px-4 py-2 font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 ${
+              activeTicketSummary.status === 'Resolved'
+                ? 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+            }`}
+          >
+            <CheckCircle className="w-3.5 h-3.5" />
+            {activeTicketSummary.status === 'Resolved' ? 'Reopen Ticket' : 'Mark Ticket as Resolved'}
+          </button>
+        </div>
       </div>
 
-      {/* Main Grid: Left Chat Stream (8 Cols), Right Ticket Vitals (4 Cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Chat Studio */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 shadow-xs flex flex-col h-[580px]">
-          {/* Chat Messages Feed */}
-          <div className="flex-1 p-5 overflow-y-auto space-y-4">
-            {messages.map(msg => (
-              <div
-                key={msg.id}
-                className={`flex flex-col ${
-                  msg.sender === 'Admin' ? 'items-end' :
-                  msg.sender === 'System' ? 'items-center' : 'items-start'
-                }`}
-              >
-                {msg.sender === 'System' ? (
-                  <div className="px-3 py-1 bg-slate-100 rounded-full text-[11px] text-slate-600 font-bold flex items-center gap-1.5 my-1">
-                    <Zap className="w-3 h-3 text-amber-500" />
-                    {msg.text}
-                  </div>
-                ) : (
-                  <div className={`max-w-[80%] rounded-2xl p-4 text-xs ${
-                    msg.sender === 'Admin'
-                      ? 'bg-slate-900 text-white rounded-br-xs'
-                      : msg.sender === 'Technician'
-                      ? 'bg-emerald-50 text-emerald-950 border border-emerald-200/80 rounded-bl-xs'
-                      : 'bg-slate-100 text-slate-900 rounded-bl-xs'
-                  }`}>
-                    <div className="flex items-center justify-between gap-4 mb-1">
-                      <span className="font-extrabold text-[11px] flex items-center gap-1">
-                        {msg.senderName}
-                        {msg.sender === 'Admin' && <span className="text-[10px] text-emerald-400 font-bold">(Desk)</span>}
-                        {msg.sender === 'Technician' && <span className="text-[10px] text-emerald-700 font-bold">(Pro)</span>}
-                      </span>
-                      <span className="text-[10px] opacity-70">{msg.time}</span>
-                    </div>
-                    <p className="leading-relaxed">{msg.text}</p>
-                  </div>
-                )}
+        {/* Conversation Feed */}
+        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 shadow-xs flex flex-col justify-between overflow-hidden">
+          <div className="p-6 space-y-4 max-h-[460px] overflow-y-auto">
+            {loading ? (
+              <div className="py-12 text-center text-xs text-slate-400">
+                Loading ticket conversation thread...
               </div>
-            ))}
+            ) : messages.length === 0 ? (
+              <div className="py-12 text-center text-xs text-slate-400">
+                No messages posted on this ticket yet. Send a reply below.
+              </div>
+            ) : (
+              messages.map((msg) => {
+                const isSupport = msg.senderRole === 'ADMIN' || msg.senderRole === 'STAFF';
+                return (
+                  <div key={msg.id} className={`flex flex-col ${isSupport ? 'items-end' : 'items-start'}`}>
+                    <div className="text-[11px] font-bold text-slate-400 mb-1 px-1">
+                      {msg.senderEmail} ({msg.senderRole}) â€¢{' '}
+                      {msg.createdAt ? new Date(msg.createdAt).toLocaleString() : ''}
+                    </div>
+                    <div
+                      className={`max-w-lg p-4 rounded-2xl text-xs leading-relaxed ${
+                        isSupport
+                          ? 'bg-emerald-600 text-white rounded-br-none shadow-xs'
+                          : 'bg-slate-100 text-slate-800 rounded-bl-none border border-slate-200'
+                      }`}
+                    >
+                      {msg.messageBody}
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
 
-          {/* Input Box */}
-          <div className="p-3.5 border-t border-slate-100 bg-slate-50/50 rounded-b-2xl">
-            <form onSubmit={e => { e.preventDefault(); sendMessage(); }} className="flex items-center gap-2">
-              <input
-                type="text"
-                value={inputMessage}
-                onChange={e => setInputMessage(e.target.value)}
-                placeholder={`Type operational reply to ${ticket.customerName}...`}
-                className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-slate-400 text-slate-900 shadow-2xs"
-              />
-              <button
-                type="submit"
-                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
-              >
-                <Send className="w-3.5 h-3.5" />
-                <span>Send</span>
-              </button>
-            </form>
-          </div>
+          <form onSubmit={handleSendReply} className="p-4 bg-slate-50 border-t border-slate-100 flex items-center gap-3">
+            <input
+              type="text"
+              placeholder={`Write response to ${activeTicketSummary.customerName}...`}
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              className="flex-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-xs text-slate-800 focus:outline-none focus:border-emerald-500"
+            />
+            <button
+              type="submit"
+              disabled={isSending || !replyText.trim()}
+              className="px-4 py-2.5 bg-slate-900 hover:bg-black disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+            >
+              <Send className="w-3.5 h-3.5" />
+              {isSending ? 'Sending...' : 'Send Reply'}
+            </button>
+          </form>
         </div>
 
-        {/* Right Ticket Details & Vitals */}
-        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-5 space-y-4 h-fit">
-          <h2 className="text-sm font-extrabold text-slate-900 pb-2 border-b border-slate-100">
-            Ticket Specifications
-          </h2>
+        {/* Customer Context Card */}
+        <div className="space-y-6">
+          <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Ticket &amp; Customer Context</h3>
 
-          <div className="space-y-3 text-xs">
-            <div>
-              <span className="text-[10px] uppercase font-bold text-slate-400 block">Subject</span>
-              <span className="font-bold text-slate-800">{ticket.subject}</span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
-              <div>
-                <span className="text-[10px] uppercase font-bold text-slate-400 block">Customer</span>
-                <span className="font-bold text-slate-800">{ticket.customerName}</span>
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-slate-900 text-white font-extrabold flex items-center justify-center">
+                <User className="w-5 h-5" />
               </div>
               <div>
-                <span className="text-[10px] uppercase font-bold text-slate-400 block">Category</span>
-                <span className="font-bold text-slate-800">{ticket.category}</span>
+                <div className="text-sm font-extrabold text-slate-900">{activeTicketSummary.customerName}</div>
+                <div className="text-xs text-slate-500">
+                  {ticketDetail?.customerEmail || activeTicketSummary.category}
+                </div>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
-              <div>
-                <span className="text-[10px] uppercase font-bold text-slate-400 block">Assigned Pro</span>
-                <span className="font-bold text-emerald-700">Assigned Field Pro</span>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Ticket Number:</span>
+                <span className="font-mono font-bold text-slate-800">#{activeTicketSummary.ticketNo}</span>
               </div>
-              <div>
-                <span className="text-[10px] uppercase font-bold text-slate-400 block">Status</span>
-                <span className="font-bold text-slate-800">{ticket.status}</span>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Linked Booking:</span>
+                <span className="font-mono font-bold text-slate-800">
+                  {ticketDetail?.bookingReference || 'General Inquiry'}
+                </span>
               </div>
-            </div>
-
-            <div className="pt-2 border-t border-slate-100">
-              <span className="text-[10px] uppercase font-bold text-slate-400 block">Service Territory</span>
-              <span className="font-medium text-slate-700">Central Service Zone</span>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Priority Level:</span>
+                <span className="font-bold text-rose-700">{activeTicketSummary.priority}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Resolution Status:</span>
+                <span className="font-bold text-emerald-700 flex items-center gap-1">
+                  <ShieldCheck className="w-3.5 h-3.5" /> {activeTicketSummary.status}
+                </span>
+              </div>
             </div>
           </div>
         </div>

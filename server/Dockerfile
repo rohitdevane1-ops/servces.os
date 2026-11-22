@@ -37,6 +37,9 @@ RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/src/database/migrations ./dist/database/migrations
 
+# Create writable upload directory for non-root node user
+RUN mkdir -p /app/uploads && chown -R node:node /app/uploads
+
 # Expose API port
 EXPOSE 3000
 

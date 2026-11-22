@@ -48,11 +48,34 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'geography') THEN
     CREATE DOMAIN geography AS text;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'geometry') THEN
+    CREATE DOMAIN geometry AS text;
+  END IF;
 END $$;
 CREATE OR REPLACE FUNCTION st_makepoint(double precision, double precision) RETURNS text
   LANGUAGE sql IMMUTABLE AS $$ SELECT 'POINT(' || $1 || ' ' || $2 || ')' $$;
 CREATE OR REPLACE FUNCTION st_setsrid(text, integer) RETURNS text
   LANGUAGE sql IMMUTABLE AS $$ SELECT $1 $$;
+CREATE OR REPLACE FUNCTION st_x(text) RETURNS double precision
+  LANGUAGE sql IMMUTABLE AS $$
+    SELECT split_part(regexp_replace($1, '^POINT\\(|\\)$', '', 'g'), ' ', 1)::double precision
+  $$;
+CREATE OR REPLACE FUNCTION st_y(text) RETURNS double precision
+  LANGUAGE sql IMMUTABLE AS $$
+    SELECT split_part(regexp_replace($1, '^POINT\\(|\\)$', '', 'g'), ' ', 2)::double precision
+  $$;
+CREATE OR REPLACE FUNCTION st_distance(text, text) RETURNS double precision
+  LANGUAGE sql IMMUTABLE AS $$
+    SELECT 6371000.0 * 2.0 * asin(sqrt(
+      power(sin(radians(st_y($2) - st_y($1)) / 2.0), 2) +
+      cos(radians(st_y($1))) * cos(radians(st_y($2))) *
+      power(sin(radians(st_x($2) - st_x($1)) / 2.0), 2)
+    ))
+  $$;
+CREATE OR REPLACE FUNCTION st_dwithin(text, text, double precision) RETURNS boolean
+  LANGUAGE sql IMMUTABLE AS $$
+    SELECT st_distance($1, $2) <= $3
+  $$;
 `;
 
 /** Adapt PostGIS-specific DDL when only the shim is available. */
@@ -114,6 +137,7 @@ export async function startTestDb(opts: { migrateUpTo?: string | null } = {}): P
       password: 'postgres',
       port,
       persistent: false,
+      initdbFlags: ['--encoding=UTF8', '--locale=C'],
       onLog: () => {},
       onError: () => {},
     });
@@ -123,7 +147,11 @@ export async function startTestDb(opts: { migrateUpTo?: string | null } = {}): P
     url = `postgresql://postgres:postgres@127.0.0.1:${port}/serviceos_test`;
     stopFn = async () => {
       await server.stop();
-      fs.rmSync(dir, { recursive: true, force: true });
+      try {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      } catch {
+        // Ignore transient Windows file lock on ephemeral temp directory after PG shutdown
+      }
     };
   }
 
@@ -160,6 +188,7 @@ export async function seedTenant(pool: pg.Pool, slug = 'acme') {
     ['1020', 'Stripe Holding Escrow Clearing', 'ASSET'],
     ['2010', 'Customer Escrow Deposits Liability', 'LIABILITY'],
     ['2020', 'Technician Unpaid Payables', 'LIABILITY'],
+    ['2030', 'Tax / VAT / GST Payable', 'LIABILITY'],
     ['4010', 'Platform Commission Revenue', 'REVENUE'],
     ['5010', 'Stripe Merchant Processing Expense', 'EXPENSE'],
   ];

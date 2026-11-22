@@ -1,24 +1,33 @@
 import React, { useState } from 'react';
-import { useAdmin } from '../../context/AdminContext';
+import { useAdmin } from '../../context/adminContextCore';
 import { 
   ArrowLeft, 
   Save, 
   CheckCircle, 
-  Clock, 
-  DollarSign, 
-  Tag, 
-  FileText, 
-  ListChecks,
-  Plus
+  Clock
 } from 'lucide-react';
 
 export const Page15AddEditService: React.FC = () => {
-  const { navigateToPage, addToast, categories, services, selectedServiceId, addService, updateService } = useAdmin();
+  const {
+    navigateToPage,
+    addToast,
+    categories,
+    services,
+    selectedServiceId,
+    addService,
+    updateService,
+    tenantConfig
+  } = useAdmin();
 
   const existingService = services.find(s => s.id === selectedServiceId);
 
   const [serviceName, setServiceName] = useState<string>(existingService?.name || '');
-  const [category, setCategory] = useState<string>(existingService?.category || categories[0]?.name || 'General Services');
+  const [categoryId, setCategoryId] = useState<string>(
+    existingService?.categoryId ||
+    categories.find(c => c.name === existingService?.category)?.id ||
+    categories[0]?.id ||
+    ''
+  );
   const [basePrice, setBasePrice] = useState<number>(existingService?.basePrice || 100);
   const [duration, setDuration] = useState<number>(existingService?.durationMinutes || 60);
   const [description, setDescription] = useState<string>(existingService?.description || '');
@@ -26,6 +35,7 @@ export const Page15AddEditService: React.FC = () => {
   const [newChecklistItem, setNewChecklistItem] = useState<string>('');
   const [isSurgeEligible, setIsSurgeEligible] = useState<boolean>(true);
   const [requiresPin, setRequiresPin] = useState<boolean>(true);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
 
   const addCheckItem = () => {
     if (!newChecklistItem.trim()) return;
@@ -33,37 +43,43 @@ export const Page15AddEditService: React.FC = () => {
     setNewChecklistItem('');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!serviceName.trim()) {
       addToast('Please enter a service name', 'warning');
       return;
     }
 
+    const selectedCategory = categories.find(c => c.id === categoryId) || categories[0];
+    const resolvedCategoryName = selectedCategory?.name || 'General Services';
+    const resolvedCategoryId = selectedCategory?.id;
+
+    setIsSaving(true);
     if (existingService) {
-      updateService(existingService.id, {
+      await updateService(existingService.id, {
         name: serviceName.trim(),
-        category,
+        category: resolvedCategoryName,
+        categoryId: resolvedCategoryId,
         basePrice,
         durationMinutes: duration,
         description
       });
     } else {
-      addService({
+      await addService({
         name: serviceName.trim(),
-        category,
+        category: resolvedCategoryName,
+        categoryId: resolvedCategoryId,
         basePrice,
         durationMinutes: duration,
         description,
         status: 'Active'
       });
     }
-
-    navigateToPage(13); // Back to All Services
+    setIsSaving(false);
+    navigateToPage(13);
   };
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <button
@@ -76,23 +92,24 @@ export const Page15AddEditService: React.FC = () => {
             <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
               {existingService ? `Edit Service: ${existingService.name}` : 'Add New Service'}
             </h1>
-            <p className="text-xs text-slate-500 mt-1">Configure service definitions, checklists, pricing tiers, and required technician tools</p>
+            <p className="text-xs text-slate-500 mt-1">
+              Configure service definitions, checklists, pricing tiers, and duration
+            </p>
           </div>
         </div>
 
         <button
+          disabled={isSaving}
           onClick={handleSave}
-          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
         >
           <Save className="w-3.5 h-3.5" />
-          Save &amp; Publish Service
+          <span>{isSaving ? 'Saving...' : 'Save & Publish Service'}</span>
         </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column (2 Cols): Form */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Basic Info */}
           <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
             <h2 className="text-sm font-extrabold text-slate-900">1. Basic Service Information</h2>
 
@@ -112,27 +129,26 @@ export const Page15AddEditService: React.FC = () => {
                 <div>
                   <label className="text-xs font-bold text-slate-700 block mb-1">Primary Category</label>
                   <select
-                    value={category}
-                    onChange={e => setCategory(e.target.value)}
+                    value={categoryId}
+                    onChange={e => setCategoryId(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-bold text-slate-800 focus:outline-none"
                   >
                     {categories.map(c => (
-                      <option key={c.id} value={c.name}>{c.name}</option>
+                      <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold text-slate-700 block mb-1">Base Price ($ USD)</label>
-                  <div className="relative">
-                    <DollarSign className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="number"
-                      value={basePrice}
-                      onChange={e => setBasePrice(Number(e.target.value))}
-                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none"
-                    />
-                  </div>
+                  <label className="text-xs font-bold text-slate-700 block mb-1">
+                    Base Price ({tenantConfig.currencyCode})
+                  </label>
+                  <input
+                    type="number"
+                    value={basePrice}
+                    onChange={e => setBasePrice(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-800 focus:outline-none"
+                  />
                 </div>
               </div>
 
@@ -148,12 +164,13 @@ export const Page15AddEditService: React.FC = () => {
             </div>
           </div>
 
-          {/* Service Inclusion Checklist */}
           <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-4">
             <h2 className="text-sm font-extrabold text-slate-900">2. Service Inclusion Checklist (Shown to Customer)</h2>
 
             {checklist.length === 0 ? (
-              <p className="text-xs text-slate-400 italic py-2">No checklist items added yet. Add items below to outline the scope of service for customers.</p>
+              <p className="text-xs text-slate-400 italic py-2">
+                No checklist items added yet. Add items below to outline the scope of service for customers.
+              </p>
             ) : (
               <div className="space-y-2">
                 {checklist.map((item, idx) => (
@@ -164,7 +181,7 @@ export const Page15AddEditService: React.FC = () => {
                       onClick={() => setChecklist(checklist.filter((_, i) => i !== idx))}
                       className="text-slate-400 hover:text-rose-600 text-xs cursor-pointer"
                     >
-                      ×
+                      Ã—
                     </button>
                   </div>
                 ))}
@@ -191,13 +208,12 @@ export const Page15AddEditService: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Column (1 Col): Operational Constraints */}
         <div className="space-y-6">
           <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">Duration &amp; Buffer</h3>
 
             <div>
-              <label className="text-xs font-bold text-slate-700 block mb-1">Standard Duration</label>
+              <label className="text-xs font-bold text-slate-700 block mb-1">Standard Duration (Minutes)</label>
               <div className="relative">
                 <Clock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
@@ -228,7 +244,7 @@ export const Page15AddEditService: React.FC = () => {
                   onChange={e => setRequiresPin(e.target.checked)} 
                   className="rounded text-emerald-600" 
                 />
-                <span>Require Customer Security PIN on Entry</span>
+                <span>Require Customer Verification on Completion</span>
               </label>
             </div>
           </div>
