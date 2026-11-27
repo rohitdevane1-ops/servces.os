@@ -224,7 +224,7 @@ class _SupportHelpScreenState extends State<SupportHelpScreen>
         const SizedBox(height: 12),
         _buildAccordion('Water Burst Isolation Steps', 'Locate the main water valve near the street curb or garage. Turn clock-wise until fully tight. Turn on all cold faucets to drain pressure.', surfaceColor, borderColor, textPrimary, textSecondary),
         const SizedBox(height: 8),
-        _buildAccordion('Gas Leak Protocol', 'Do NOT touch electrical switches. Extinguish open flames. Evacuate immediately and dial 911 prior to booking pro.', surfaceColor, borderColor, textPrimary, textSecondary),
+        _buildAccordion('Gas Leak Protocol', 'Do NOT touch electrical switches. Extinguish open flames. Evacuate immediately and dial local emergency services prior to booking a pro.', surfaceColor, borderColor, textPrimary, textSecondary),
         const SizedBox(height: 8),
         _buildAccordion('Electrical Tripping & Smoke', 'Flip the main breaker switch on your electrical panel. Do not attempt to use water on electrical outlets.', surfaceColor, borderColor, textPrimary, textSecondary),
       ],

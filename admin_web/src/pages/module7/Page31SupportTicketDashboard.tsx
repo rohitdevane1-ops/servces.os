@@ -53,7 +53,7 @@ export const Page31SupportTicketDashboard: React.FC = () => {
         <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
           <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Support CSAT Rating</div>
           <div className="text-2xl font-extrabold text-amber-600 mt-0.5">
-            {tickets.length > 0 ? 'â˜… 5.00 / 5.0' : 'â˜… 0.00 / 5.0'}
+            {tickets.length > 0 ? '★ 5.00 / 5.0' : '★ 0.00 / 5.0'}
           </div>
           <div className="text-[10px] text-slate-400 font-bold mt-0.5">{tickets.length} total tickets</div>
         </div>
@@ -89,11 +89,11 @@ export const Page31SupportTicketDashboard: React.FC = () => {
                   }`}>
                     {t.priority}
                   </span>
-                  <span className="text-slate-400">â€¢ {t.createdAt}</span>
+                  <span className="text-slate-400">• {t.createdAt}</span>
                 </div>
 
                 <div className="font-extrabold text-slate-900 text-sm">{t.subject}</div>
-                <div className="text-slate-500">Customer: <strong className="text-slate-800">{t.customerName}</strong> â€¢ Category: {t.category}</div>
+                <div className="text-slate-500">Customer: <strong className="text-slate-800">{t.customerName}</strong> • Category: {t.category}</div>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">

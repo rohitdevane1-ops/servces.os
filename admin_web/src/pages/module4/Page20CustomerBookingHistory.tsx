@@ -164,7 +164,7 @@ export const Page20CustomerBookingHistory: React.FC = () => {
                     <td className="py-3.5 px-4 text-slate-700 font-medium">{b.serviceName}</td>
                     <td className="py-3.5 px-4 text-slate-600">{b.technicianName}</td>
                     <td className="py-3.5 px-4 text-slate-500">
-                      {b.scheduleDate} â€¢ {b.scheduleTime}
+                      {b.scheduleDate} • {b.scheduleTime}
                     </td>
                     <td className="py-3.5 px-4 font-extrabold text-slate-900">{formatCurrency(b.estimate)}</td>
                     <td className="py-3.5 px-4">

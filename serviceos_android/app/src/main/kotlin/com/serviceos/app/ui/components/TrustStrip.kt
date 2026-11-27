@@ -1,82 +1,98 @@
 package com.serviceos.app.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.serviceos.app.core.theme.LocalExtraColors
 
 @Composable
-fun TrustStrip() {
+fun TrustStrip(onClick: () -> Unit = {}) {
     val extraColors = LocalExtraColors.current
 
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(16.dp),
-        shadowElevation = 1.dp,
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF0A332C),
+                        Color(0xFF0F4C42),
+                        Color(0xFF115E59)
+                    )
+                )
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 16.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceAround
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            TrustItem(icon = Icons.Default.Shield, title = "30-Day", subtitle = "Warranty")
-            Divider(
+            Box(
                 modifier = Modifier
-                    .height(28.dp)
-                    .width(1.dp)
-                    .align(Alignment.CenterVertically),
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-            )
-            TrustItem(icon = Icons.Default.Lock, title = "Escrow", subtitle = "Protected")
-            Divider(
-                modifier = Modifier
-                    .height(28.dp)
-                    .width(1.dp)
-                    .align(Alignment.CenterVertically),
-                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-            )
-            TrustItem(icon = Icons.Default.Speed, title = "60-Min", subtitle = "Emergency")
-        }
-    }
-}
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(extraColors.verified),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VerifiedUser,
+                    contentDescription = "Verified",
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
 
-@Composable
-private fun TrustItem(icon: ImageVector, title: String, subtitle: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(
-            imageVector = icon,
-            contentDescription = title,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(18.dp)
-        )
-        Spacer(modifier = Modifier.width(6.dp))
-        Column {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.ExtraBold),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-            )
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Trusted & Verified Professionals",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 14.sp
+                    ),
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Your safety, our priority",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 11.sp),
+                    color = Color.White.copy(alpha = 0.8f)
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(Color.White),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowForward,
+                    contentDescription = "Explore",
+                    tint = Color(0xFF0A332C),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }

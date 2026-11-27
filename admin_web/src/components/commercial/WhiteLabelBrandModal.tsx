@@ -18,14 +18,14 @@ interface WhiteLabelBrandModalProps {
 }
 
 const CURRENCIES = [
-  { code: 'AED', symbol: 'AED ', name: 'UAE Dirham (AED)', flag: 'ðŸ‡¦ðŸ‡ª' },
-  { code: 'USD', symbol: '$', name: 'US Dollar (USD)', flag: 'ðŸ‡ºðŸ‡¸' },
-  { code: 'EUR', symbol: 'â‚¬', name: 'Euro (EUR)', flag: 'ðŸ‡ªðŸ‡º' },
-  { code: 'GBP', symbol: 'Â£', name: 'British Pound (GBP)', flag: 'ðŸ‡¬ðŸ‡§' },
-  { code: 'SAR', symbol: 'SAR ', name: 'Saudi Riyal (SAR)', flag: 'ðŸ‡¸ðŸ‡¦' },
-  { code: 'CAD', symbol: '$', name: 'Canadian Dollar (CAD)', flag: 'ðŸ‡¨ðŸ‡¦' },
-  { code: 'AUD', symbol: '$', name: 'Australian Dollar (AUD)', flag: 'ðŸ‡¦ðŸ‡º' },
-  { code: 'INR', symbol: 'â‚¹', name: 'Indian Rupee (INR)', flag: 'ðŸ‡®ðŸ‡³' }
+  { code: 'AED', symbol: 'AED ', name: 'UAE Dirham (AED)', flag: '🇦🇪' },
+  { code: 'USD', symbol: '$', name: 'US Dollar (USD)', flag: '🇺🇸' },
+  { code: 'EUR', symbol: '€', name: 'Euro (EUR)', flag: '🇪🇺' },
+  { code: 'GBP', symbol: '£', name: 'British Pound (GBP)', flag: '🇬🇧' },
+  { code: 'SAR', symbol: 'SAR ', name: 'Saudi Riyal (SAR)', flag: '🇸🇦' },
+  { code: 'CAD', symbol: '$', name: 'Canadian Dollar (CAD)', flag: '🇨🇦' },
+  { code: 'AUD', symbol: '$', name: 'Australian Dollar (AUD)', flag: '🇦🇺' },
+  { code: 'INR', symbol: '₹', name: 'Indian Rupee (INR)', flag: '🇮🇳' }
 ];
 
 const ACCENT_COLORS = [
@@ -87,6 +87,7 @@ export const WhiteLabelBrandModal: React.FC<WhiteLabelBrandModalProps> = ({ isOp
     const parsedCommission = parseFloat(commissionRate) || 15.0;
     const res = await updateSystemConfig({
       name: name.trim(),
+      tagline: tagline.trim() || null,
       currencyCode: curr.code,
       currencySymbol: curr.symbol,
       primaryColor: selectedColor,

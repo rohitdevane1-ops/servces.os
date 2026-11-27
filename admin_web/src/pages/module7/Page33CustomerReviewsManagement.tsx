@@ -128,13 +128,13 @@ export const Page33CustomerReviewsManagement: React.FC = () => {
                         </div>
                         <div className="text-xs text-slate-500">
                           {r.serviceName}
-                          {r.providerName ? ` â€¢ Pro: ${r.providerName}` : ''} â€¢ {r.date}
+                          {r.providerName ? ` • Pro: ${r.providerName}` : ''} • {r.date}
                         </div>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-0.5 text-amber-500 font-bold text-xs bg-amber-50 px-2.5 py-1 rounded-full">
-                      â˜… {r.rating}.0
+                      ★ {r.rating}.0
                     </div>
                   </div>
 

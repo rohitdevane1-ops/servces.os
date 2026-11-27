@@ -186,7 +186,9 @@ class ApiClient {
       if (response.data is Map && response.data['success'] == true) {
         final data = Map<String, dynamic>.from(response.data['data'] as Map? ?? {});
         if (data['demoMode'] is bool) {
-          _isDemoMode = _compiledDemoMode || (data['demoMode'] as bool);
+          _isDemoMode = data['demoMode'] as bool;
+        } else {
+          _isDemoMode = _compiledDemoMode;
         }
         final tenant = data['tenant'] is Map ? Map<String, dynamic>.from(data['tenant'] as Map) : null;
         if (tenant != null) {
@@ -208,6 +210,27 @@ class ApiClient {
   // ==========================================================================
   // AUTHENTICATION
   // ==========================================================================
+  Future<Map<String, dynamic>> register({
+    required String email,
+    required String password,
+    required String fullName,
+    String? phone,
+  }) async {
+    final response = await _dio.post('/auth/register', data: {
+      'email': email,
+      'password': password,
+      'fullName': fullName,
+      if (phone != null && phone.trim().isNotEmpty) 'phone': phone.trim(),
+    });
+    if (response.data is Map && response.data['success'] == true) {
+      final data = response.data['data'] is Map
+          ? Map<String, dynamic>.from(response.data['data'] as Map)
+          : null;
+      await _saveAuthPayload(data);
+    }
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
   Future<Map<String, dynamic>> login(String email, String password, {String? mfaCode}) async {
     final response = await _dio.post('/auth/login', data: {
       'email': email,
@@ -282,6 +305,22 @@ class ApiClient {
 
   Future<Map<String, dynamic>> getMe() async {
     final response = await _dio.get('/auth/me');
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
+  Future<Map<String, dynamic>> updateMe({
+    String? fullName,
+    String? phone,
+    String? defaultAddress,
+  }) async {
+    final response = await _dio.put(
+      '/auth/me',
+      data: {
+        if (fullName != null && fullName.trim().isNotEmpty) 'fullName': fullName.trim(),
+        if (phone != null) 'phone': phone.trim(),
+        if (defaultAddress != null) 'defaultAddress': defaultAddress.trim(),
+      },
+    );
     return Map<String, dynamic>.from(response.data as Map);
   }
 
@@ -442,6 +481,21 @@ class ApiClient {
 
   Future<Map<String, dynamic>> cancelBooking(String bookingId, String reason) async {
     final response = await _dio.post('/bookings/$bookingId/cancel', data: {'reason': reason});
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
+  }
+
+  Future<Map<String, dynamic>> rescheduleBooking(
+    String bookingId, {
+    required String scheduledStart,
+    String? reason,
+  }) async {
+    final response = await _dio.patch(
+      '/bookings/$bookingId/reschedule',
+      data: {
+        'scheduledStart': scheduledStart,
+        if (reason != null && reason.trim().isNotEmpty) 'reason': reason.trim(),
+      },
+    );
     return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
   }
 
@@ -606,6 +660,54 @@ class ApiClient {
         'priority': priority,
         'initialMessage': initialMessage,
         if (bookingId != null) 'bookingId': bookingId,
+      },
+    );
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
+  }
+
+  Future<List<dynamic>> getBookingMessages(String bookingId) async {
+    final response = await _dio.get('/bookings/$bookingId/messages');
+    return response.data['data'] as List<dynamic>? ?? [];
+  }
+
+  Future<Map<String, dynamic>> sendBookingMessage(
+    String bookingId,
+    String messageBody, {
+    List<String> attachmentsUrls = const [],
+  }) async {
+    final response = await _dio.post(
+      '/bookings/$bookingId/messages',
+      data: {
+        'messageBody': messageBody,
+        if (attachmentsUrls.isNotEmpty) 'attachmentsUrls': attachmentsUrls,
+      },
+    );
+    return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);
+  }
+
+  Future<List<dynamic>> getTechnicianOnboarding() async {
+    final response = await _dio.get('/crm/technicians/onboarding');
+    return response.data['data'] as List<dynamic>? ?? [];
+  }
+
+  Future<Map<String, dynamic>> submitTechnicianOnboarding({
+    required String licenseNumber,
+    String? nationalIdNumber,
+    required String vehicleMakeModel,
+    required String vehicleLicensePlate,
+    required String tradeCategory,
+    required List<String> documentUrls,
+  }) async {
+    final response = await _dio.post(
+      '/crm/technicians/onboarding',
+      data: {
+        'licenseNumber': licenseNumber,
+        if (nationalIdNumber != null && nationalIdNumber.trim().isNotEmpty)
+          'nationalIdNumber': nationalIdNumber.trim(),
+        'vehicleMakeModel': vehicleMakeModel,
+        'vehicleLicensePlate': vehicleLicensePlate,
+        'tradeCategory': tradeCategory,
+        'documentUrls': documentUrls,
       },
     );
     return Map<String, dynamic>.from((response.data['data'] ?? {}) as Map);

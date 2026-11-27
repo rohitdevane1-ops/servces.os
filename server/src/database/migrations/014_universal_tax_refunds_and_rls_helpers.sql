@@ -42,17 +42,25 @@ WHERE logo_url IS NULL
   AND brand_logo_url IS NOT NULL;
 
 -- ------------------------------------------------------------------------------
--- 2. Backfill COA 2030 Tax / VAT / GST Payable Liability Account
+-- 2. Backfill COA 2030 Tax / VAT / GST Payable Liability Account (FORCE RLS safe)
 -- ------------------------------------------------------------------------------
-INSERT INTO ledger_accounts (tenant_id, account_number, account_name, account_type, currency_code)
-SELECT t.id, '2030', 'Tax / VAT / GST Payable', 'LIABILITY', t.currency_code
-FROM tenants t
-WHERE NOT EXISTS (
-  SELECT 1
-  FROM ledger_accounts la
-  WHERE la.tenant_id = t.id
-    AND la.account_number = '2030'
-);
+DO $$
+DECLARE
+  t RECORD;
+BEGIN
+  FOR t IN SELECT id, currency_code FROM tenants LOOP
+    PERFORM set_config('app.current_tenant_id', t.id::text, true);
+    INSERT INTO ledger_accounts (tenant_id, account_number, account_name, account_type, currency_code)
+    SELECT t.id, '2030', 'Tax / VAT / GST Payable', 'LIABILITY', t.currency_code
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM ledger_accounts la
+      WHERE la.tenant_id = t.id
+        AND la.account_number = '2030'
+    );
+  END LOOP;
+  PERFORM set_config('app.current_tenant_id', '', true);
+END $$;
 
 -- ------------------------------------------------------------------------------
 -- 3. Durable payment_refunds Table with FORCE ROW LEVEL SECURITY

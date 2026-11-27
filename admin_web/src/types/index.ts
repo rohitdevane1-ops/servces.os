@@ -243,6 +243,7 @@ export interface PricingConfig {
 
 export interface TenantConfig {
   name: string;
+  tagline?: string | null;
   slug: string;
   primaryColor: string;
   currencyCode: string;
@@ -295,4 +296,50 @@ export interface IntegrationConfigResponse {
   publicSettings: Record<string, any>;
   secretsMasked: Record<string, any>;
   updatedAt: string | null;
+}
+
+export interface ProviderBonus {
+  id: string;
+  providerId: string;
+  providerName: string;
+  amountCents: number;
+  currency: string;
+  category: 'PERFORMANCE' | 'QUALITY' | 'EMERGENCY' | 'REFERRAL' | 'ADJUSTMENT';
+  reason: string;
+  status: 'APPROVED' | 'DISBURSED' | 'VOIDED';
+  awardedBy?: string | null;
+  createdAt: string;
+}
+
+export interface StaffDailyReport {
+  id: string;
+  staffUserId: string;
+  authorName?: string;
+  reportDate: string;
+  referenceCode: string;
+  shiftWindow: string;
+  jobsCompleted: number;
+  ticketsResolved: number;
+  escalationsCount: number;
+  highlights: string;
+  blockers?: string | null;
+  status?: string;
+  createdAt: string;
+}
+
+export interface TechnicianOnboardingSubmission {
+  id: string;
+  providerId: string;
+  providerName: string;
+  email: string;
+  licenseNumber: string;
+  nationalIdNumber?: string | null;
+  vehicleMakeModel: string;
+  vehicleLicensePlate: string;
+  tradeCategory: string;
+  documentUrls: string[];
+  status: 'DRAFT' | 'SUBMITTED' | 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED';
+  reviewerNotes?: string | null;
+  submittedAt: string;
+  reviewedAt?: string | null;
 }

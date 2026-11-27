@@ -11,6 +11,7 @@ import { getStripe, hasStripeConfigured, isDefinitiveStripeError } from '../../s
 import { resolveTenantIntegrationSecrets, getTenantPaymentGateway } from '../../services/paymentGateway.js';
 import { broadcastBookingToNearbyProviders } from '../dispatch/dispatch.service.js';
 import { getTechnicianEarningsSummary } from './earnings.service.js';
+import { computeTaxAndCommissionSplit } from './ledgerMath.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -45,9 +46,9 @@ function extractWebhookLookupIds(eventType: string, event: any) {
     piId = typeof obj.id === 'string' ? obj.id : null;
   } else if (eventType === 'charge.refunded') {
     piId = typeof obj.payment_intent === 'string' ? obj.payment_intent : null;
-  } else if (eventType === 'transfer.paid' || eventType === 'payout.paid' || eventType === 'transfer.reversed') {
+  } else if (eventType === 'transfer.paid' || eventType === 'transfer.reversed') {
     transferId = typeof obj.id === 'string' ? obj.id : null;
-  } else if (eventType === 'payout.failed') {
+  } else if (eventType === 'payout.paid' || eventType === 'payout.failed') {
     const objId = typeof obj.id === 'string' ? obj.id : '';
     if (objId.startsWith('tr_')) {
       transferId = objId;
@@ -67,9 +68,8 @@ function extractWebhookLookupIds(eventType: string, event: any) {
     eventType === 'payment_intent.amount_capturable_updated' ||
     eventType === 'charge.refunded' ||
     eventType === 'transfer.paid' ||
-    eventType === 'payout.paid' ||
     eventType === 'transfer.reversed' ||
-    (eventType === 'payout.failed' && Boolean(transferId));
+    ((eventType === 'payout.paid' || eventType === 'payout.failed') && Boolean(transferId));
 
   return { piId, invoiceId, transferId, bookingId, txId, connectAccountId, requiresExistingTarget };
 }
@@ -244,6 +244,7 @@ async function resolveWebhookPaymentTx(
            pt.authorized_amount_cents, pt.captured_amount_cents, pt.refunded_amount_cents,
            pt.currency, pt.status,
            i.booking_id, i.total_amount_cents, COALESCE(i.tax_total_cents, 0) AS tax_total_cents,
+           i.commission_bps_snapshot,
            b.status as booking_status, b.assigned_provider_id,
            t.default_platform_commission_bps
     FROM payment_transactions pt
@@ -389,9 +390,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
         );
       }
       await pool.query(
-        `INSERT INTO webhook_events (id, provider, event_type, processed_at, payload)
-         VALUES ($1, 'stripe', $2, NOW(), $3)
-         ON CONFLICT (id) DO NOTHING`,
+        `SELECT rls_record_unmatched_webhook_event($1, 'stripe', $2, $3::jsonb)`,
         [eventId, eventType, JSON.stringify(event)]
       );
       return reply.status(200).send({ received: true });
@@ -402,11 +401,11 @@ export async function financeRoutes(fastify: FastifyInstance) {
     try {
       webhookOutcome = await withTenantTransaction(webhookTenantId, async (client) => {
         const claimRes = await client.query(
-          `INSERT INTO webhook_events (id, provider, event_type, processed_at, payload)
-           VALUES ($1, 'stripe', $2, NOW(), $3)
+          `INSERT INTO webhook_events (id, provider, event_type, tenant_id, processed_at, payload)
+           VALUES ($1, 'stripe', $2, $3, NOW(), $4)
            ON CONFLICT (id) DO NOTHING
            RETURNING id`,
-          [eventId, eventType, JSON.stringify(event)]
+          [eventId, eventType, webhookTenantId, JSON.stringify(event)]
         );
 
         if (claimRes.rowCount === 0) {
@@ -451,11 +450,11 @@ export async function financeRoutes(fastify: FastifyInstance) {
             [amountReceived, tx.id]
           );
 
-          // 2. Settle Invoice
+          // 2. Settle Invoice (never overwrite PARTIALLY_REFUNDED or REFUNDED statuses)
           await client.query(
             `UPDATE invoices 
              SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() 
-             WHERE id = $1`,
+             WHERE id = $1 AND status IN ('DRAFT', 'AUTHORIZED')`,
             [tx.invoice_id]
           );
 
@@ -485,11 +484,12 @@ export async function financeRoutes(fastify: FastifyInstance) {
           // Release Escrow to Tax (2030), Platform Revenue (4010) and Tech Payable (2020) ONLY when booking work is COMPLETED
           if (tx.booking_status === 'COMPLETED') {
             const totalCents = Number(tx.total_amount_cents ?? amountReceived);
-            const taxCents = Math.min(totalCents, Math.max(0, Number(tx.tax_total_cents ?? 0)));
-            const preTaxCents = Math.max(0, totalCents - taxCents);
-            const commissionBps = Number(tx.default_platform_commission_bps ?? 1500);
-            const platformFeeCents = Math.round(preTaxCents * (commissionBps / 10000));
-            const netTechPayoutCents = preTaxCents - platformFeeCents;
+            const rawTaxCents = Math.min(totalCents, Math.max(0, Number(tx.tax_total_cents ?? 0)));
+            const commissionBps = Number(tx.commission_bps_snapshot ?? tx.default_platform_commission_bps ?? 1500);
+            const split = computeTaxAndCommissionSplit(totalCents, rawTaxCents, commissionBps);
+            const taxCents = split.taxCents;
+            const platformFeeCents = split.platformFeeCents;
+            const netTechPayoutCents = split.techPayoutCents;
 
             if (taxCents > 0 && !taxPayableAcc) {
               const insTax = await client.query<{ id: string }>(
@@ -618,25 +618,29 @@ export async function financeRoutes(fastify: FastifyInstance) {
 
           const effectivePrev = Math.max(prevRefunded, alreadyLedgerPostedCents);
           const deltaRefundCents = Math.max(0, boundedRefunded - effectivePrev);
-          const isFullRefund = totalCents > 0 && boundedRefunded >= totalCents;
+          const effectiveTotalForRatio = capturedCap > 0 ? capturedCap : totalCents;
+          const isFullRefund = effectiveTotalForRatio > 0 && boundedRefunded >= effectiveTotalForRatio;
 
-          await client.query(
-            `UPDATE payment_transactions
-             SET status = CASE WHEN $1 THEN 'REFUNDED' ELSE status END,
-                 refunded_amount_cents = LEAST(captured_amount_cents, GREATEST(refunded_amount_cents, $2)),
-                 updated_at = NOW()
-             WHERE id = $3`,
-            [isFullRefund, boundedRefunded, tx.id]
-          );
+          if (boundedRefunded > 0) {
+            await client.query(
+              `UPDATE payment_transactions
+               SET status = CASE WHEN $1 THEN 'REFUNDED' ELSE status END,
+                   refunded_amount_cents = LEAST(GREATEST(captured_amount_cents, total_amount_cents_cap.val), GREATEST(refunded_amount_cents, $2)),
+                   updated_at = NOW()
+               FROM (SELECT $4::bigint AS val) AS total_amount_cents_cap
+               WHERE id = $3`,
+              [isFullRefund, boundedRefunded, tx.id, effectiveTotalForRatio]
+            );
 
-          await client.query(
-            `UPDATE invoices
-             SET status = CASE WHEN $1 THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END,
-                 refunded_amount_cents = LEAST(total_amount_cents, GREATEST(refunded_amount_cents, $2)),
-                 updated_at = NOW()
-             WHERE id = $3`,
-            [isFullRefund, boundedRefunded, tx.invoice_id]
-          );
+            await client.query(
+              `UPDATE invoices
+               SET status = CASE WHEN $1 THEN 'REFUNDED' ELSE 'PARTIALLY_REFUNDED' END,
+                   refunded_amount_cents = LEAST(total_amount_cents, GREATEST(refunded_amount_cents, $2)),
+                   updated_at = NOW()
+               WHERE id = $3`,
+              [isFullRefund, boundedRefunded, tx.invoice_id]
+            );
+          }
 
           if (deltaRefundCents > 0) {
             const firstRefundId = stripeRefundIds.length > 0 ? stripeRefundIds[0] : null;
@@ -666,9 +670,9 @@ export async function financeRoutes(fastify: FastifyInstance) {
               txId: tx.id,
               invoiceId: tx.invoice_id,
               bookingStatus: tx.booking_status,
-              totalCents,
+              totalCents: effectiveTotalForRatio,
               taxCents: Number(tx.tax_total_cents || 0),
-              commissionBps: Number(tx.default_platform_commission_bps ?? 1500),
+              commissionBps: Number(tx.commission_bps_snapshot ?? tx.default_platform_commission_bps ?? 1500),
               prevRefundedCents: effectivePrev,
               deltaRefundCents,
               refundKey: eventId,
@@ -679,19 +683,40 @@ export async function financeRoutes(fastify: FastifyInstance) {
       } else if (eventType === 'transfer.paid' || eventType === 'payout.paid') {
         const transfer = event.data?.object;
         if (transfer?.id) {
-          const existsRes = await client.query(
-            `SELECT id, status FROM provider_payouts WHERE stripe_transfer_id = $1 FOR UPDATE`,
-            [transfer.id]
-          );
-          if (existsRes.rows.length === 0) {
-            throw new WebhookAbortError(503, 'WEBHOOK_TARGET_NOT_FOUND', `Payout for Stripe transfer ${transfer.id} not committed yet.`);
+          const objId = String(transfer.id);
+          if (objId.startsWith('po_') && eventType === 'payout.paid') {
+            if (event.account) {
+              const provRes = await client.query(
+                `SELECT tenant_id, user_id FROM provider_profiles WHERE stripe_connect_account_id = $1`,
+                [event.account]
+              );
+              if (provRes.rows.length > 0) {
+                await client.query(
+                  `INSERT INTO audit_logs (tenant_id, actor_role, action, resource_type, resource_id, diff_payload)
+                   VALUES ($1, 'SYSTEM', 'CONNECTED_ACCOUNT_PAYOUT_PAID', 'provider_profile', $2, $3)`,
+                  [
+                    provRes.rows[0].tenant_id,
+                    provRes.rows[0].user_id,
+                    JSON.stringify({ stripePayoutId: objId, connectAccount: event.account })
+                  ]
+                );
+              }
+            }
+          } else {
+            const existsRes = await client.query(
+              `SELECT id, status FROM provider_payouts WHERE stripe_transfer_id = $1 FOR UPDATE`,
+              [objId]
+            );
+            if (existsRes.rows.length === 0) {
+              throw new WebhookAbortError(503, 'WEBHOOK_TARGET_NOT_FOUND', `Payout for Stripe transfer ${objId} not committed yet.`);
+            }
+            await client.query(
+              `UPDATE provider_payouts
+               SET status = 'PAID', processed_at = COALESCE(processed_at, NOW()), updated_at = NOW()
+               WHERE id = $1 AND status IN ('PROCESSING', 'PENDING_PROVIDER_CONFIRMATION')`,
+              [existsRes.rows[0].id]
+            );
           }
-          await client.query(
-            `UPDATE provider_payouts
-             SET status = 'PAID', processed_at = COALESCE(processed_at, NOW()), updated_at = NOW()
-             WHERE id = $1 AND status IN ('PROCESSING', 'PENDING_PROVIDER_CONFIRMATION')`,
-            [existsRes.rows[0].id]
-          );
         }
       } else if (eventType === 'transfer.reversed') {
         const transfer = event.data?.object;
@@ -995,14 +1020,19 @@ export async function financeRoutes(fastify: FastifyInstance) {
       return reply.status(200).send(
         successResponse({
           currency: (request.tenant?.currencyCode || 'AED').toUpperCase(),
-          grossVolumeCents: metrics.grossVolumeCents,
-          settledVolumeCents: metrics.settledVolumeCents,
-          refundedVolumeCents: metrics.refundedVolumeCents,
-          taxCollectedCents: metrics.taxCollectedCents,
-          totalInvoicesCount: metrics.totalInvoicesCount,
-          paidInvoicesCount: metrics.paidInvoicesCount,
+          grossVolumeCents: Number(metrics.grossVolumeCents || 0),
+          settledVolumeCents: Number(metrics.settledVolumeCents || 0),
+          refundedVolumeCents: Number(metrics.refundedVolumeCents || 0),
+          taxCollectedCents: Number(metrics.taxCollectedCents || 0),
+          totalInvoicesCount: Number(metrics.totalInvoicesCount || 0),
+          paidInvoicesCount: Number(metrics.paidInvoicesCount || 0),
           accounts: accountsRes.rows,
-          recentTransactions: recentTxRes.rows,
+          recentTransactions: recentTxRes.rows.map((tx: any) => ({
+            ...tx,
+            authorizedAmountCents: Number(tx.authorizedAmountCents || 0),
+            capturedAmountCents: Number(tx.capturedAmountCents || 0),
+            refundedAmountCents: Number(tx.refundedAmountCents || 0),
+          })),
         }, requestId)
       );
     };
@@ -1084,15 +1114,25 @@ export async function financeRoutes(fastify: FastifyInstance) {
         tenantQuery(dataQuery, [...params, limit, offset], tenantId)
       ]);
 
-      const total = countRes.rows[0]?.total || 0;
+      const total = Number(countRes.rows[0]?.total || 0);
 
       return reply.status(200).send(
-        successResponse(dataRes.rows, requestId, {
-          page,
-          limit,
-          totalRecords: total,
-          totalPages: Math.ceil(total / limit)
-        })
+        successResponse(
+          dataRes.rows.map((inv: any) => ({
+            ...inv,
+            laborSubtotalCents: Number(inv.laborSubtotalCents || 0),
+            partsSubtotalCents: Number(inv.partsSubtotalCents || 0),
+            taxTotalCents: Number(inv.taxTotalCents || 0),
+            totalAmountCents: Number(inv.totalAmountCents || 0),
+          })),
+          requestId,
+          {
+            page,
+            limit,
+            totalRecords: total,
+            totalPages: Math.ceil(total / limit),
+          }
+        )
       );
     });
 
@@ -1169,11 +1209,12 @@ export async function financeRoutes(fastify: FastifyInstance) {
       );
     });
 
-    // 3b. Create or Upsert Invoice for a Booking (Admin / Staff)
+    // 3b. Create or Upsert Draft Invoice for a Booking (Admin / Staff)
     protectedRoutes.post('/invoices', {
+      preHandler: [blockInDemoMode('Creating or updating invoices')],
       schema: {
         tags: ['Finances & Ledger'],
-        summary: 'Create or update an itemized invoice for a booking',
+        summary: 'Create or update an itemized draft invoice for a booking',
         security: [{ bearerAuth: [] }]
       }
     }, async (request, reply) => {
@@ -1186,8 +1227,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
         partsSubtotalCents: z.number().int().min(0).default(0),
         diagnosticFeeCents: z.number().int().min(0).default(0),
         discountCents: z.number().int().min(0).default(0),
-        totalAmountCents: z.number().int().positive().optional(),
-        status: z.enum(['DRAFT', 'AUTHORIZED', 'PAID']).default('DRAFT'),
+        notes: z.string().max(1000).nullable().optional(),
       });
 
       const parsed = createInvSchema.safeParse(request.body);
@@ -1204,8 +1244,10 @@ export async function financeRoutes(fastify: FastifyInstance) {
           booking_reference: string;
           quoted_price_cents: string | null;
           default_tax_rate_bps: number | null;
+          default_platform_commission_bps: number | null;
         }>(
-          `SELECT b.id, b.booking_reference, s.base_price_cents AS quoted_price_cents, t.default_tax_rate_bps
+          `SELECT b.id, b.booking_reference, s.base_price_cents AS quoted_price_cents,
+                  t.default_tax_rate_bps, t.default_platform_commission_bps
            FROM bookings b
            JOIN services s ON s.id = b.service_id
            JOIN tenants t ON t.id = b.tenant_id
@@ -1220,17 +1262,22 @@ export async function financeRoutes(fastify: FastifyInstance) {
 
         const booking = bRes.rows[0];
         const taxRateBps = Number(booking.default_tax_rate_bps ?? 500);
+        const commissionBpsSnapshot = Number(booking.default_platform_commission_bps ?? 1500);
         const laborCents = d.laborSubtotalCents ?? Number(booking.quoted_price_cents || 10000);
         const preTaxSubtotal = Math.max(0, laborCents + d.partsSubtotalCents + d.diagnosticFeeCents - d.discountCents);
         const computedTax = Math.round((preTaxSubtotal * taxRateBps) / 10000);
-        const totalCents = d.totalAmountCents ?? (preTaxSubtotal + computedTax);
+        const totalCents = preTaxSubtotal + computedTax;
 
-        const existingInv = await client.query<{ id: string; invoice_number: string }>(
-          `SELECT id, invoice_number FROM invoices WHERE booking_id = $1 AND tenant_id = $2 LIMIT 1`,
+        const existingInv = await client.query<{ id: string; invoice_number: string; status: string }>(
+          `SELECT id, invoice_number, status FROM invoices WHERE booking_id = $1 AND tenant_id = $2 LIMIT 1 FOR UPDATE`,
           [booking.id, tenantId]
         );
 
         if (existingInv.rows.length > 0) {
+          const curInv = existingInv.rows[0];
+          if (curInv.status !== 'DRAFT') {
+            return { error: 'INVOICE_LOCKED' as const, status: curInv.status };
+          }
           const upd = await client.query(
             `UPDATE invoices
              SET labor_subtotal_cents = $1,
@@ -1240,13 +1287,15 @@ export async function financeRoutes(fastify: FastifyInstance) {
                  tax_rate_bps = $5,
                  tax_total_cents = $6,
                  total_amount_cents = $7,
+                 commission_bps_snapshot = COALESCE(commission_bps_snapshot, $8),
+                 notes = COALESCE($9, notes),
                  updated_at = NOW()
-             WHERE id = $8
+             WHERE id = $10
              RETURNING id, invoice_number AS "invoiceNumber", booking_id AS "bookingId",
                        labor_subtotal_cents AS "laborSubtotalCents", parts_subtotal_cents AS "partsSubtotalCents",
                        tax_total_cents AS "taxTotalCents", total_amount_cents AS "totalAmountCents",
-                       status, issued_at AS "issuedAt"`,
-            [laborCents, d.partsSubtotalCents, d.diagnosticFeeCents, d.discountCents, taxRateBps, computedTax, totalCents, existingInv.rows[0].id]
+                       status, notes, issued_at AS "issuedAt"`,
+            [laborCents, d.partsSubtotalCents, d.diagnosticFeeCents, d.discountCents, taxRateBps, computedTax, totalCents, commissionBpsSnapshot, d.notes ?? null, curInv.id]
           );
           return { invoice: upd.rows[0] };
         }
@@ -1255,25 +1304,29 @@ export async function financeRoutes(fastify: FastifyInstance) {
         const ins = await client.query(
           `INSERT INTO invoices (
              tenant_id, booking_id, invoice_number, labor_subtotal_cents, parts_subtotal_cents,
-             diagnostic_fee_cents, discount_cents, tax_rate_bps, tax_total_cents, total_amount_cents, status
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             diagnostic_fee_cents, discount_cents, tax_rate_bps, tax_total_cents, total_amount_cents,
+             commission_bps_snapshot, notes, status
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'DRAFT')
            RETURNING id, invoice_number AS "invoiceNumber", booking_id AS "bookingId",
                      labor_subtotal_cents AS "laborSubtotalCents", parts_subtotal_cents AS "partsSubtotalCents",
                      tax_total_cents AS "taxTotalCents", total_amount_cents AS "totalAmountCents",
-                     status, issued_at AS "issuedAt"`,
-          [tenantId, booking.id, invNumber, laborCents, d.partsSubtotalCents, d.diagnosticFeeCents, d.discountCents, taxRateBps, computedTax, totalCents, d.status]
+                     status, notes, issued_at AS "issuedAt"`,
+          [tenantId, booking.id, invNumber, laborCents, d.partsSubtotalCents, d.diagnosticFeeCents, d.discountCents, taxRateBps, computedTax, totalCents, commissionBpsSnapshot, d.notes ?? null]
         );
         return { invoice: ins.rows[0] };
       });
 
       if ('error' in result) {
+        if (result.error === 'INVOICE_LOCKED') {
+          return reply.status(409).send(errorResponse('INVOICE_LOCKED', `Invoice is in ${result.status} state and can no longer be edited.`, requestId));
+        }
         return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Target booking not found for invoice generation.', requestId));
       }
 
       return reply.status(201).send(successResponse(result.invoice, requestId));
     });
 
-    // 4. Double-Entry General Ledger Journal Entries
+    // 4. Double-Entry General Ledger Journal Entries (Paginated)
     protectedRoutes.get('/ledger', {
       schema: {
         tags: ['Finances & Ledger'],
@@ -1283,31 +1336,43 @@ export async function financeRoutes(fastify: FastifyInstance) {
     }, async (request, reply) => {
       const requestId = request.id || `req_${Date.now()}`;
       const tenantId = request.tenantId;
+      const q = (request.query || {}) as { page?: string; limit?: string };
+      const limit = Math.min(200, Math.max(1, parseInt(q.limit || '50', 10) || 50));
+      const page = Math.max(1, parseInt(q.page || '1', 10) || 1);
+      const offset = (page - 1) * limit;
 
-      const result = await tenantQuery(
-        `SELECT 
-          le.id,
-          le.amount_cents as "amountCents",
-          le.description,
-          le.posted_at as "postedAt",
-          da.account_number as "debitAccountNumber",
-          da.account_name as "debitAccountName",
-          da.account_type as "debitAccountType",
-          ca.account_number as "creditAccountNumber",
-          ca.account_name as "creditAccountName",
-          ca.account_type as "creditAccountType"
-        FROM ledger_entries le
-        JOIN ledger_accounts da ON da.id = le.debit_account_id
-        JOIN ledger_accounts ca ON ca.id = le.credit_account_id
-        WHERE le.tenant_id = $1
-        ORDER BY le.posted_at DESC
-        LIMIT 100`,
-        [tenantId],
-        tenantId
-      );
+      const [countRes, result] = await Promise.all([
+        tenantQuery<{ total: string }>(`SELECT COUNT(*)::bigint AS total FROM ledger_entries WHERE tenant_id = $1`, [tenantId], tenantId),
+        tenantQuery(
+          `SELECT 
+            le.id,
+            le.amount_cents as "amountCents",
+            le.description,
+            le.posted_at as "postedAt",
+            da.account_number as "debitAccountNumber",
+            da.account_name as "debitAccountName",
+            da.account_type as "debitAccountType",
+            ca.account_number as "creditAccountNumber",
+            ca.account_name as "creditAccountName",
+            ca.account_type as "creditAccountType"
+          FROM ledger_entries le
+          JOIN ledger_accounts da ON da.id = le.debit_account_id
+          JOIN ledger_accounts ca ON ca.id = le.credit_account_id
+          WHERE le.tenant_id = $1
+          ORDER BY le.posted_at DESC
+          LIMIT $2 OFFSET $3`,
+          [tenantId, limit, offset],
+          tenantId
+        ),
+      ]);
 
+      const total = Number(countRes.rows[0]?.total || 0);
       return reply.status(200).send(
-        successResponse(result.rows, requestId)
+        successResponse(
+          result.rows.map((r: any) => ({ ...r, amountCents: Number(r.amountCents || 0) })),
+          requestId,
+          { page, limit, totalRecords: total, totalPages: Math.ceil(total / limit) }
+        )
       );
     });
 
@@ -1573,7 +1638,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
           };
         }
 
-        // Check provider's settled pre-tax earnings balance net of proportional refunds and taxes (2030)
+        // Check provider's settled pre-tax earnings balance + approved bonuses net of proportional refunds and taxes (2030)
         // Subtract net payouts (amount_cents - amount_reversed_cents) for PAID, PROCESSING, PENDING_PROVIDER_CONFIRMATION, PARTIALLY_REVERSED
         const balanceRes = await client.query(
           `SELECT 
@@ -1587,10 +1652,15 @@ export async function financeRoutes(fastify: FastifyInstance) {
                   ROUND(
                     (GREATEST(0, i.total_amount_cents - COALESCE(i.tax_total_cents, 0))::numeric * GREATEST(0, i.total_amount_cents - COALESCE(i.refunded_amount_cents, 0))::numeric)
                     / GREATEST(1, i.total_amount_cents)::numeric
-                  ) * COALESCE(t.default_platform_commission_bps, 1500) / 10000.0
+                  ) * COALESCE(i.commission_bps_snapshot, t.default_platform_commission_bps, 1500) / 10000.0
                 )
               )
-              ELSE 0 END), 0)::bigint as total_earned_cents,
+              ELSE 0 END), 0)::bigint
+            + COALESCE((
+              SELECT SUM(pb.amount_cents)
+              FROM provider_bonuses pb
+              WHERE pb.provider_id = $1 AND pb.tenant_id = $2 AND pb.status IN ('APPROVED', 'DISBURSED')
+            ), 0)::bigint as total_earned_cents,
             COALESCE((
               SELECT SUM(amount_cents - COALESCE(amount_reversed_cents, 0))
               FROM provider_payouts
@@ -1694,6 +1764,12 @@ export async function financeRoutes(fastify: FastifyInstance) {
               }, requestId)
             );
           }
+        }
+
+        if (ep.status === 'FAILED') {
+          return reply.status(409).send(
+            errorResponse('PAYOUT_FAILED_TERMINAL', 'This idempotency key belongs to a failed payout; retry with a new Idempotency-Key.', requestId)
+          );
         }
 
         if (ep.stripe_transfer_id) {
@@ -2055,10 +2131,15 @@ export async function financeRoutes(fastify: FastifyInstance) {
                 ROUND(
                   (GREATEST(0, i.total_amount_cents - COALESCE(i.tax_total_cents, 0))::numeric * GREATEST(0, i.total_amount_cents - COALESCE(i.refunded_amount_cents, 0))::numeric)
                   / GREATEST(1, i.total_amount_cents)::numeric
-                ) * COALESCE(t.default_platform_commission_bps, 1500) / 10000.0
+                ) * COALESCE(i.commission_bps_snapshot, t.default_platform_commission_bps, 1500) / 10000.0
               )
             )
-            ELSE 0 END), 0)::bigint AS total_earned_cents,
+            ELSE 0 END), 0)::bigint
+          + COALESCE((
+            SELECT SUM(pb.amount_cents)
+            FROM provider_bonuses pb
+            WHERE pb.provider_id = p.user_id AND pb.tenant_id = $1 AND pb.status IN ('APPROVED', 'DISBURSED')
+          ), 0)::bigint AS total_earned_cents,
           COALESCE((
             SELECT SUM(pp.amount_cents - COALESCE(pp.amount_reversed_cents, 0))
             FROM provider_payouts pp
@@ -2322,7 +2403,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
                   pt.status AS tx_status, pt.currency,
                   i.total_amount_cents, COALESCE(i.tax_total_cents, 0) AS tax_total_cents,
                   COALESCE(i.refunded_amount_cents, 0) AS inv_refunded_cents, i.status AS invoice_status,
-                  b.status AS booking_status, t.default_platform_commission_bps AS commission_bps
+                  b.status AS booking_status, COALESCE(i.commission_bps_snapshot, t.default_platform_commission_bps, 1500) AS commission_bps
            FROM payment_transactions pt
            JOIN invoices i ON i.id = pt.invoice_id
            JOIN bookings b ON b.id = i.booking_id
@@ -2635,7 +2716,7 @@ export async function financeRoutes(fastify: FastifyInstance) {
                 pr.status, pr.stripe_refund_id, pr.ledger_posted,
                 pt.stripe_payment_intent_id, pt.captured_amount_cents,
                 i.total_amount_cents, COALESCE(i.tax_total_cents, 0) AS tax_total_cents,
-                b.status AS booking_status, t.default_platform_commission_bps AS commission_bps
+                b.status AS booking_status, COALESCE(i.commission_bps_snapshot, t.default_platform_commission_bps, 1500) AS commission_bps
          FROM payment_refunds pr
          JOIN payment_transactions pt ON pt.id = pr.payment_transaction_id
          JOIN invoices i ON i.id = pr.invoice_id
@@ -2882,6 +2963,147 @@ export async function financeRoutes(fastify: FastifyInstance) {
       });
 
       return reply.status(outcome.status).send(outcome.body);
+    });
+
+    // 9. Technician Promotional Bonuses & Incentives (List + Award)
+    protectedRoutes.get('/bonuses', {
+      schema: {
+        tags: ['Finances & Ledger'],
+        summary: 'List technician bonuses and incentive payouts',
+        security: [{ bearerAuth: [] }],
+      },
+    }, async (request, reply) => {
+      const requestId = request.id || `req_${Date.now()}`;
+      const tenantId = request.tenantId;
+      const q = (request.query || {}) as { providerId?: string };
+
+      const params: any[] = [tenantId];
+      let where = 'WHERE pb.tenant_id = $1';
+      if (q.providerId && asValidUuid(q.providerId)) {
+        params.push(q.providerId);
+        where += ` AND pb.provider_id = $${params.length}`;
+      }
+
+      const res = await tenantQuery(
+        `SELECT pb.id, pb.provider_id AS "providerId", pp.full_name AS "providerName",
+                pb.amount_cents AS "amountCents", pb.currency, pb.category, pb.reason, pb.status,
+                pb.awarded_by AS "awardedBy",
+                pb.created_at AS "createdAt"
+         FROM provider_bonuses pb
+         JOIN provider_profiles pp ON pp.user_id = pb.provider_id AND pp.tenant_id = pb.tenant_id
+         ${where}
+         ORDER BY pb.created_at DESC
+         LIMIT 100`,
+        params,
+        tenantId
+      );
+
+      return reply.status(200).send(
+        successResponse(
+          res.rows.map((r: any) => ({ ...r, amountCents: Number(r.amountCents || 0) })),
+          requestId
+        )
+      );
+    });
+
+    protectedRoutes.post('/bonuses', {
+      preHandler: [requirePermission('finance:payout:execute'), blockInDemoMode('Awarding technician bonus')],
+      schema: {
+        tags: ['Finances & Ledger'],
+        summary: 'Award a technician promotional bonus and credit technician payable ledger',
+        security: [{ bearerAuth: [] }],
+      },
+    }, async (request, reply) => {
+      const requestId = request.id || `req_${Date.now()}`;
+      const tenantId = request.tenantId;
+      const parsed = z.object({
+        providerId: z.string().uuid(),
+        amountCents: z.number().int().positive().max(10000000),
+        reason: z.string().trim().min(2).max(255),
+        category: z.enum(['PERFORMANCE', 'QUALITY', 'EMERGENCY', 'REFERRAL', 'ADJUSTMENT']).default('PERFORMANCE'),
+      }).safeParse(request.body);
+
+      if (!parsed.success) {
+        return reply.status(400).send(
+          errorResponse('VALIDATION_ERROR', parsed.error.issues[0]?.message || 'Invalid bonus payload.', requestId)
+        );
+      }
+
+      const { providerId, amountCents, reason, category } = parsed.data;
+      const currency = (request.tenant?.currencyCode || 'AED').toUpperCase();
+      const rawIdemKey = (request.headers['idempotency-key'] as string | undefined)?.trim();
+      const idempotencyKey = rawIdemKey || `bonus_${crypto.randomUUID()}`;
+
+      const outcome = await withTenantTransaction<
+        | { ok: true; bonus: any }
+        | { ok: false; status: number; code: string; message: string }
+      >(tenantId, async (client) => {
+        const techRes = await client.query<{ full_name: string }>(
+          `SELECT full_name FROM provider_profiles WHERE user_id = $1 AND tenant_id = $2`,
+          [providerId, tenantId]
+        );
+        if (techRes.rows.length === 0) {
+          return { ok: false, status: 404, code: 'PROVIDER_NOT_FOUND', message: 'Technician profile not found.' };
+        }
+
+        const existingRes = await client.query(
+          `SELECT id, provider_id AS "providerId", amount_cents AS "amountCents", currency, category, reason, status, created_at AS "createdAt"
+           FROM provider_bonuses
+           WHERE tenant_id = $1 AND idempotency_key = $2`,
+          [tenantId, idempotencyKey]
+        );
+        if (existingRes.rows.length > 0) {
+          const ex = existingRes.rows[0];
+          return { ok: true, bonus: { ...ex, providerName: techRes.rows[0].full_name, amountCents: Number(ex.amountCents) } };
+        }
+
+        const bonusRes = await client.query(
+          `INSERT INTO provider_bonuses (tenant_id, provider_id, awarded_by, amount_cents, currency, category, reason, idempotency_key, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'APPROVED')
+           RETURNING id, provider_id AS "providerId", amount_cents AS "amountCents", currency, category, reason, status, created_at AS "createdAt"`,
+          [tenantId, providerId, request.user?.id || null, amountCents, currency, category, reason, idempotencyKey]
+        );
+        const bonus = bonusRes.rows[0];
+
+        const accRes = await client.query<{ id: string; account_number: string }>(
+          `SELECT id, account_number FROM ledger_accounts WHERE tenant_id = $1 AND account_number IN ('2020', '5020')`,
+          [tenantId]
+        );
+        const techPayable = accRes.rows.find((a) => a.account_number === '2020')?.id;
+        let bonusExpense = accRes.rows.find((a) => a.account_number === '5020')?.id;
+        if (!bonusExpense) {
+          const insAcc = await client.query<{ id: string }>(
+            `INSERT INTO ledger_accounts (tenant_id, account_number, account_name, account_type, currency_code)
+             VALUES ($1, '5020', 'Promotional Bonus & Incentive Expense', 'EXPENSE', $2)
+             ON CONFLICT (tenant_id, account_number) DO UPDATE SET account_name = EXCLUDED.account_name
+             RETURNING id`,
+            [tenantId, currency]
+          );
+          bonusExpense = insAcc.rows[0]?.id;
+        }
+        if (techPayable && bonusExpense) {
+          await client.query(
+            `INSERT INTO ledger_entries (tenant_id, bonus_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+             VALUES ($1, $2, 'BONUS_AWARD', $3, $4, $5, $6)
+             ON CONFLICT DO NOTHING`,
+            [tenantId, bonus.id, bonusExpense, techPayable, amountCents, `Bonus for ${techRes.rows[0].full_name}: ${reason}`]
+          );
+        }
+
+        await client.query(
+          `INSERT INTO audit_logs (tenant_id, actor_id, actor_role, action, resource_type, resource_id, diff_payload)
+           VALUES ($1, $2, $3, 'BONUS_AWARDED', 'provider_bonuses', $4, $5)`,
+          [tenantId, request.user?.id || null, request.user?.role || null, bonus.id, JSON.stringify({ providerId, amountCents, reason })]
+        );
+
+        return { ok: true, bonus: { ...bonus, providerName: techRes.rows[0].full_name, amountCents: Number(bonus.amountCents) } };
+      });
+
+      if (!outcome.ok) {
+        return reply.status(outcome.status).send(errorResponse(outcome.code, outcome.message, requestId));
+      }
+
+      return reply.status(201).send(successResponse(outcome.bonus, requestId));
     });
   });
 }

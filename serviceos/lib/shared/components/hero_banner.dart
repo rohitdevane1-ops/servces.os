@@ -2,210 +2,208 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/constants/asset_constants.dart';
 
-
 class HeroDiscoveryBanner extends StatelessWidget {
   final TextEditingController searchController;
   final ValueChanged<String> onSearch;
   final VoidCallback onFilterTap;
+  final double scrollOffset;
 
   const HeroDiscoveryBanner({
     super.key,
     required this.searchController,
     required this.onSearch,
     required this.onFilterTap,
+    this.scrollOffset = 0.0,
   });
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryBrand = isDark ? AppColors.nightPrimary : AppColors.dayPrimary;
+    final accentBrand = isDark ? AppColors.nightAccent : AppColors.dayAccent;
+    final clampedScroll = scrollOffset.clamp(0.0, 140.0);
+    final parallaxY = clampedScroll * 0.22;
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(24),
-        gradient: isDark
-            ? const LinearGradient(
-                colors: [Color(0xFF0F172A), Color(0xFF1E1B4B), Color(0xFF0C1523)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              )
-            : const LinearGradient(
-                colors: [Color(0xFFEEF2FF), Color(0xFFF5F3FF), Color(0xFFEDE9FE)],
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          // Main Dark-Indigo Photographic Hero Card
+          Container(
+            height: 205,
+            margin: const EdgeInsets.only(bottom: 24),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(24),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF0B1437), Color(0xFF1E293B), Color(0xFF312E81)],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
-        border: Border.all(
-          color: isDark ? AppColors.nightBorder : AppColors.dayBorder,
-          width: 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: (isDark ? Colors.black : const Color(0xFF6366F1)).withOpacity(isDark ? 0.4 : 0.08),
-            blurRadius: 20,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: Stack(
-        children: [
-          // Content Layout
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                // Left Column: Headline, subtext, search pill
-                Expanded(
-                  flex: 6,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Badge Pill
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: primaryBrand.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.bolt_rounded, size: 14, color: primaryBrand),
-                            const SizedBox(width: 4),
-                            Text(
-                              'Instant Booking & Guaranteed Arrival',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                                color: primaryBrand,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      // Headline
-                      Text(
-                        'Book a Service',
-                        style: TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.w800,
-                          color: isDark ? AppColors.nightTextPrimary : AppColors.dayTextPrimary,
-                          letterSpacing: -0.5,
-                        ),
-                      ),
-
-                      const SizedBox(height: 6),
-
-                      // Subtitle
-                      Text(
-                        'Trusted home repairs, maintenance & installations by verified pros.',
-                        style: TextStyle(
-                          fontSize: 13,
-                          height: 1.4,
-                          color: isDark ? AppColors.nightTextSecondary : AppColors.dayTextSecondary,
-                        ),
-                      ),
-
-                      const SizedBox(height: 18),
-
-                      // Search Pill Input
-                      Container(
-                        height: 48,
-                        decoration: BoxDecoration(
-                          color: isDark ? AppColors.nightSurface : Colors.white,
-                          borderRadius: BorderRadius.circular(28),
-                          border: Border.all(
-                            color: isDark ? AppColors.nightBorder : AppColors.dayBorder,
-                            width: 1,
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(isDark ? 0.3 : 0.06),
-                              blurRadius: 10,
-                              offset: const Offset(0, 3),
-                            ),
-                          ],
-                        ),
-                        child: Row(
-                          children: [
-                            const SizedBox(width: 14),
-                            Icon(
-                              Icons.search_rounded,
-                              size: 20,
-                              color: primaryBrand,
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: TextField(
-                                controller: searchController,
-                                onChanged: onSearch,
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: isDark ? AppColors.nightTextPrimary : AppColors.dayTextPrimary,
-                                ),
-                                decoration: InputDecoration(
-                                  hintText: 'Search 340+ services, plumbers, cleaning...',
-                                  hintStyle: TextStyle(
-                                    fontSize: 13,
-                                    color: isDark ? AppColors.nightTextSecondary : const Color(0xFF94A3B8),
-                                  ),
-                                  border: InputBorder.none,
-                                  isDense: true,
-                                ),
-                              ),
-                            ),
-                            IconButton(
-                              onPressed: onFilterTap,
-                              icon: Icon(
-                                Icons.tune_rounded,
-                                size: 18,
-                                color: isDark ? AppColors.nightTextSecondary : AppColors.dayTextSecondary,
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF1E1B4B).withOpacity(isDark ? 0.5 : 0.22),
+                  blurRadius: 24,
+                  offset: const Offset(0, 10),
                 ),
-
-                const SizedBox(width: 12),
-
-                // Right Column: Smiling Woman Graphic (Master Mockup Alignment)
-                Expanded(
-                  flex: 4,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(16),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // Right-side Parallax Technician Visual
+                  Positioned(
+                    right: -8,
+                    top: -6,
+                    bottom: 0,
+                    width: 170,
+                    child: Transform.translate(
+                      offset: Offset(0, -parallaxY * 0.35),
+                      child: Opacity(
+                        opacity: 0.92,
                         child: Image.asset(
                           AssetConstants.womanBanner,
-                          height: 140,
-                          fit: BoxFit.contain,
+                          fit: BoxFit.cover,
+                          alignment: Alignment.topCenter,
                           errorBuilder: (_, __, ___) => const SizedBox.shrink(),
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Your Service Our Priority',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontStyle: FontStyle.italic,
-                          fontWeight: FontWeight.w600,
-                          color: primaryBrand,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
+
+                  // Directional Dark Scrim for High Typography Contrast
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.centerLeft,
+                        end: Alignment.centerRight,
+                        colors: [
+                          const Color(0xFF0B1437).withOpacity(0.94),
+                          const Color(0xFF0F172A).withOpacity(0.76),
+                          Colors.transparent,
+                        ],
+                        stops: const [0.0, 0.56, 1.0],
+                      ),
+                    ),
+                  ),
+
+                  // Hero Headline & Subtext
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 22, 130, 32),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text(
+                          'Premium\nHome Services',
+                          style: TextStyle(
+                            fontSize: 25,
+                            height: 1.15,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                            letterSpacing: -0.6,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Book trusted professionals with confidence',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            height: 1.35,
+                            color: Colors.white.withOpacity(0.84),
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Floating Overlapping Pill Search Bar
+          Positioned(
+            left: 14,
+            right: 14,
+            bottom: 0,
+            child: Container(
+              height: 52,
+              padding: const EdgeInsets.only(left: 16, right: 6),
+              decoration: BoxDecoration(
+                color: isDark ? AppColors.nightSurface : Colors.white,
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(
+                  color: isDark ? AppColors.nightBorder : AppColors.dayBorder,
+                  width: 1,
                 ),
-              ],
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(isDark ? 0.35 : 0.08),
+                    blurRadius: 18,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.search_rounded,
+                    size: 20,
+                    color: isDark ? AppColors.nightTextSecondary : const Color(0xFF64748B),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: searchController,
+                      onChanged: onSearch,
+                      onSubmitted: onSearch,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: isDark ? AppColors.nightTextPrimary : AppColors.dayTextPrimary,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Search for services...',
+                        hintStyle: TextStyle(
+                          fontSize: 13,
+                          color: isDark ? AppColors.nightTextSecondary : const Color(0xFF94A3B8),
+                        ),
+                        border: InputBorder.none,
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => onSearch(searchController.text),
+                    child: Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          colors: [primaryBrand, accentBrand],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: primaryBrand.withOpacity(0.32),
+                            blurRadius: 10,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: const Icon(
+                        Icons.arrow_forward_rounded,
+                        size: 18,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],

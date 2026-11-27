@@ -204,7 +204,7 @@ export const Page09BookingDetails: React.FC = () => {
                   <div key={step.id} className="flex items-start gap-3.5">
                     <div className="shrink-0 mt-0.5">
                       <div className="w-6 h-6 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-xs">
-                        âœ“
+                        ✓
                       </div>
                     </div>
                     <div className="flex-1 min-w-0">
@@ -328,7 +328,7 @@ export const Page09BookingDetails: React.FC = () => {
                 </div>
                 {assignedTech && (
                   <div className="text-[11px] text-emerald-700 font-bold">
-                    â˜… {assignedTech.rating} â€¢ {assignedTech.jobsCompleted} Completed
+                    ★ {assignedTech.rating} • {assignedTech.jobsCompleted} Completed
                   </div>
                 )}
               </div>

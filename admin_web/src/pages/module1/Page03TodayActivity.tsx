@@ -64,7 +64,7 @@ export const Page03TodayActivity: React.FC = () => {
         time: b.scheduleTime || 'Today',
         category: cat,
         title: `${b.serviceName} (${b.status})`,
-        description: `Customer: ${b.customerName} â€¢ Assigned: ${b.technicianName} â€¢ ${b.customerAddress || 'On-site'}`,
+        description: `Customer: ${b.customerName} • Assigned: ${b.technicianName} • ${b.customerAddress || 'On-site'}`,
         actor: b.technicianName || 'Central Dispatch',
         actorRole: b.technicianName !== 'Unassigned' ? 'Field Pro' : 'Dispatcher',
         jobNo: b.jobNo.replace('#', ''),

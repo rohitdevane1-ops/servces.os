@@ -38,13 +38,13 @@ The platform connects three core user personas across four hardened codebases:
 │   ├── src/
 │   │   ├── config/                  # Zod-validated environment & fail-closed production guards
 │   │   ├── database/                # PostgreSQL 16 + PostGIS Pool, Migrations, Demo & Prod Seeders
-│   │   │   └── migrations/          # 15 Up-migrations + 15 Down-migrations (001 through 015)
+│   │   │   └── migrations/          # 16 Up-migrations + 16 Down-migrations (001 through 016)
 │   │   ├── middleware/              # RBAC, Tenant Resolution, Demo Guard, Captcha, Error Envelope
 │   │   ├── modules/                 # Auth, Installer, Services, Bookings, Dispatch, CRM, Finances, Support, System, Uploads
 │   │   ├── plugins/                 # Swagger/OpenAPI, Helmet, CORS, Rate Limit, Multipart
 │   │   ├── services/                # Payment Gateway Adapter (Stripe, PayTabs, Telr)
 │   │   └── workers/                 # Durable Payment Outbox Worker with SKIP LOCKED lease renewal
-│   └── tests/                       # 116 Automated Unit & Real-PostgreSQL Integration Tests (21 Suites)
+│   └── tests/                       # 120 Automated Unit & Real-PostgreSQL Integration Tests (22 Suites)
 │
 ├── admin_web/                       # React 19 + TypeScript Admin & Staff Portal
 │   ├── src/
@@ -77,7 +77,7 @@ The platform connects three core user personas across four hardened codebases:
 │
 ├── scripts/                         # Production Secret Generator & Release Validators
 │   ├── generate_secrets.cjs         # High-Entropy Secret Key & URL-Safe Password Generator
-│   ├── validate_migrations.cjs      # 15-Pair SQL Migration & RLS Policy Validator
+│   ├── validate_migrations.cjs      # 16-Pair SQL Migration & RLS Policy Validator
 │   └── validate_dart_codebase.cjs   # Flutter & Android Zero-Placeholder AST/Source Validator
 │
 ├── docker-compose.yml               # Turnkey Multi-Container Orchestration (Prod DB + Demo DB Profile)
@@ -93,12 +93,12 @@ To rebuild this platform from scratch with a specialized software engineering ag
 
 | Phase | Dedicated Resources | Typical Agency Cost |
 | :--- | :--- | :--- |
-| **Architecture, RLS & PostGIS Schema (15 Migrations)** | Principal Architect (100 hrs) | \$15,000 – \$20,000 |
+| **Architecture, RLS & PostGIS Schema (16 Migrations)** | Principal Architect (100 hrs) | \$15,000 – \$20,000 |
 | **Backend API, Outbox Worker, Multi-Gateway & Double-Entry Ledger** | Senior Backend Engineer (220 hrs) | \$28,000 – \$35,000 |
 | **Admin & Staff Web Portal (52 Screens + Bilingual RTL/LTR)** | Senior Frontend Engineer (220 hrs) | \$26,000 – \$34,000 |
 | **Flutter Mobile App (iOS & Android — Customer & Technician)** | Senior Flutter Engineer (160 hrs) | \$18,000 – \$24,000 |
 | **Native Android Jetpack Compose App** | Senior Android Engineer (120 hrs) | \$14,000 – \$18,000 |
-| **Security Hardening, 116-Test Suite, Docker & Documentation** | DevOps & SecOps Engineer (100 hrs) | \$12,000 – \$16,000 |
+| **Security Hardening, 120-Test Suite, Docker & Documentation** | DevOps & SecOps Engineer (100 hrs) | \$12,000 – \$16,000 |
 | **Total Equivalent Development Cost** | **920 Engineering Hours** | **\$113,000 – \$147,000** |
 
 At a commercial acquisition price of **\$20,000 – \$60,000**, the buyer acquires a fully verified, production-ready enterprise codebase at a **60% – 80% discount** relative to scratch development, with **zero time-to-market delay**.

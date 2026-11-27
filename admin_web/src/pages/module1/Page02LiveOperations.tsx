@@ -8,6 +8,7 @@ import {
   Radio, 
 } from 'lucide-react';
 import { RealDispatchMap } from '../../components/common/RealDispatchMap';
+import { RevealSection, StaggerCard, AnimatedNumber } from '../../components/common/MotionPrimitives';
 
 export const Page02LiveOperations: React.FC = () => {
   const { technicians, bookings, navigateToPage } = useAdmin();
@@ -15,10 +16,15 @@ export const Page02LiveOperations: React.FC = () => {
   const activeBooking = bookings.find(b => b.status === 'In Progress' && b.technicianId && b.technicianId !== 'unassigned');
   const hasActiveRoute = Boolean(activeBooking && selectedTech);
 
+  const activeFieldCount = technicians.filter(t => t.status === 'Available' || t.status === 'On Job').length;
+  const completedCount = bookings.filter(b => b.status === 'Completed').length;
+  const inProgressCount = bookings.filter(b => b.status === 'In Progress').length;
+  const scheduledCount = bookings.filter(b => b.status === 'Scheduled').length;
+
   return (
     <div className="space-y-6">
       {/* 1. Header with Breadcrumbs & Action */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <RevealSection className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -30,71 +36,71 @@ export const Page02LiveOperations: React.FC = () => {
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigateToPage(12)}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+            className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
           >
             <Compass className="w-3.5 h-3.5" />
             <span>Manual Dispatch Console</span>
           </button>
         </div>
-      </div>
+      </RevealSection>
 
-      {/* 2. KPI Cards Row matching Screenshot 02 Top Left */}
+      {/* 2. KPI Cards Row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0 border border-blue-100">
+        <StaggerCard index={0} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-indigo-500/20">
             <Radio className="w-6 h-6" />
           </div>
           <div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Active In Field</div>
             <div className="text-2xl font-black text-slate-900 mt-0.5">
-              {String(technicians.filter(t => t.status === 'Available' || t.status === 'On Job').length).padStart(2, '0')}
+              <AnimatedNumber value={activeFieldCount} formatter={(n) => String(Math.round(n)).padStart(2, '0')} />
             </div>
             <div className="text-[10px] font-bold text-emerald-600">Active Field Pros Synced</div>
           </div>
-        </div>
+        </StaggerCard>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0 border border-emerald-100">
+        <StaggerCard index={1} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-emerald-500/20">
             <CheckCircle2 className="w-6 h-6" />
           </div>
           <div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Completed Today</div>
             <div className="text-2xl font-black text-slate-900 mt-0.5">
-              {String(bookings.filter(b => b.status === 'Completed').length).padStart(2, '0')}
+              <AnimatedNumber value={completedCount} formatter={(n) => String(Math.round(n)).padStart(2, '0')} />
             </div>
             <div className="text-[10px] font-bold text-emerald-600">Actual confirmed SLA</div>
           </div>
-        </div>
+        </StaggerCard>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 border border-amber-100">
+        <StaggerCard index={2} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 text-white flex items-center justify-center shrink-0 shadow-sm shadow-amber-500/20">
             <Clock className="w-6 h-6" />
           </div>
           <div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">In Progress</div>
             <div className="text-2xl font-black text-slate-900 mt-0.5">
-              {String(bookings.filter(b => b.status === 'In Progress').length).padStart(2, '0')}
+              <AnimatedNumber value={inProgressCount} formatter={(n) => String(Math.round(n)).padStart(2, '0')} />
             </div>
             <div className="text-[10px] font-bold text-amber-600">Live field execution</div>
           </div>
-        </div>
+        </StaggerCard>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center shrink-0 border border-purple-100">
+        <StaggerCard index={3} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-violet-500/20">
             <Calendar className="w-6 h-6" />
           </div>
           <div>
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Scheduled Next</div>
             <div className="text-2xl font-black text-slate-900 mt-0.5">
-              {String(bookings.filter(b => b.status === 'Scheduled').length).padStart(2, '0')}
+              <AnimatedNumber value={scheduledCount} formatter={(n) => String(Math.round(n)).padStart(2, '0')} />
             </div>
             <div className="text-[10px] font-bold text-emerald-600">Pending arrival queue</div>
           </div>
-        </div>
+        </StaggerCard>
       </div>
 
-      {/* 3. Main Live Dispatch Map & Right Status Column matching Screenshot 02 Top Left */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {/* 3. Main Live Dispatch Map & Right Status Column */}
+      <RevealSection delay={0.08} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left 8 Cols: Real Interactive Map */}
         <div className="lg:col-span-8">
           <RealDispatchMap 
@@ -116,7 +122,7 @@ export const Page02LiveOperations: React.FC = () => {
                 onClick={() => navigateToPage(22)} 
                 className="text-xs font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
               >
-                View All â†’
+                View All →
               </button>
             </div>
 
@@ -174,7 +180,7 @@ export const Page02LiveOperations: React.FC = () => {
             </div>
           </div>
         </div>
-      </div>
+      </RevealSection>
     </div>
   );
 };

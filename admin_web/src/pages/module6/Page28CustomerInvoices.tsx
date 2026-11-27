@@ -92,7 +92,7 @@ export const Page28CustomerInvoices: React.FC = () => {
         const effectiveSubCents = subCents > 0 ? subCents : Math.max(0, totalCents - taxCents);
         return [
           inv.invoiceNumber,
-          inv.bookingReference || 'â€”',
+          inv.bookingReference || '—',
           inv.customerName,
           inv.serviceName,
           inv.issuedAt ? new Date(inv.issuedAt).toLocaleDateString() : '',
@@ -215,7 +215,7 @@ export const Page28CustomerInvoices: React.FC = () => {
                       <td className="py-3.5 px-4 font-bold text-slate-800">{inv.customerName}</td>
                       <td className="py-3.5 px-4 text-slate-600">{inv.serviceName}</td>
                       <td className="py-3.5 px-4 text-slate-500">
-                        {inv.issuedAt ? new Date(inv.issuedAt).toLocaleDateString() : 'â€”'}
+                        {inv.issuedAt ? new Date(inv.issuedAt).toLocaleDateString() : '—'}
                       </td>
                       <td className="py-3.5 px-4 text-right font-medium text-slate-700">
                         {formatCurrencyCents(subCents)}
@@ -289,7 +289,7 @@ export const Page28CustomerInvoices: React.FC = () => {
                   Invoice {detailInvoice.invoiceNumber}
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Customer: {detailInvoice.customerName} ({detailInvoice.customerEmail}) â€¢ Status:{' '}
+                  Customer: {detailInvoice.customerName} ({detailInvoice.customerEmail}) • Status:{' '}
                   <strong>{detailInvoice.status}</strong>
                 </p>
               </div>

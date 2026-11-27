@@ -8,6 +8,7 @@ import {
   mapInvoiceDto,
   mapReviewDto,
   mapServiceDto,
+  mapStaffDto,
   mapTechnicianDto,
   mapTicketDto,
 } from './mappers';
@@ -57,7 +58,7 @@ export function useOperationsData(
   const [reviews, setReviews] = useState<CustomerReview[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
   const [incidents, setIncidents] = useState<Incident[]>([]);
-  const [staffMembers] = useState<StaffMember[]>([]);
+  const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
   const [isDataLoading, setIsDataLoading] = useState<boolean>(false);
 
   const [cmsConfig, setCmsConfig] = useState<CMSConfig>({
@@ -98,6 +99,7 @@ export function useOperationsData(
         currentRole === 'ADMIN' ? apiClient.getInvoices({ limit: 100 }) : Promise.resolve(null),
         apiClient.getIncidents(),
         currentRole === 'ADMIN' ? apiClient.getAuditLogs({ limit: 50 }) : Promise.resolve(null),
+        apiClient.getStaff(),
       ];
 
       const [
@@ -112,6 +114,7 @@ export function useOperationsData(
         invoicesRes,
         incidentsRes,
         auditLogsRes,
+        staffRes,
       ] = await Promise.allSettled(requests);
 
       if (bookingsRes.status === 'fulfilled' && bookingsRes.value?.success && Array.isArray(bookingsRes.value.data)) {
@@ -205,6 +208,14 @@ export function useOperationsData(
             ipAddress: String(a.ipAddress || 'Internal'),
           }))
         );
+      }
+
+      if (
+        staffRes.status === 'fulfilled' &&
+        staffRes.value?.success &&
+        Array.isArray(staffRes.value.data)
+      ) {
+        setStaffMembers(staffRes.value.data.map(mapStaffDto));
       }
     } catch (err) {
       console.warn('[useOperationsData] Live API sync error:', err);
@@ -726,6 +737,72 @@ export function useOperationsData(
     [addToast, refreshOperationsData]
   );
 
+  const updateTechnicianDutyStatus = useCallback(
+    async (
+      id: string,
+      dutyStatus: 'ONLINE' | 'OFFLINE' | 'ON_JOB' | 'EN_ROUTE'
+    ): Promise<MutationResult> => {
+      const res = await apiClient.updateTechnicianDutyStatus(id, dutyStatus);
+      if (!res.success) {
+        const msg = res.error?.message || 'Failed to update technician duty status.';
+        addToast(msg, 'error');
+        return { ok: false, error: msg };
+      }
+      await refreshOperationsData();
+      addToast(`Technician duty status updated to ${dutyStatus}.`, 'success');
+      return { ok: true };
+    },
+    [addToast, refreshOperationsData]
+  );
+
+  const createStaffMember = useCallback(
+    async (payload: {
+      email: string;
+      fullName: string;
+      phone?: string;
+      department?: string;
+      assignedTerritory?: string;
+      shiftHours?: string;
+      password?: string;
+    }): Promise<MutationResult> => {
+      const res = await apiClient.createStaff(payload);
+      if (!res.success) {
+        const msg = res.error?.message || 'Failed to create staff member.';
+        addToast(msg, 'error');
+        return { ok: false, error: msg };
+      }
+      await refreshOperationsData();
+      addToast(`Staff account ${payload.fullName} created.`, 'success');
+      return { ok: true };
+    },
+    [addToast, refreshOperationsData]
+  );
+
+  const updateStaffMember = useCallback(
+    async (
+      id: string,
+      updates: {
+        fullName?: string;
+        phone?: string | null;
+        department?: string | null;
+        assignedTerritory?: string | null;
+        shiftHours?: string | null;
+        isActive?: boolean;
+      }
+    ): Promise<MutationResult> => {
+      const res = await apiClient.updateStaff(id, updates);
+      if (!res.success) {
+        const msg = res.error?.message || 'Failed to update staff member.';
+        addToast(msg, 'error');
+        return { ok: false, error: msg };
+      }
+      await refreshOperationsData();
+      addToast('Staff member profile updated.', 'success');
+      return { ok: true };
+    },
+    [addToast, refreshOperationsData]
+  );
+
   // SUPPORT, REVIEWS & CMS MUTATIONS
   const updateTicketStatus = useCallback(
     async (ticketId: string, status: SupportTicket['status']) => {
@@ -808,23 +885,20 @@ export function useOperationsData(
         (newInv.bookingId ? bookings.find((b) => b.id === newInv.bookingId || b.jobNo === newInv.bookingId) : undefined) ||
         (newInv.customerName
           ? bookings.find((b) => b.customerName.toLowerCase() === newInv.customerName!.trim().toLowerCase())
-          : undefined) ||
-        bookings[0];
+          : undefined);
 
       if (!matchedBooking) {
-        const msg = 'No booking found to attach invoice. Create a booking first before issuing a database invoice.';
+        const msg = 'Please select an existing booking for this invoice.';
         addToast(msg, 'error');
         return { ok: false, error: msg };
       }
 
       const subtotalDollars = Number(newInv.subtotalAmount ?? newInv.amount ?? 0);
-      const totalDollars = newInv.subtotalAmount !== undefined ? Number(newInv.amount ?? subtotalDollars) : undefined;
       const apiStatus = newInv.status === 'Paid' ? 'PAID' : 'DRAFT';
 
       const res = await apiClient.createInvoice({
         bookingId: matchedBooking.id,
         laborSubtotalCents: Math.max(0, Math.round(subtotalDollars * 100)),
-        ...(totalDollars !== undefined && totalDollars > 0 ? { totalAmountCents: Math.round(totalDollars * 100) } : {}),
         status: apiStatus,
       });
 
@@ -902,7 +976,10 @@ export function useOperationsData(
     updateCustomer,
     addTechnician,
     updateTechnician,
+    updateTechnicianDutyStatus,
     verifyTechnician,
+    createStaffMember,
+    updateStaffMember,
     addService,
     updateService,
     deleteService,

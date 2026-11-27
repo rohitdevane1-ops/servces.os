@@ -1,4 +1,5 @@
 import React, { Suspense, lazy } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { ShieldAlert, Loader2 } from 'lucide-react';
 import { useAdmin } from '../context/adminContextCore';
 import { canAccessPage } from '../security/rbac';
@@ -136,5 +137,17 @@ export const PageRouter: React.FC = () => {
     }
   };
 
-  return <Suspense fallback={<PageLoadingFallback />}>{renderPage()}</Suspense>;
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={currentPageId}
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <Suspense fallback={<PageLoadingFallback />}>{renderPage()}</Suspense>
+      </motion.div>
+    </AnimatePresence>
+  );
 };

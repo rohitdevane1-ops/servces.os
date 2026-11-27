@@ -184,9 +184,9 @@ export const ManualDispatchModal: React.FC = () => {
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
                         <span>{tech.specialization}</span>
-                        <span>â€¢</span>
-                        <span className="text-amber-500 font-semibold">â˜… {tech.rating}</span>
-                        <span>â€¢</span>
+                        <span>•</span>
+                        <span className="text-amber-500 font-semibold">★ {tech.rating}</span>
+                        <span>•</span>
                         <span>{tech.currentJobsCount} active jobs</span>
                       </div>
                     </div>

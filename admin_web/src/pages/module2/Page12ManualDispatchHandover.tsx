@@ -106,7 +106,7 @@ export const Page12ManualDispatchHandover: React.FC = () => {
                   <div className="flex items-center justify-between text-[11px] text-slate-500">
                     <span className="flex items-center gap-1">
                       <MapPin className="w-3 h-3 text-slate-400" />
-                      {job.customerName} â€¢ {job.customerAddress}
+                      {job.customerName} • {job.customerAddress}
                     </span>
                     <span className="font-bold text-slate-700">${job.estimate}</span>
                   </div>
@@ -161,7 +161,7 @@ export const Page12ManualDispatchHandover: React.FC = () => {
                 ) : (
                   bookings.filter(b => b.technicianName !== 'Unassigned').map(b => (
                     <option key={b.id} value={b.id}>
-                      #{b.jobNo} â€” {b.serviceName} (Current: {b.technicianName})
+                      #{b.jobNo} — {b.serviceName} (Current: {b.technicianName})
                     </option>
                   ))
                 )}
@@ -196,7 +196,7 @@ export const Page12ManualDispatchHandover: React.FC = () => {
                 ) : (
                   technicians.filter(t => t.status === 'Available').map(t => (
                     <option key={t.id} value={t.id}>
-                      {t.name} â€” {t.specialization} (â˜… {t.rating} â€¢ Match: 96%)
+                      {t.name} — {t.specialization} (★ {t.rating} • Match: 96%)
                     </option>
                   ))
                 )}

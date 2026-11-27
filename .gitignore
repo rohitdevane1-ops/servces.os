@@ -12,6 +12,10 @@ build/
 .gradle/
 **/build/
 **/bin/
+.idea/
+**/local.properties
+/settings.gradle
+/gradle/
 
 # Testing
 /coverage

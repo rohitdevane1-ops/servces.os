@@ -30,7 +30,7 @@ export async function broadcastBookingToNearbyProviders(
     address_id: string;
   }>(
     `SELECT b.id, b.status, i.total_amount_cents, COALESCE(i.tax_total_cents, 0) AS tax_total_cents,
-            t.default_platform_commission_bps AS commission_bps, b.address_id
+            COALESCE(i.commission_bps_snapshot, t.default_platform_commission_bps, 1500) AS commission_bps, b.address_id
      FROM bookings b
      JOIN tenants t ON t.id = b.tenant_id
      LEFT JOIN invoices i ON i.booking_id = b.id

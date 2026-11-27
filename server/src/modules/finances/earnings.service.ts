@@ -73,10 +73,15 @@ export async function getTechnicianEarningsSummary(
              ROUND(
                (GREATEST(0, i.total_amount_cents - COALESCE(i.tax_total_cents, 0))::numeric * GREATEST(0, i.total_amount_cents - COALESCE(i.refunded_amount_cents, 0))::numeric)
                / GREATEST(1, i.total_amount_cents)::numeric
-             ) * COALESCE(t.default_platform_commission_bps, 1500) / 10000.0
+             ) * COALESCE(i.commission_bps_snapshot, t.default_platform_commission_bps, 1500) / 10000.0
            )
          )
-         ELSE 0 END), 0)::bigint AS total_earned_cents,
+         ELSE 0 END), 0)::bigint
+       + COALESCE((
+         SELECT SUM(pb.amount_cents)
+         FROM provider_bonuses pb
+         WHERE pb.provider_id = p.user_id AND pb.tenant_id = $2 AND pb.status IN ('APPROVED', 'DISBURSED')
+       ), 0)::bigint AS total_earned_cents,
        COALESCE((
          SELECT SUM(pp.amount_cents - COALESCE(pp.amount_reversed_cents, 0))
          FROM provider_payouts pp
@@ -125,7 +130,7 @@ export async function getTechnicianEarningsSummary(
                     ROUND(
                       (GREATEST(0, i.total_amount_cents - COALESCE(i.tax_total_cents, 0))::numeric * GREATEST(0, i.total_amount_cents - COALESCE(i.refunded_amount_cents, 0))::numeric)
                       / GREATEST(1, i.total_amount_cents)::numeric
-                    ) * COALESCE(t.default_platform_commission_bps, 1500) / 10000.0
+                    ) * COALESCE(i.commission_bps_snapshot, t.default_platform_commission_bps, 1500) / 10000.0
                   )
                 )
                 ELSE 0

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 
@@ -312,20 +313,67 @@ class _CustomerProfileScreenState extends State<CustomerProfileScreen> {
           _MenuItem(
             icon: Icons.shield_outlined,
             title: 'Two-Factor Authentication',
-            subtitle: 'Biometric FaceID / SMS Verified',
-            onTap: () {},
+            subtitle: 'TOTP & Encrypted Session Security',
+            onTap: () {
+              showModalBottomSheet(
+                context: context,
+                shape: const RoundedRectangleBorder(
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                ),
+                builder: (ctx) => Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Security & Session Protection',
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Tokens are stored using encrypted hardware-backed secure storage. MFA TOTP verification is supported automatically during sign-in.',
+                      ),
+                      const SizedBox(height: 16),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('Close'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
           ),
           _MenuItem(
             icon: Icons.headset_mic_outlined,
             title: '24/7 Priority Emergency Help',
             subtitle: 'Direct line to 24/7 Operations Dispatch',
-            onTap: () {},
+            onTap: () {
+              GoRouter.of(context).push('/customer/support');
+            },
           ),
           _MenuItem(
             icon: Icons.description_outlined,
             title: 'Terms of Service & Privacy',
-            subtitle: 'v2.4.0 • Service Agreement & Privacy Policy',
-            onTap: () {},
+            subtitle: 'Service Agreement & Escrow Privacy Policy',
+            onTap: () {
+              showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('Terms & Privacy'),
+                  content: const Text(
+                    'All ServiceOS payments are protected in escrow until verified work completion. Personal contact details remain masked inside in-app dispatch channels.',
+                  ),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+                  ],
+                ),
+              );
+            },
           ),
         ]),
         const SizedBox(height: 24),

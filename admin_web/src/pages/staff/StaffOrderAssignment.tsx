@@ -136,7 +136,7 @@ export const StaffOrderAssignment: React.FC = () => {
                 </div>
                 <div className="text-sm font-black flex items-center gap-2 mt-0.5">
                   <span>{selectedBooking.jobNo}</span>
-                  <span>â€¢</span>
+                  <span>•</span>
                   <span>{selectedBooking.serviceName}</span>
                 </div>
                 <div className="text-xs text-emerald-100/80 mt-0.5">
@@ -216,7 +216,7 @@ export const StaffOrderAssignment: React.FC = () => {
                             <ShieldCheck className="w-4 h-4 text-emerald-600" />
                           </div>
                           <div className="text-xs text-slate-500 font-medium mt-0.5">
-                            {tech.specialization} Pro â€¢ â˜… {tech.rating}
+                            {tech.specialization} Pro • ★ {tech.rating}
                           </div>
                         </div>
                       </div>

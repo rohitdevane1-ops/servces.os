@@ -74,7 +74,7 @@ export const Page07NewBookingRequests: React.FC = () => {
 
                 {/* Service info */}
                 <h3 className="text-base font-extrabold text-slate-900 mt-3">{req.serviceName}</h3>
-                <p className="text-xs text-slate-500">{req.category} â€¢ Pre-auth: {formatCurrency(req.estimate)}</p>
+                <p className="text-xs text-slate-500">{req.category} • Pre-auth: {formatCurrency(req.estimate)}</p>
 
                 {/* Customer card */}
                 <div className="mt-4 p-3 bg-slate-50 rounded-xl space-y-2 border border-slate-100 text-xs">

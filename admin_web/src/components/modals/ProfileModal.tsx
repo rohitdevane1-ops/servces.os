@@ -143,7 +143,7 @@ export const ProfileModal: React.FC = () => {
       }
       addToast('Security password updated and old sessions revoked.', 'success');
     }
-    updateUserProfile({
+    await updateUserProfile({
       name,
       email,
       phone,
@@ -271,7 +271,7 @@ export const ProfileModal: React.FC = () => {
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                     twoFactorEnabled ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
                   }`}>
-                    {twoFactorEnabled ? 'â— 2FA Enabled' : 'â—‹ Not Enrolled'}
+                    {twoFactorEnabled ? '● 2FA Enabled' : '○ Not Enrolled'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
@@ -508,7 +508,7 @@ export const ProfileModal: React.FC = () => {
                   </label>
                   <input
                     type="password"
-                    placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+                    placeholder="••••••••••••"
                     value={currentPassword}
                     onChange={(e) => setCurrentPassword(e.target.value)}
                     className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-mono"

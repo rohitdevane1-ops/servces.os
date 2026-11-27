@@ -5,13 +5,14 @@ import { env } from '../../config/env.js';
 import { successResponse, errorResponse } from '../../types/envelope.js';
 import { authenticate, requirePermission } from '../../middleware/rbac.js';
 import { blockInDemoMode, isDemoModeEnabled } from '../../middleware/demoGuard.js';
-import { getPaymentGateway } from '../../services/paymentGateway.js';
+import { getPaymentGateway, getTenantPaymentGateway, resolveTenantIntegrationSecrets } from '../../services/paymentGateway.js';
 import { AuthService } from '../auth/auth.service.js';
 import { safeMediaUrlSchema } from '../../utils/urlValidator.js';
+import { normalizeStoredMediaUrl, signStoredMediaUrl } from '../../utils/mediaSigning.js';
 
 const SYSTEM_CONFIG_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const TENANT_BRAND_COLS = `name, slug, primary_color, currency_code, currency_symbol, timezone,
+const TENANT_BRAND_COLS = `name, slug, tagline, primary_color, currency_code, currency_symbol, timezone,
   default_platform_commission_bps, COALESCE(default_tax_rate_bps, 500) AS default_tax_rate_bps,
   COALESCE(tax_name, 'VAT') AS tax_name,
   COALESCE(country_code, 'AE') AS country_code,
@@ -22,10 +23,11 @@ const TENANT_BRAND_COLS = `name, slug, primary_color, currency_code, currency_sy
   COALESCE(default_map_lat, 25.204800) AS default_map_lat,
   COALESCE(default_map_lng, 55.270800) AS default_map_lng`;
 
-function formatTenantBrand(r: any) {
+function formatTenantBrand(r: any, tenantId?: string) {
   return {
     name: r.name,
     slug: r.slug,
+    tagline: r.tagline ?? null,
     primaryColor: r.primary_color,
     currencyCode: r.currency_code,
     currencySymbol: r.currency_symbol,
@@ -39,7 +41,7 @@ function formatTenantBrand(r: any) {
     supportPhone: r.support_phone,
     supportWhatsapp: r.support_whatsapp,
     emergencyPhone: r.emergency_phone ?? null,
-    logoUrl: r.logo_url ?? null,
+    logoUrl: signStoredMediaUrl(r.logo_url ?? null, tenantId || r.id),
     defaultLocale: r.default_locale || 'en',
     defaultMapLat: Number(r.default_map_lat ?? 25.2048),
     defaultMapLng: Number(r.default_map_lng ?? 55.2708),
@@ -82,6 +84,7 @@ function buildMaskedSecrets(encryptedSecrets: Record<string, any>): Record<strin
 
 const updateSystemConfigSchema = z.object({
   name: z.string().trim().min(2).max(150).optional(),
+  tagline: z.string().trim().max(255).nullable().optional(),
   primaryColor: z.string().trim().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   currencyCode: z.string().trim().length(3).transform((s) => s.toUpperCase()).optional(),
   currencySymbol: z.string().trim().min(1).max(10).optional(),
@@ -134,6 +137,8 @@ export async function systemRoutes(fastify: FastifyInstance) {
   // 1. Public White-Label Runtime Configuration
   fastify.get('/config', async (request, reply) => {
     const gateway = getPaymentGateway();
+    let paymentGatewayConfigured = gateway.isConfigured();
+    let smsConfigured = Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_PHONE);
     let tenantBrand: any = null;
     try {
       const headerTenantId = (request.headers['x-tenant-id'] as string | undefined)?.trim();
@@ -160,17 +165,28 @@ export async function systemRoutes(fastify: FastifyInstance) {
       }
 
       if (tRes.rows.length > 0) {
-        const formatted: Record<string, any> = formatTenantBrand(tRes.rows[0]);
+        const resolvedTenantId = tRes.rows[0].id as string;
+        const formatted: Record<string, any> = formatTenantBrand(tRes.rows[0], resolvedTenantId);
         let publicSettings: Record<string, any> = {};
         try {
           const intRes = await tenantQuery<{ public_settings: Record<string, any> }>(
             `SELECT COALESCE(public_settings, '{}'::jsonb) AS public_settings FROM integration_configs WHERE tenant_id = $1 LIMIT 1`,
-            [tRes.rows[0].id],
-            tRes.rows[0].id
+            [resolvedTenantId],
+            resolvedTenantId
           );
           publicSettings = intRes.rows[0]?.public_settings || {};
         } catch {
           publicSettings = {};
+        }
+        try {
+          const tenantGateway = await getTenantPaymentGateway(resolvedTenantId);
+          paymentGatewayConfigured = tenantGateway.isConfigured;
+          const sec = await resolveTenantIntegrationSecrets(resolvedTenantId);
+          smsConfigured = Boolean(
+            sec.twilioEnabled && sec.twilioAccountSid && sec.twilioAuthToken && sec.twilioFromNumber
+          );
+        } catch {
+          // Keep env fallback booleans when secrets table isn't populated
         }
         formatted.pricingConfig = publicSettings.pricingConfig || null;
         tenantBrand = formatted;
@@ -188,7 +204,11 @@ export async function systemRoutes(fastify: FastifyInstance) {
       successResponse({
         demoMode: isDemoModeEnabled(),
         paymentGateway: gateway.name,
-        paymentGatewayConfigured: gateway.isConfigured(),
+        paymentGatewayConfigured,
+        smsConfigured,
+        captchaEnforced: env.CAPTCHA_ENFORCED === 'true',
+        captchaSiteKey: env.CAPTCHA_SITE_KEY || null,
+        stripePublishableKey: env.STRIPE_PUBLISHABLE_KEY || null,
         defaultCurrency: tenantBrand?.currencyCode || env.DEFAULT_CURRENCY_CODE || 'AED',
         defaultVatPercent: tenantBrand?.vatPercent ?? (env.DEFAULT_TAX_RATE_BPS / 100),
         defaultTaxName: tenantBrand?.taxName || 'VAT',
@@ -214,10 +234,12 @@ export async function systemRoutes(fastify: FastifyInstance) {
     }
 
     const d = parsed.data;
+    const normalizedLogoUrl = d.logoUrl !== undefined ? normalizeStoredMediaUrl(d.logoUrl) : undefined;
     const updatedRow = await withTenantTransaction(tenantId, async (client) => {
       const updRes = await client.query(
         `UPDATE tenants
          SET name = COALESCE($1, name),
+             tagline = CASE WHEN $23::boolean THEN $24 ELSE tagline END,
              primary_color = COALESCE($2, primary_color),
              currency_code = COALESCE($3, currency_code),
              currency_symbol = COALESCE($4, currency_symbol),
@@ -255,12 +277,14 @@ export async function systemRoutes(fastify: FastifyInstance) {
           d.supportWhatsapp ?? null,
           d.emergencyPhone !== undefined,
           d.emergencyPhone ?? null,
-          d.logoUrl !== undefined,
-          d.logoUrl ?? null,
+          normalizedLogoUrl !== undefined,
+          normalizedLogoUrl ?? null,
           d.defaultLocale ?? null,
           d.defaultMapLat ?? null,
           d.defaultMapLng ?? null,
           tenantId,
+          d.tagline !== undefined,
+          d.tagline ?? null,
         ]
       );
 
@@ -307,7 +331,7 @@ export async function systemRoutes(fastify: FastifyInstance) {
         [tenantId, request.user!.id, request.user!.role, tenantId, JSON.stringify(d)]
       );
 
-      const formatted: Record<string, any> = formatTenantBrand(updRes.rows[0]);
+      const formatted: Record<string, any> = formatTenantBrand(updRes.rows[0], tenantId);
       formatted.pricingConfig = savedPricingConfig;
       return formatted;
     });
@@ -350,8 +374,19 @@ export async function systemRoutes(fastify: FastifyInstance) {
   }, async (request, reply) => {
     const requestId = request.id || `req_${Date.now()}`;
     const tenantId = request.tenantId;
-    const q = (request.query || {}) as { limit?: string; action?: string };
+    const q = (request.query || {}) as {
+      limit?: string;
+      page?: string;
+      offset?: string;
+      action?: string;
+      resourceType?: string;
+      resourceId?: string;
+    };
     const limit = Math.min(200, Math.max(1, parseInt(q.limit || '50', 10) || 50));
+    const page = Math.max(1, parseInt(q.page || '1', 10) || 1);
+    const offset = q.offset !== undefined
+      ? Math.max(0, parseInt(q.offset, 10) || 0)
+      : (page - 1) * limit;
 
     const params: any[] = [tenantId];
     let whereClause = 'WHERE tenant_id = $1';
@@ -359,8 +394,23 @@ export async function systemRoutes(fastify: FastifyInstance) {
       params.push(q.action.trim());
       whereClause += ` AND action = $${params.length}`;
     }
-    params.push(limit);
+    if (q.resourceType && q.resourceType.trim()) {
+      params.push(q.resourceType.trim());
+      whereClause += ` AND resource_type = $${params.length}`;
+    }
+    if (q.resourceId && SYSTEM_CONFIG_UUID_REGEX.test(q.resourceId.trim())) {
+      params.push(q.resourceId.trim());
+      whereClause += ` AND resource_id = $${params.length}`;
+    }
 
+    const countRes = await tenantQuery<{ total: string }>(
+      `SELECT COUNT(*)::bigint AS total FROM audit_logs ${whereClause}`,
+      params,
+      tenantId
+    );
+    const total = Number(countRes.rows[0]?.total ?? 0);
+
+    const dataParams = [...params, limit, offset];
     const res = await tenantQuery(
       `SELECT id, actor_id AS "actorId", actor_role AS "actorRole", action,
               resource_type AS "resourceType", resource_id AS "resourceId",
@@ -368,13 +418,18 @@ export async function systemRoutes(fastify: FastifyInstance) {
        FROM audit_logs
        ${whereClause}
        ORDER BY created_at DESC
-       LIMIT $${params.length}`,
-      params,
+       LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`,
+      dataParams,
       tenantId
     );
 
     return reply.status(200).send(
-      successResponse(res.rows, requestId)
+      successResponse(res.rows, requestId, {
+        page,
+        limit,
+        totalRecords: total,
+        totalPages: Math.ceil(total / limit),
+      })
     );
   });
 

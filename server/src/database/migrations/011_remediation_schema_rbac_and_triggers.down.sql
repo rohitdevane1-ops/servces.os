@@ -19,7 +19,17 @@ DROP TRIGGER IF EXISTS trg_invoices_updated_at ON invoices;
 
 ALTER TABLE ledger_entries ALTER COLUMN posting_type TYPE VARCHAR(50);
 
-DELETE FROM role_permissions WHERE permission_id = 'finance:report:read';
+DELETE FROM role_permissions
+WHERE permission_id = 'finance:report:read'
+   OR (role = 'ADMIN' AND permission_id IN (
+     'booking:create:on_demand',
+     'booking:view:assigned',
+     'booking:view:own',
+     'dispatch:offer:accept',
+     'work_order:verify_pin',
+     'work_order:submit_proof',
+     'work_order:complete'
+   ));
 DELETE FROM permissions WHERE id = 'finance:report:read';
 
 ALTER TABLE invoices DROP CONSTRAINT IF EXISTS chk_invoices_refunded_bounds;

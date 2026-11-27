@@ -29,5 +29,7 @@ data class Booking(
     val taxAmount: Double = 0.0,
     val totalAmount: Double,
     val status: BookingStatus,
-    val safetyPin: String = ""
+    val safetyPin: String = "",
+    val requiresClientAction: Boolean = false,
+    val checkoutRedirectUrl: String? = null
 )

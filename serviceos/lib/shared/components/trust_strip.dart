@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
-
+import '../../core/constants/asset_constants.dart';
 
 class TrustVerificationStrip extends StatelessWidget {
   final VoidCallback onViewAllTap;
@@ -12,157 +12,124 @@ class TrustVerificationStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final surfaceColor = isDark ? AppColors.nightSurface : AppColors.daySurface;
-    final borderColor = isDark ? AppColors.nightBorder : AppColors.dayBorder;
-    final textPrimary = isDark ? AppColors.nightTextPrimary : AppColors.dayTextPrimary;
-    final textSecondary = isDark ? AppColors.nightTextSecondary : AppColors.dayTextSecondary;
-    final primaryBrand = isDark ? AppColors.nightPrimary : AppColors.dayPrimary;
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: surfaceColor,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: borderColor, width: 1),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(isDark ? 0.2 : 0.03),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
+    return GestureDetector(
+      onTap: onViewAllTap,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        height: 104,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: const LinearGradient(
+            colors: [Color(0xFF0A332C), Color(0xFF0F4C42), Color(0xFF115E59)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
           ),
-        ],
-      ),
-      child: Column(
-        children: [
-          // 4-Node Trust Grid
-          Row(
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF0C3832).withOpacity(0.28),
+              blurRadius: 18,
+              offset: const Offset(0, 6),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Stack(
             children: [
-              _buildTrustNode(
-                icon: Icons.verified_user_rounded,
-                iconColor: AppColors.verifiedEmerald,
-                title: 'Verified Pros',
-                subtitle: '100% Background-checked',
-                textPrimary: textPrimary,
-                textSecondary: textSecondary,
+              Positioned(
+                right: 26,
+                bottom: 0,
+                top: 6,
+                width: 96,
+                child: Opacity(
+                  opacity: 0.9,
+                  child: Image.asset(
+                    AssetConstants.womanBanner,
+                    fit: BoxFit.cover,
+                    alignment: Alignment.topCenter,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+                ),
               ),
-              _buildTrustNode(
-                icon: Icons.bolt_rounded,
-                iconColor: AppColors.ratingAmber,
-                title: 'Instant Booking',
-                subtitle: '60-min arrival guarantee',
-                textPrimary: textPrimary,
-                textSecondary: textSecondary,
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [
+                      const Color(0xFF0A332C),
+                      const Color(0xFF0F4C42).withOpacity(0.92),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.62, 1.0],
+                  ),
+                ),
+                child: const SizedBox.expand(),
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Row(
-            children: [
-              _buildTrustNode(
-                icon: Icons.lock_rounded,
-                iconColor: primaryBrand,
-                title: 'Escrow Security',
-                subtitle: 'Pay after work completion',
-                textPrimary: textPrimary,
-                textSecondary: textSecondary,
-              ),
-              _buildTrustNode(
-                icon: Icons.support_agent_rounded,
-                iconColor: const Color(0xFFEC4899),
-                title: '24/7 Support',
-                subtitle: 'Live dispatch assistance',
-                textPrimary: textPrimary,
-                textSecondary: textSecondary,
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 20),
-
-          // Divider
-          Divider(color: borderColor, height: 1),
-
-          const SizedBox(height: 16),
-
-          // "View All Services" Action Link
-          InkWell(
-            onTap: onViewAllTap,
-            borderRadius: BorderRadius.circular(10),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    'View All 340 Home Services',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: primaryBrand,
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: AppColors.verifiedEmerald,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(
+                        Icons.verified_user_rounded,
+                        color: Colors.white,
+                        size: 22,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 6),
-                  Icon(
-                    Icons.arrow_forward_rounded,
-                    size: 16,
-                    color: primaryBrand,
-                  ),
-                ],
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Trusted & Verified\nProfessionals',
+                            maxLines: 2,
+                            style: TextStyle(
+                              fontSize: 14,
+                              height: 1.15,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Your safety, our priority',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.white.withOpacity(0.8),
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        Icons.arrow_forward_rounded,
+                        size: 18,
+                        color: Color(0xFF0A332C),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
+            ],
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTrustNode({
-    required IconData icon,
-    required Color iconColor,
-    required String title,
-    required String subtitle,
-    required Color textPrimary,
-    required Color textSecondary,
-  }) {
-    return Expanded(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: iconColor.withOpacity(0.12),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, size: 18, color: iconColor),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

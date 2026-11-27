@@ -1,18 +1,71 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAdmin } from '../../context/adminContextCore';
+import { apiClient } from '../../services/apiClient';
+import type { TechnicianOnboardingSubmission } from '../../types';
 import { downloadCSV } from '../../utils/exportUtils';
-import { 
-  Search, 
-  UserPlus, 
-  Star, 
-  Eye, 
-  Download
+import {
+  Search,
+  UserPlus,
+  Star,
+  Eye,
+  Download,
+  ShieldCheck,
+  CheckCircle2,
+  XCircle,
 } from 'lucide-react';
 
 export const Page22AllTechnicians: React.FC = () => {
-  const { technicians, navigateToPage, addToast, setSelectedTechnicianId, setIsCreateTechnicianModalOpen } = useAdmin();
+  const {
+    technicians,
+    navigateToPage,
+    addToast,
+    setSelectedTechnicianId,
+    setIsCreateTechnicianModalOpen,
+    refreshOperationsData,
+    isDemoMode,
+  } = useAdmin();
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterTrade, setFilterTrade] = useState<string>('All');
+  const [onboardingQueue, setOnboardingQueue] = useState<TechnicianOnboardingSubmission[]>([]);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    apiClient.getOnboardingSubmissions().then((res) => {
+      if (active && res.success && Array.isArray(res.data)) {
+        setOnboardingQueue(res.data);
+      }
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleReviewOnboarding = async (
+    id: string,
+    status: 'APPROVED' | 'REJECTED' | 'UNDER_REVIEW'
+  ) => {
+    if (isDemoMode) {
+      addToast('Onboarding KYC approvals are disabled in Demo Sandbox mode.', 'warning');
+      return;
+    }
+    setReviewingId(id);
+    const res = await apiClient.reviewOnboardingSubmission(id, {
+      status,
+      reviewerNotes: status === 'APPROVED' ? 'Verified via Operations Portal' : 'Needs updated documentation',
+    });
+    setReviewingId(null);
+    if (!res.success) {
+      addToast(res.error?.message || 'Failed to update onboarding status.', 'error');
+      return;
+    }
+    const listRes = await apiClient.getOnboardingSubmissions();
+    if (listRes.success && Array.isArray(listRes.data)) {
+      setOnboardingQueue(listRes.data);
+    }
+    await refreshOperationsData();
+    addToast(`Technician KYC submission marked ${status}.`, 'success');
+  };
 
   const filteredTechs = technicians.filter(t => {
     const matchesSearch = t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -73,7 +126,7 @@ export const Page22AllTechnicians: React.FC = () => {
         <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
           <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Average Customer Rating</div>
           <div className="text-2xl font-extrabold text-amber-600 mt-0.5">
-            {technicians.length > 0 ? `â˜… ${(technicians.reduce((a, t) => a + (t.rating || 0), 0) / technicians.length).toFixed(2)} / 5.0` : 'â˜… 0.00 / 5.0'}
+            {technicians.length > 0 ? `★ ${(technicians.reduce((a, t) => a + (t.rating || 0), 0) / technicians.length).toFixed(2)} / 5.0` : '★ 0.00 / 5.0'}
           </div>
           <div className="text-[10px] text-slate-400 font-bold mt-0.5">
             {technicians.length > 0 ? `${technicians.reduce((a, t) => a + (t.jobsCompleted || 0), 0)} verified jobs` : '0 verified jobs'}
@@ -167,7 +220,7 @@ export const Page22AllTechnicians: React.FC = () => {
                   <td className="py-3.5 px-4">
                     <div className="font-extrabold text-amber-600 flex items-center gap-1">
                       <Star className="w-3.5 h-3.5 fill-current" />
-                      â˜… {t.rating}
+                      ★ {t.rating}
                     </div>
                     <div className="text-[11px] text-slate-400 mt-0.5">{t.jobsCompleted} completed</div>
                   </td>
@@ -208,6 +261,73 @@ export const Page22AllTechnicians: React.FC = () => {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Technician KYC & Vehicle Onboarding Queue */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/60">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+            <h2 className="text-sm font-extrabold text-slate-900">Technician KYC &amp; Onboarding Submissions</h2>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              {onboardingQueue.length} Submissions
+            </span>
+          </div>
+        </div>
+
+        {onboardingQueue.length === 0 ? (
+          <div className="p-6 text-center text-xs text-slate-500">
+            No pending technician KYC onboarding packets submitted yet.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {onboardingQueue.map((sub) => (
+              <div key={sub.id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div>
+                  <div className="font-extrabold text-slate-900">
+                    {sub.providerName} <span className="text-slate-400 font-normal">({sub.email})</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {sub.tradeCategory} • License: <span className="font-mono">{sub.licenseNumber}</span> • Vehicle: {sub.vehicleMakeModel} ({sub.vehicleLicensePlate})
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                    sub.status === 'APPROVED'
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : sub.status === 'REJECTED'
+                        ? 'bg-rose-100 text-rose-800'
+                        : 'bg-amber-100 text-amber-800'
+                  }`}>
+                    {sub.status}
+                  </span>
+                  {sub.status !== 'APPROVED' && (
+                    <button
+                      type="button"
+                      disabled={reviewingId === sub.id}
+                      onClick={() => handleReviewOnboarding(sub.id, 'APPROVED')}
+                      className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Approve</span>
+                    </button>
+                  )}
+                  {sub.status !== 'REJECTED' && (
+                    <button
+                      type="button"
+                      disabled={reviewingId === sub.id}
+                      onClick={() => handleReviewOnboarding(sub.id, 'REJECTED')}
+                      className="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold text-[11px] flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      <XCircle className="w-3.5 h-3.5" />
+                      <span>Reject</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

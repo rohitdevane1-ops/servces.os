@@ -223,14 +223,14 @@ export const DispatchSimulatorModal: React.FC<DispatchSimulatorModalProps> = ({ 
                   <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl space-y-1">
                     <span className="text-[9px] font-black uppercase text-amber-400">Radial Match (2.4 miles)</span>
                     <h4 className="font-bold text-white">Matched: Certified Pro #01</h4>
-                    <span className="text-slate-400 block text-[10px]">Tier: Platinum Pro â€¢ CSAT 4.98 â˜…</span>
+                    <span className="text-slate-400 block text-[10px]">Tier: Platinum Pro • CSAT 4.98 ★</span>
                   </div>
 
                   <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-1 text-[11px]">
                     <div className="flex justify-between text-slate-300">
                       <span>Broadcast Countdown:</span>
                       <span className="font-bold text-indigo-400">
-                        {activeStep === 2 ? '60s Ring Active...' : 'Accepted in 24s âœ“'}
+                        {activeStep === 2 ? '60s Ring Active...' : 'Accepted in 24s ✓'}
                       </span>
                     </div>
                     <div className="flex justify-between text-slate-400 text-[10px]">
@@ -282,18 +282,18 @@ export const DispatchSimulatorModal: React.FC<DispatchSimulatorModalProps> = ({ 
                   <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl space-y-1">
                     <span className="text-[9px] font-black uppercase text-emerald-400">Offer Accepted</span>
                     <h4 className="font-bold text-white">Guaranteed Payout: ${techNet.toFixed(2)}</h4>
-                    <span className="text-slate-400 block text-[10px]">Fleet Vehicle â€¢ En Route</span>
+                    <span className="text-slate-400 block text-[10px]">Fleet Vehicle • En Route</span>
                   </div>
 
                   {activeStep >= 4 && (
                     <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-1 text-[11px]">
                       <div className="flex justify-between text-slate-300">
                         <span>Geofence Check:</span>
-                        <span className="font-bold text-emerald-400">Verified on-site âœ“</span>
+                        <span className="font-bold text-emerald-400">Verified on-site ✓</span>
                       </div>
                       <div className="flex justify-between text-slate-300">
                         <span>Dual Photo Proof:</span>
-                        <span className="font-bold text-emerald-400">Uploaded âœ“</span>
+                        <span className="font-bold text-emerald-400">Uploaded ✓</span>
                       </div>
                     </div>
                   )}
@@ -322,13 +322,13 @@ export const DispatchSimulatorModal: React.FC<DispatchSimulatorModalProps> = ({ 
         <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>Turnkey Escrow & PostGIS Dispatch Engine â€¢ Certified & Ready to Deploy</span>
+            <span>Turnkey Escrow & PostGIS Dispatch Engine • Certified & Ready to Deploy</span>
           </div>
           <button
             onClick={() => setActiveStep(prev => (prev < 5 ? prev + 1 : 0))}
             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl border border-slate-700 font-bold transition-all cursor-pointer"
           >
-            {activeStep >= 5 ? 'Reset Simulation' : 'Next Step â†’'}
+            {activeStep >= 5 ? 'Reset Simulation' : 'Next Step →'}
           </button>
         </div>
       </div>

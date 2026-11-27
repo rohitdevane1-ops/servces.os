@@ -5,6 +5,7 @@ import { FastifyInstance } from 'fastify';
 import { env } from '../../config/env.js';
 import { authenticate } from '../../middleware/rbac.js';
 import { successResponse, errorResponse } from '../../types/envelope.js';
+import { signUploadPath } from '../../utils/mediaSigning.js';
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,17 +53,11 @@ function detectMagicMime(buf: Buffer): { mimeType: string; ext: string } | null 
   return null;
 }
 
-function signUploadPath(tenantId: string, filename: string, exp: number): string {
-  return crypto
-    .createHmac('sha256', env.APP_ENCRYPTION_KEY)
-    .update(`${tenantId}:${filename}:${exp}`)
-    .digest('hex');
-}
-
 export async function uploadsRoutes(fastify: FastifyInstance) {
   // 1. Authenticated Multipart Media Upload (Strict MIME + Magic-Byte Check + Signed URL)
   fastify.post('/', {
     preHandler: [authenticate],
+    config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     schema: {
       tags: ['Uploads & Media'],
       summary: 'Upload image (jpg/png/webp) or pdf with magic-byte verification and receive signed URL',
@@ -147,6 +142,7 @@ export async function uploadsRoutes(fastify: FastifyInstance) {
     return reply.status(201).send(
       successResponse({
         url: `/api/v1/uploads/${tenantId}/${filename}?exp=${exp}&sig=${sig}`,
+        storageKey: `/api/v1/uploads/${tenantId}/${filename}`,
         filename,
         mimeType: detected.mimeType,
         sizeBytes: buffer.length,

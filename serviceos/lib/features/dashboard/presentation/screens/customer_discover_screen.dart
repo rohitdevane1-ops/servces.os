@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/widgets/motion_primitives.dart';
 import '../../../../data/models/service_model.dart';
 import '../../../../data/repositories/service_repository.dart';
 import '../../../../shared/components/app_header.dart';
@@ -26,16 +27,27 @@ class CustomerDiscoverScreen extends StatefulWidget {
 class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
   final ServiceRepository _repository = ServiceRepository();
   final TextEditingController _searchController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
 
   List<CategoryItemModel> _categories = [];
   List<ServiceItemModel> _displayedServices = [];
   String _selectedCategorySlug = 'all';
   bool _isLoading = true;
+  double _scrollOffset = 0.0;
 
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
     _loadInitialData();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final nextOffset = _scrollController.offset.clamp(0.0, 160.0);
+    if ((nextOffset - _scrollOffset).abs() >= 1.5) {
+      setState(() => _scrollOffset = nextOffset);
+    }
   }
 
   Future<void> _loadInitialData() async {
@@ -91,6 +103,8 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -102,13 +116,13 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
     final textPrimary = isDark ? AppColors.nightTextPrimary : AppColors.dayTextPrimary;
     final textSecondary = isDark ? AppColors.nightTextSecondary : AppColors.dayTextSecondary;
 
-    // Responsive columns calculation
+    // Responsive columns calculation (2-col on mobile matching mockup, up to 4-col on desktop)
     final screenWidth = MediaQuery.of(context).size.width;
-    int crossAxisCount = 1;
+    int crossAxisCount = 2;
     if (screenWidth >= 1024) {
-      crossAxisCount = 4; // Desktop matching master mockup
-    } else if (screenWidth >= 640) {
-      crossAxisCount = 2; // Tablet
+      crossAxisCount = 4;
+    } else if (screenWidth >= 680) {
+      crossAxisCount = 3;
     }
 
     final categoryNames = ['All', ..._categories.map((c) => c.shortTitle)];
@@ -120,19 +134,21 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
         isDarkMode: widget.isDarkMode,
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
+          ? _buildLoadingSkeleton(isDark, crossAxisCount)
           : RefreshIndicator(
               onRefresh: _loadInitialData,
               child: SingleChildScrollView(
+                controller: _scrollController,
                 physics: const AlwaysScrollableScrollPhysics(),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Hero Discovery Banner
+                    // Hero Discovery Banner with Scroll-Linked Parallax
                     HeroDiscoveryBanner(
                       searchController: _searchController,
                       onSearch: _onSearch,
                       onFilterTap: () {},
+                      scrollOffset: _scrollOffset,
                     ),
 
                     const SizedBox(height: 12),
@@ -146,58 +162,23 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
 
                     const SizedBox(height: 24),
 
-                    // Section Title & Counter
+                    // Section Title & View All Action
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                _selectedCategorySlug.toLowerCase() == 'all'
-                                    ? 'Popular Home Services'
-                                    : '$_selectedCategorySlug Services',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w800,
-                                  color: textPrimary,
-                                  letterSpacing: -0.3,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: (isDark ? AppColors.nightPrimary : AppColors.dayPrimary).withOpacity(0.12),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Text(
-                                  '${_displayedServices.length} Pros Available',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: isDark ? AppColors.nightPrimary : AppColors.dayPrimary,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          Text(
-                            'All Service Zones Active',
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w500,
-                              color: textSecondary,
-                            ),
-                          ),
-                        ],
+                      child: AnimatedSectionHeader(
+                        title: _selectedCategorySlug.toLowerCase() == 'all'
+                            ? 'Popular Services'
+                            : '$_selectedCategorySlug Services',
+                        actionLabel: 'View All',
+                        onActionTap: () => _onCategorySelect('all'),
+                        titleColor: textPrimary,
+                        actionColor: isDark ? AppColors.nightPrimary : AppColors.dayPrimary,
                       ),
                     ),
 
                     const SizedBox(height: 16),
 
-                    // Responsive Grid of Curated Service Cards
+                    // Responsive Grid of Curated Service Cards with Staggered Reveal
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       child: GridView.builder(
@@ -205,18 +186,21 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
                         physics: const NeverScrollableScrollPhysics(),
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: crossAxisCount,
-                          crossAxisSpacing: 16,
-                          mainAxisSpacing: 16,
-                          childAspectRatio: crossAxisCount == 1 ? 0.95 : 0.85,
+                          crossAxisSpacing: 14,
+                          mainAxisSpacing: 14,
+                          childAspectRatio: crossAxisCount == 2 ? 0.72 : 0.82,
                         ),
                         itemCount: _displayedServices.length,
                         itemBuilder: (context, index) {
                           final service = _displayedServices[index];
-                          return ServiceCuratedCard(
-                            service: service,
-                            onBookTap: () {
-                              _showBookingSheet(context, service);
-                            },
+                          return ScrollRevealItem(
+                            index: index,
+                            child: ServiceCuratedCard(
+                              service: service,
+                              onBookTap: () {
+                                _showBookingSheet(context, service);
+                              },
+                            ),
                           );
                         },
                       ),
@@ -240,27 +224,137 @@ class _CustomerDiscoverScreenState extends State<CustomerDiscoverScreen> {
     );
   }
 
+  Widget _buildLoadingSkeleton(bool isDark, int crossAxisCount) {
+    final baseColor = isDark ? AppColors.nightSurface : const Color(0xFFE2E8F0);
+    final cardColor = isDark ? AppColors.nightSurface : AppColors.daySurface;
+    final borderColor = isDark ? AppColors.nightBorder : AppColors.dayBorder;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            height: 205,
+            decoration: BoxDecoration(
+              color: baseColor.withOpacity(isDark ? 0.9 : 0.6),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: borderColor),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            height: 98,
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: borderColor),
+            ),
+          ),
+          const SizedBox(height: 24),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: crossAxisCount,
+              crossAxisSpacing: 14,
+              mainAxisSpacing: 14,
+              childAspectRatio: crossAxisCount == 2 ? 0.72 : 0.82,
+            ),
+            itemCount: crossAxisCount * 2,
+            itemBuilder: (_, __) => Container(
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: borderColor),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  AspectRatio(
+                    aspectRatio: 16 / 10,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: baseColor.withOpacity(isDark ? 0.8 : 0.6),
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(height: 14, width: 120, color: baseColor.withOpacity(0.5)),
+                        const SizedBox(height: 8),
+                        Container(height: 11, width: double.infinity, color: baseColor.withOpacity(0.35)),
+                        const SizedBox(height: 6),
+                        Container(height: 11, width: 80, color: baseColor.withOpacity(0.35)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildBottomNav(bool isDark) {
     final surfaceColor = isDark ? AppColors.nightSurface : AppColors.daySurface;
     final borderColor = isDark ? AppColors.nightBorder : AppColors.dayBorder;
     final primaryBrand = isDark ? AppColors.nightPrimary : AppColors.dayPrimary;
+    final accentBrand = isDark ? AppColors.nightAccent : AppColors.dayAccent;
     final textSecondary = isDark ? AppColors.nightTextSecondary : AppColors.dayTextSecondary;
 
     return Container(
       decoration: BoxDecoration(
         color: surfaceColor,
         border: Border(top: BorderSide(color: borderColor, width: 1)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(isDark ? 0.35 : 0.05),
+            blurRadius: 16,
+            offset: const Offset(0, -4),
+          ),
+        ],
       ),
       child: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              _buildNavItem(Icons.explore_rounded, 'Discover', true, primaryBrand, textSecondary, () {}),
+              _buildNavItem(Icons.home_rounded, 'Home', true, primaryBrand, textSecondary, () {}),
               _buildNavItem(Icons.calendar_month_rounded, 'Bookings', false, primaryBrand, textSecondary, () => context.push('/customer/my-bookings')),
-              _buildNavItem(Icons.chat_bubble_outline_rounded, 'Messages', false, primaryBrand, textSecondary, () => context.push('/common/chat')),
+              // Center Elevated Search FAB
+              GestureDetector(
+                onTap: () => context.push('/customer/search'),
+                child: Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      colors: [primaryBrand, accentBrand],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: primaryBrand.withOpacity(0.38),
+                        blurRadius: 14,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.search_rounded, color: Colors.white, size: 22),
+                ),
+              ),
+              _buildNavItem(Icons.notifications_none_rounded, 'Messages', false, primaryBrand, textSecondary, () => context.push('/common/chat')),
               _buildNavItem(Icons.person_outline_rounded, 'Profile', false, primaryBrand, textSecondary, () => context.push('/customer/profile')),
             ],
           ),

@@ -1,48 +1,112 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAdmin } from '../../context/adminContextCore';
-import { 
-  MessageSquare, 
-  Send, 
-  Phone, 
-  User, 
+import { apiClient } from '../../services/apiClient';
+import {
+  MessageSquare,
+  Send,
+  Phone,
+  User,
   CheckCheck
 } from 'lucide-react';
 
 interface ChatMsg {
-  id: number;
+  id: string;
   sender: 'customer' | 'staff';
   text: string;
   time: string;
 }
 
-const INITIAL_CONVERSATIONS: Record<string, ChatMsg[]> = {};
-
 export const StaffCustomerComm: React.FC = () => {
   const { customers, addToast, openUserDossier } = useAdmin();
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '');
   const [messageText, setMessageText] = useState('');
-  const [conversations, setConversations] = useState<Record<string, ChatMsg[]>>(INITIAL_CONVERSATIONS);
+  const [isSending, setIsSending] = useState(false);
+  const [smsConfigured, setSmsConfigured] = useState<boolean | null>(null);
+  const [conversations, setConversations] = useState<Record<string, ChatMsg[]>>({});
 
   const selectedCustomer = customers.find(c => c.id === selectedCustomerId) || customers[0] || null;
 
-  const activeMessages = selectedCustomer && conversations[selectedCustomer.id] ? conversations[selectedCustomer.id] : (selectedCustomer ? [
-    { 
-      id: 1, 
-      sender: 'staff' as const, 
-      text: `Direct operational channel open with ${selectedCustomer.name}. Type below to dispatch updates to their mobile device or SMS.`, 
-      time: 'Ready' 
-    }
-  ] : []);
+  useEffect(() => {
+    let active = true;
+    apiClient.getSmsStatus().then((res) => {
+      if (active && res.success && res.data) {
+        setSmsConfigured(Boolean(res.data.configured));
+      }
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  useEffect(() => {
+    if (!selectedCustomer?.id) return;
+    let active = true;
+    apiClient.getCustomerCommunications(selectedCustomer.id).then((res) => {
+      if (!active || !res.success || !res.data) return;
+      const timeline: ChatMsg[] = [
+        ...res.data.notifications.map((n) => ({
+          id: `notif-${n.id}`,
+          sender: 'staff' as const,
+          text: `[${n.channel} ${n.status}] ${n.templateType || 'Direct Notification'} → ${n.destination}`,
+          time: new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        })),
+        ...res.data.bookingMessages.map((m) => ({
+          id: `msg-${m.id}`,
+          sender: m.senderRole === 'CUSTOMER' ? ('customer' as const) : ('staff' as const),
+          text: `[#${m.bookingReference}] ${m.messageText}`,
+          time: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        })),
+      ];
+      setConversations((prev) => ({
+        ...prev,
+        [selectedCustomer.id]: timeline,
+      }));
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [selectedCustomer?.id]);
+
+  const activeMessages =
+    selectedCustomer && conversations[selectedCustomer.id]?.length
+      ? conversations[selectedCustomer.id]
+      : selectedCustomer
+        ? [
+            {
+              id: 'ready',
+              sender: 'staff' as const,
+              text: `Direct operational channel open with ${selectedCustomer.name}. ${smsConfigured === false ? 'Configure Twilio credentials in Integrations to deliver live SMS.' : 'Type below to send an operational SMS update.'}`,
+              time: 'Ready',
+            },
+          ]
+        : [];
+
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!messageText.trim() || !selectedCustomer) return;
+    if (!selectedCustomer.phone) {
+      addToast('Customer has no phone number on file for SMS delivery.', 'error');
+      return;
+    }
+
+    setIsSending(true);
+    const res = await apiClient.sendDirectSms({
+      recipientPhone: selectedCustomer.phone,
+      recipientName: selectedCustomer.name,
+      message: messageText.trim(),
+    });
+    setIsSending(false);
+
+    if (!res.success || !res.data) {
+      addToast(res.error?.message || 'Failed to dispatch SMS notification.', 'error');
+      return;
+    }
 
     const newMsg: ChatMsg = {
-      id: Date.now(),
+      id: res.data.id || String(Date.now()),
       sender: 'staff',
-      text: messageText.trim(),
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      text: `[SMS ${res.data.status}] ${messageText.trim()}`,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
     setConversations(prev => ({
@@ -51,7 +115,12 @@ export const StaffCustomerComm: React.FC = () => {
     }));
 
     setMessageText('');
-    addToast(`SMS notification sent to ${selectedCustomer.name}`, 'success');
+    addToast(
+      res.data.delivered
+        ? `SMS delivered to ${selectedCustomer.name}`
+        : `SMS queued (${res.data.status}): ${res.data.errorMessage || 'Check Twilio status'}`,
+      res.data.delivered ? 'success' : 'warning'
+    );
   };
 
   return (
@@ -136,7 +205,7 @@ export const StaffCustomerComm: React.FC = () => {
                   )}
                   <div>
                     <div className="text-xs font-bold text-slate-900">{selectedCustomer.name}</div>
-                    <div className="text-[10px] text-slate-500">{selectedCustomer.phone || 'No phone'} â€¢ {selectedCustomer.address || 'No address specified'}</div>
+                    <div className="text-[10px] text-slate-500">{selectedCustomer.phone || 'No phone'} • {selectedCustomer.address || 'No address specified'}</div>
                   </div>
                 </div>
 
@@ -200,10 +269,11 @@ export const StaffCustomerComm: React.FC = () => {
                 />
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-[#0C3832] hover:bg-[#124e45] text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+                  disabled={isSending}
+                  className="px-4 py-2 bg-[#0C3832] hover:bg-[#124e45] disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
                 >
                   <Send className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Send</span>
+                  <span>{isSending ? 'Sending...' : 'Send'}</span>
                 </button>
               </form>
             </>

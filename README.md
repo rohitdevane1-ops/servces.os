@@ -7,7 +7,7 @@
 
 ## 1. Platform Architecture
 
-1. **Enterprise REST API Backend (`server/`)**: Fastify 5 + TypeScript + PostgreSQL 16 + PostGIS (`15` paired up/down migrations, fail-closed `FORCE ROW LEVEL SECURITY`, durable payment outbox worker, double-entry general ledger with pre-tax Account `2030` VAT/Tax liability accounting, proportional refund reversals, HMAC-signed media uploads, and modular payment gateway adapter supporting **Stripe**, **PayTabs**, and **Telr**).
+1. **Enterprise REST API Backend (`server/`)**: Fastify 5 + TypeScript + PostgreSQL 16 + PostGIS (`16` paired up/down migrations, fail-closed `FORCE ROW LEVEL SECURITY`, durable payment outbox worker, double-entry general ledger with pre-tax Account `2030` VAT/Tax liability accounting, proportional refund reversals, HMAC-signed media uploads, and modular payment gateway adapter supporting **Stripe**, **PayTabs**, and **Telr**).
 2. **Admin & Staff Web Control Portal (`admin_web/`)**: React 19 + Vite + TypeScript + Tailwind CSS with **52+ operational screens**, **English (LTR) & Arabic (RTL)** bilingual switcher, live Dubai sandbox banner & one-click demo logins (when `VITE_DEMO_MODE=true`), and Nginx hardened reverse proxy.
 3. **Cross-Platform Mobile App (`serviceos/`)**: Flutter (Android & iOS) with `ApiClient` JWT single-flight refresh, AED + 5% UAE VAT checkout, and Day/Night Vision themes.
 4. **Native Android App (`serviceos_android/`)**: Kotlin + Jetpack Compose Material 3 with `BuildConfig.API_BASE_URL` HTTPS release enforcement and `EncryptedSharedPreferences`.
@@ -48,7 +48,7 @@ cp .env.example .env
 
 ### Step 3: Run Migrations & Choose Your Seed Command
 ```bash
-# Apply all 15 PostgreSQL + PostGIS migrations
+# Apply all 16 PostgreSQL + PostGIS migrations
 npm run db:migrate
 npm run db:verify
 
@@ -83,13 +83,13 @@ npm run seed:prod
 ## 5. Verification & Test Commands
 
 ```bash
-# 1. Validate all 15 SQL Migration Pairs & Mobile Dart/Kotlin Codebases
+# 1. Validate all 16 SQL Migration Pairs & Mobile Dart/Kotlin Codebases
 npm run validate
 
 # 2. Backend TypeScript Compile Check
 npm --prefix server run build
 
-# 3. Full Backend Unit & Real-PostgreSQL Integration Suite (116 Tests across 21 Suites)
+# 3. Full Backend Unit & Real-PostgreSQL Integration Suite (120 Tests across 22 Suites)
 npm --prefix server test
 
 # 4. Admin & Staff Web Portal Lint & Production Build

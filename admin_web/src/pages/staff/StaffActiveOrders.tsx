@@ -103,7 +103,7 @@ export const StaffActiveOrders: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                      <span>Scheduled time: {order.scheduleTime} â€¢ Service: {order.serviceName}</span>
+                      <span>Scheduled time: {order.scheduleTime} • Service: {order.serviceName}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>

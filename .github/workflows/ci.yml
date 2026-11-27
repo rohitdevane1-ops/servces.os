@@ -204,3 +204,30 @@ jobs:
           cd serviceos
           flutter pub get
           flutter analyze --no-fatal-infos
+
+  # ============================================================================
+  # 6. NATIVE ANDROID KOTLIN APPLICATION BUILD & UNIT TESTS (serviceos_android)
+  # ============================================================================
+  android-verification:
+    name: Android Kotlin Build & Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run Unit Tests & Assemble Debug APK
+        run: |
+          cd serviceos_android
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest assembleDebug --no-daemon

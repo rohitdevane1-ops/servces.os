@@ -1,32 +1,89 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useAdmin } from '../../context/adminContextCore';
+import { apiClient } from '../../services/apiClient';
+import type { StaffDailyReport as StaffDailyReportRecord } from '../../types';
 import { downloadCSV } from '../../utils/exportUtils';
-import { 
-  CheckCircle2, 
-  Download, 
+import {
+  CheckCircle2,
+  Download,
   Send,
   ShieldCheck,
 } from 'lucide-react';
 
 export const StaffDailyReport: React.FC = () => {
-  const { bookings, technicians, addToast, userProfile } = useAdmin();
+  const { bookings, technicians, tickets, incidents, tenantConfig, addToast, userProfile, isDemoMode } = useAdmin();
+  const [recentReports, setRecentReports] = useState<StaffDailyReportRecord[]>([]);
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedAt, setSubmittedAt] = useState<string | null>(null);
-  const [reportYear] = useState(() => new Date().getFullYear());
+  const [referenceCode, setReferenceCode] = useState<string>('');
+  const [highlights, setHighlights] = useState('');
+  const [blockers, setBlockers] = useState('');
 
   const totalHandled = bookings.length;
   const completedToday = bookings.filter(b => b.status === 'Completed').length;
   const inProgress = bookings.filter(b => b.status === 'In Progress').length;
   const pending = bookings.filter(b => b.status === 'Pending').length;
+  const resolvedTicketsCount = tickets.filter(t => t.status === 'Resolved').length;
+  const openEscalationsCount = incidents.filter(i => !i.resolved).length;
+  const avgOnTimeRate =
+    technicians.length > 0
+      ? `${(technicians.reduce((acc, t) => acc + (t.onTimeRate || 0), 0) / technicians.length).toFixed(1)}%`
+      : 'N/A';
 
-  const handleSubmitReport = () => {
+  useEffect(() => {
+    let active = true;
+    apiClient.getDailyReports().then((res) => {
+      if (!active || !res.success || !Array.isArray(res.data)) return;
+      setRecentReports(res.data);
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const todays = res.data.find((r) => String(r.reportDate).slice(0, 10) === todayIso);
+      if (todays) {
+        setIsSubmitted(true);
+        setReferenceCode(todays.referenceCode);
+        setHighlights(todays.highlights);
+        setBlockers(todays.blockers || '');
+        setSubmittedAt(new Date(todays.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      }
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSubmitReport = async () => {
+    if (isDemoMode) {
+      addToast('Submitting daily handover reports is disabled in Demo Sandbox mode.', 'warning');
+      return;
+    }
     setIsSubmitting(true);
+    const summaryText =
+      highlights.trim() ||
+      `Handled ${totalHandled} orders (${completedToday} completed, ${inProgress} active, ${pending} pending); ${resolvedTicketsCount} tickets resolved.`;
+    const res = await apiClient.submitDailyReport({
+      shiftWindow: 'FULL_DAY',
+      jobsCompleted: completedToday,
+      ticketsResolved: resolvedTicketsCount,
+      escalationsCount: openEscalationsCount,
+      highlights: summaryText,
+      blockers: blockers.trim() || null,
+    });
     setIsSubmitting(false);
+
+    if (!res.success || !res.data) {
+      addToast(res.error?.message || 'Failed to save daily operations report.', 'error');
+      return;
+    }
+
     setIsSubmitted(true);
-    const timeStr = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    setReferenceCode(res.data.referenceCode);
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     setSubmittedAt(timeStr);
-    addToast(`Daily Operations Report recorded (${completedToday} completed, ${inProgress} active, ${pending} pending).`, 'success');
+    const listRes = await apiClient.getDailyReports();
+    if (listRes.success && Array.isArray(listRes.data)) {
+      setRecentReports(listRes.data);
+    }
+    addToast(`Daily Operations Report sealed (${res.data.referenceCode}).`, 'success');
   };
 
   const handleExportReport = () => {
@@ -38,7 +95,7 @@ export const StaffDailyReport: React.FC = () => {
       'Status': b.status,
       'Schedule Date': b.scheduleDate,
       'Time Slot': b.scheduleTime,
-      'Estimate ($)': b.estimate
+      [`Estimate (${tenantConfig.currencyCode})`]: b.estimate
     })));
     addToast('Daily operations ledger exported as verified CSV audit log.', 'success');
   };
@@ -82,7 +139,7 @@ export const StaffDailyReport: React.FC = () => {
             {isSubmitted ? (
               <>
                 <CheckCircle2 className="w-4 h-4 text-emerald-300" />
-                <span>âœ“ Report Sealed &amp; Submitted</span>
+                <span>✓ Report Sealed &amp; Submitted</span>
               </>
             ) : (
               <>
@@ -109,40 +166,68 @@ export const StaffDailyReport: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-emerald-200/80 mt-0.5">
-                Submitted by {userProfile.name || 'Operations Coordinator'} at {submittedAt || '5:00 PM'} â€¢ Reference: <span className="font-mono text-emerald-300">#REP-{reportYear}-9284</span>
+                Submitted by {userProfile.name || 'Operations Coordinator'} at {submittedAt || 'Today'} • Reference: <span className="font-mono text-emerald-300">{referenceCode || 'SYNCED'}</span>
               </p>
             </div>
           </div>
           <span className="text-[11px] font-mono font-bold bg-white/10 px-3 py-1.5 rounded-xl border border-white/10 shrink-0 text-center">
-            Status: Sealed &amp; Synced to Main Head
+            Status: Sealed &amp; Synced to PostgreSQL
           </span>
         </div>
       )}
+
+      {/* Handover Summary Notes */}
+      <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+            Shift Highlights &amp; Operational Summary
+          </label>
+          <textarea
+            rows={2}
+            value={highlights}
+            onChange={(e) => setHighlights(e.target.value)}
+            placeholder="Summarize completed dispatches, VIP customer requests, and fleet updates..."
+            className="w-full text-xs p-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-600 focus:outline-none text-slate-800"
+          />
+        </div>
+        <div>
+          <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
+            Next-Shift Blockers &amp; Escalations
+          </label>
+          <textarea
+            rows={2}
+            value={blockers}
+            onChange={(e) => setBlockers(e.target.value)}
+            placeholder="Note any open escalations or pending follow-ups for incoming shift..."
+            className="w-full text-xs p-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-600 focus:outline-none text-slate-800"
+          />
+        </div>
+      </div>
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs">
           <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Total Orders Managed</div>
           <div className="text-2xl font-black text-slate-900">{totalHandled}</div>
-          <div className="text-[10px] text-emerald-600 font-bold mt-1">100% orders audited</div>
+          <div className="text-[10px] text-emerald-600 font-bold mt-1">{pending} pending assignment</div>
         </div>
 
         <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs">
           <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Orders Completed</div>
           <div className="text-2xl font-black text-emerald-700">{completedToday}</div>
-          <div className="text-[10px] text-slate-500 mt-1">Customer signed &amp; verified</div>
+          <div className="text-[10px] text-slate-500 mt-1">{inProgress} active in progress</div>
         </div>
 
         <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs">
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Average Dispatch Time</div>
-          <div className="text-2xl font-black text-sky-700">4.2m</div>
-          <div className="text-[10px] text-sky-600 font-bold mt-1">Well within 15m target</div>
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Support Tickets Resolved</div>
+          <div className="text-2xl font-black text-sky-700">{resolvedTicketsCount}</div>
+          <div className="text-[10px] text-sky-600 font-bold mt-1">{openEscalationsCount} open safety escalations</div>
         </div>
 
         <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs">
-          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Field SLA Compliance</div>
-          <div className="text-2xl font-black text-slate-900">99.2%</div>
-          <div className="text-[10px] text-emerald-600 font-bold mt-1">0 Missed Appointments</div>
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Fleet On-Time SLA</div>
+          <div className="text-2xl font-black text-slate-900">{avgOnTimeRate}</div>
+          <div className="text-[10px] text-emerald-600 font-bold mt-1">{recentReports.length} handover report(s) filed</div>
         </div>
       </div>
 
@@ -195,7 +280,13 @@ export const StaffDailyReport: React.FC = () => {
                 <tr key={t.id} className="hover:bg-slate-50/60 transition-colors">
                   <td className="py-3 px-4">
                     <div className="flex items-center gap-2.5">
-                      <img src={t.photo} alt={t.name} className="w-8 h-8 rounded-full object-cover" />
+                      {t.photo ? (
+                        <img src={t.photo} alt={t.name} className="w-8 h-8 rounded-full object-cover" />
+                      ) : (
+                        <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-[11px] shrink-0">
+                          {t.name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'PR'}
+                        </div>
+                      )}
                       <div>
                         <div className="font-bold text-slate-900">{t.name}</div>
                         <div className="text-[10px] text-slate-400">{t.phone}</div>
@@ -213,7 +304,7 @@ export const StaffDailyReport: React.FC = () => {
                   </td>
                   <td className="py-3 px-4 font-bold text-slate-900">{t.currentJobsCount} active</td>
                   <td className="py-3 px-4 font-bold text-emerald-700">{t.onTimeRate}%</td>
-                  <td className="py-3 px-4 font-bold text-slate-800">â˜… {t.rating}</td>
+                  <td className="py-3 px-4 font-bold text-slate-800">★ {t.rating}</td>
                 </tr>
               ))}
             </tbody>

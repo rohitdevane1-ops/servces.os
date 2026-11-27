@@ -223,7 +223,7 @@ export const Page30RefundManagement: React.FC = () => {
                   return (
                     <tr key={inv.id} className="hover:bg-slate-50/70 transition-colors">
                       <td className="py-3.5 px-4 font-mono font-bold text-slate-900">{inv.invoiceNumber}</td>
-                      <td className="py-3.5 px-4 font-mono text-slate-600">{inv.bookingReference || 'â€”'}</td>
+                      <td className="py-3.5 px-4 font-mono text-slate-600">{inv.bookingReference || '—'}</td>
                       <td className="py-3.5 px-4 font-bold text-slate-800">{inv.customerName}</td>
                       <td className="py-3.5 px-4 text-slate-600">{inv.serviceName}</td>
                       <td className="py-3.5 px-4 text-right text-slate-600">
@@ -311,10 +311,10 @@ export const Page30RefundManagement: React.FC = () => {
                   const needsRecon = st === 'PENDING' || st === 'REQUIRES_RECONCILIATION';
                   return (
                     <tr key={ref.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="py-3 px-4 font-mono font-bold text-slate-900">{ref.invoiceNumber || 'â€”'}</td>
-                      <td className="py-3 px-4 font-mono text-slate-600">{ref.bookingReference || 'â€”'}</td>
+                      <td className="py-3 px-4 font-mono font-bold text-slate-900">{ref.invoiceNumber || '—'}</td>
+                      <td className="py-3 px-4 font-mono text-slate-600">{ref.bookingReference || '—'}</td>
                       <td className="py-3 px-4 font-bold text-slate-800">{ref.customerName || 'Customer'}</td>
-                      <td className="py-3 px-4 text-slate-600 max-w-[200px] truncate">{ref.reason || 'â€”'}</td>
+                      <td className="py-3 px-4 text-slate-600 max-w-[200px] truncate">{ref.reason || '—'}</td>
                       <td className="py-3 px-4 text-right font-extrabold text-slate-900">
                         {formatCurrencyCents(ref.amountCents)}
                       </td>
@@ -369,10 +369,10 @@ export const Page30RefundManagement: React.FC = () => {
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div>
                 <h3 className="text-base font-extrabold text-slate-900">
-                  Issue Refund â€” {refundTarget.invoiceNumber}
+                  Issue Refund — {refundTarget.invoiceNumber}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Customer: {refundTarget.customerName} â€¢ Invoice Total:{' '}
+                  Customer: {refundTarget.customerName} • Invoice Total:{' '}
                   {formatCurrencyCents(refundTarget.totalAmountCents)}
                 </p>
               </div>

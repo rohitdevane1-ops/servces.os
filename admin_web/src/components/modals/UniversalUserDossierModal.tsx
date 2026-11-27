@@ -171,7 +171,7 @@ export const UniversalUserDossierModal: React.FC = () => {
           className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
         >
           <ExternalLink className="w-3.5 h-3.5" />
-          <span>View Full Profile Page â†’</span>
+          <span>View Full Profile Page →</span>
         </button>
       </div>
 
@@ -184,7 +184,7 @@ export const UniversalUserDossierModal: React.FC = () => {
             <div>
               <div className="text-xs font-black text-white">Live Call Active: {activeCall.name}</div>
               <div className="text-[11px] text-emerald-200 font-mono">
-                {activeCall.phone} â€¢ {Math.floor(activeCall.duration / 60).toString().padStart(2, '0')}:{(activeCall.duration % 60).toString().padStart(2, '0')}
+                {activeCall.phone} • {Math.floor(activeCall.duration / 60).toString().padStart(2, '0')}:{(activeCall.duration % 60).toString().padStart(2, '0')}
               </div>
             </div>
           </div>
@@ -226,7 +226,7 @@ export const UniversalUserDossierModal: React.FC = () => {
                 <div className="min-w-0">
                   <div className="font-bold text-xs truncate">{cust.name}</div>
                   <div className={`text-[10px] truncate ${selectedCustomer?.id === cust.id ? 'text-emerald-100' : 'text-slate-400'}`}>
-                    {cust.city || 'Service Area'} â€¢ {cust.totalBookings} orders
+                    {cust.city || 'Service Area'} • {cust.totalBookings} orders
                   </div>
                 </div>
                 <ChevronRight className="w-3.5 h-3.5 shrink-0" />
@@ -244,7 +244,7 @@ export const UniversalUserDossierModal: React.FC = () => {
                 <div className="min-w-0">
                   <div className="font-bold text-xs truncate">{t.name}</div>
                   <div className={`text-[10px] truncate ${selectedTech?.id === t.id ? 'text-emerald-100' : 'text-slate-400'}`}>
-                    {t.specialization} â€¢ {t.status}
+                    {t.specialization} • {t.status}
                   </div>
                 </div>
                 <ChevronRight className="w-3.5 h-3.5 shrink-0" />
@@ -322,8 +322,8 @@ export const UniversalUserDossierModal: React.FC = () => {
               <div className="p-4 bg-white rounded-2xl border border-slate-200/80 space-y-2 text-xs">
                 <span className="font-extrabold text-slate-900 block">Contact Information</span>
                 <div className="grid grid-cols-2 gap-2 text-slate-700">
-                  <div>Email: <span className="font-mono font-bold text-slate-900">{selectedCustomer.email || 'â€”'}</span></div>
-                  <div>Phone: <span className="font-mono font-bold text-slate-900">{selectedCustomer.phone || 'â€”'}</span></div>
+                  <div>Email: <span className="font-mono font-bold text-slate-900">{selectedCustomer.email || '—'}</span></div>
+                  <div>Phone: <span className="font-mono font-bold text-slate-900">{selectedCustomer.phone || '—'}</span></div>
                 </div>
               </div>
 
@@ -335,8 +335,8 @@ export const UniversalUserDossierModal: React.FC = () => {
                   {customerBookings.map(b => (
                     <div key={b.id} className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between text-xs">
                       <div>
-                        <div className="font-bold text-slate-900">{b.jobNo} â€¢ {b.serviceName}</div>
-                        <div className="text-[11px] text-slate-500">Tech: {b.technicianName} â€¢ {b.scheduleDate} at {b.scheduleTime}</div>
+                        <div className="font-bold text-slate-900">{b.jobNo} • {b.serviceName}</div>
+                        <div className="text-[11px] text-slate-500">Tech: {b.technicianName} • {b.scheduleDate} at {b.scheduleTime}</div>
                       </div>
                       <div className="text-right">
                         <span className="font-black text-slate-900 block">{formatCurrency(b.estimate)}</span>
@@ -357,7 +357,7 @@ export const UniversalUserDossierModal: React.FC = () => {
                 <div>
                   <h3 className="text-lg font-black">{selectedTech.name}</h3>
                   <div className="text-xs text-emerald-200 mt-0.5">
-                    {selectedTech.specialization} â€¢ Shift: {selectedTech.workingHours}
+                    {selectedTech.specialization} • Shift: {selectedTech.workingHours}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -389,7 +389,7 @@ export const UniversalUserDossierModal: React.FC = () => {
                 </div>
                 <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 text-center">
                   <span className="text-[10px] font-bold text-slate-400 uppercase block">Pro Rating</span>
-                  <span className="text-base font-black text-amber-600">â˜… {selectedTech.rating}</span>
+                  <span className="text-base font-black text-amber-600">★ {selectedTech.rating}</span>
                 </div>
                 <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 text-center">
                   <span className="text-[10px] font-bold text-slate-400 uppercase block">Active Load</span>
@@ -403,7 +403,7 @@ export const UniversalUserDossierModal: React.FC = () => {
                   <div>Trade License: <span className="font-mono font-bold text-slate-900">{selectedTech.licenseNumber || 'Verified Pro'}</span></div>
                   <div>Hourly Rate: <span className="font-mono font-bold text-emerald-700">{formatCurrency(selectedTech.hourlyRate || 85)}/hr</span></div>
                   <div>Service Vehicle: <span className="font-bold text-slate-900">{selectedTech.vehicleMakeModel || 'Service Fleet Vehicle'}</span></div>
-                  <div>License Plate: <span className="font-mono font-bold text-slate-900">{selectedTech.vehicleLicensePlate || 'â€”'}</span></div>
+                  <div>License Plate: <span className="font-mono font-bold text-slate-900">{selectedTech.vehicleLicensePlate || '—'}</span></div>
                 </div>
               </div>
             </div>
@@ -415,7 +415,7 @@ export const UniversalUserDossierModal: React.FC = () => {
                 <div>
                   <h3 className="text-lg font-black">{selectedStaff.name}</h3>
                   <div className="text-xs text-emerald-200 mt-0.5">
-                    {selectedStaff.role} â€¢ {selectedStaff.department}
+                    {selectedStaff.role} • {selectedStaff.department}
                   </div>
                 </div>
                 <span className="px-3 py-1 rounded-xl text-xs font-extrabold bg-emerald-400 text-slate-950">

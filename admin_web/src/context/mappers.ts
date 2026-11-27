@@ -235,3 +235,22 @@ export function mapReviewDto(r: any): CustomerReview {
     providerResponse: r.providerResponse || null,
   };
 }
+
+export function mapStaffDto(s: any): import('../types').StaffMember {
+  const isActive = s.isActive !== false && s.is_active !== false;
+  return {
+    id: String(s.id),
+    name: String(s.fullName || s.full_name || s.email || 'Operations Coordinator'),
+    photo: s.avatarUrl || s.avatar_url || '',
+    email: String(s.email || ''),
+    phone: String(s.phoneNumber || s.phone || ''),
+    role: 'Operations Coordinator',
+    department: String(s.department || 'Field Operations'),
+    shiftHours: String(s.shiftHours || s.shift_hours || '08:00 - 17:00 UTC'),
+    status: isActive ? 'Online' : 'Offline',
+    activeQueueCount: Number(s.activeQueueCount ?? 0),
+    totalOrdersHandled: Number(s.totalOrdersHandled ?? 0),
+    joinedDate: s.createdAt ? new Date(s.createdAt).toLocaleDateString() : 'Active',
+    territory: String(s.assignedTerritory || s.assigned_territory || 'Metro Region'),
+  };
+}

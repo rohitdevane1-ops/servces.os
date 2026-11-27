@@ -67,7 +67,7 @@ export const EditUniversalEntityModal: React.FC = () => {
           setPhone(staff.phone);
           setTitleOrTrade(staff.role);
           setAddress(staff.department || 'Operations Hub');
-          setBioOrNotes(`Shift: ${staff.shiftHours || 'Day'} â€¢ Orders handled: ${staff.totalOrdersHandled || 0}`);
+          setBioOrNotes(`Shift: ${staff.shiftHours || 'Day'} • Orders handled: ${staff.totalOrdersHandled || 0}`);
           setAvatar(staff.photo || '');
           setStatus(staff.status || 'Active');
         }
@@ -80,7 +80,7 @@ export const EditUniversalEntityModal: React.FC = () => {
         setPhone(cust.phone);
         setTitleOrTrade('Registered Customer');
         setAddress(cust.address);
-        setBioOrNotes(`Registered Customer â€¢ ${cust.totalBookings} orders placed`);
+        setBioOrNotes(`Registered Customer • ${cust.totalBookings} orders placed`);
         setAvatar(cust.photo || '');
         setStatus(cust.status);
         setTier('Standard');
@@ -93,7 +93,7 @@ export const EditUniversalEntityModal: React.FC = () => {
         setPhone(tech.phone);
         setTitleOrTrade(tech.specialization);
         setAddress('Field Fleet');
-        setBioOrNotes(`Verified ${tech.specialization} Pro â€¢ Rating ${tech.rating}â˜… (${tech.jobsCompleted} jobs)`);
+        setBioOrNotes(`Verified ${tech.specialization} Pro • Rating ${tech.rating}★ (${tech.jobsCompleted} jobs)`);
         setAvatar(tech.photo || '');
         setStatus(tech.status);
         setHourlyRate(tech.hourlyRate || 85);

@@ -347,7 +347,7 @@ export const Page05CriticalAlerts: React.FC = () => {
                 <ShieldAlert className="w-5 h-5 text-rose-600" />
                 <div>
                   <h3 className="font-extrabold text-slate-900 text-sm">Incident Triage Dossier</h3>
-                  <div className="text-[11px] text-slate-400 font-mono">Job #{activeModalIncident.bookingNo} â€¢ {activeModalIncident.timestamp}</div>
+                  <div className="text-[11px] text-slate-400 font-mono">Job #{activeModalIncident.bookingNo} • {activeModalIncident.timestamp}</div>
                 </div>
               </div>
 
@@ -408,9 +408,9 @@ export const Page05CriticalAlerts: React.FC = () => {
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Audit Status</span>
                   <div className="font-bold">
                     {activeModalIncident.resolved ? (
-                      <span className="text-emerald-700">âœ“ Resolved &amp; Recorded</span>
+                      <span className="text-emerald-700">✓ Resolved &amp; Recorded</span>
                     ) : (
-                      <span className="text-rose-600">âš  Open Incident</span>
+                      <span className="text-rose-600">⚠ Open Incident</span>
                     )}
                   </div>
                 </div>

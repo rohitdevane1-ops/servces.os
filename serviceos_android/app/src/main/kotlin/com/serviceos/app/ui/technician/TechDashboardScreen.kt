@@ -21,6 +21,8 @@ import com.serviceos.app.core.theme.LocalExtraColors
 import com.serviceos.app.data.model.BookingStatus
 import com.serviceos.app.data.network.ApiClient
 import com.serviceos.app.data.repository.BookingRepository
+import com.serviceos.app.ui.components.RadarPulseDot
+import com.serviceos.app.ui.components.RevealCard
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -35,12 +37,16 @@ fun TechDashboardScreen(
     val coroutineScope = rememberCoroutineScope()
     val bookings by BookingRepository.bookingsFlow.collectAsState()
     var isOnline by remember { mutableStateOf(true) }
+    var pendingBroadcastCount by remember { mutableStateOf(0) }
     var serverEarnedAmount by remember { mutableStateOf<Double?>(null) }
     var serverCompletedCount by remember { mutableStateOf<Int?>(null) }
     val extraColors = LocalExtraColors.current
 
     LaunchedEffect(Unit) {
         BookingRepository.syncFromBackend()
+        ApiClient.fetchPendingBroadcasts().onSuccess { arr ->
+            pendingBroadcastCount = arr.length()
+        }
         ApiClient.fetchTechnicianEarnings().onSuccess { json ->
             val data = json.optJSONObject("data") ?: json
             val totalEarnedCents = data.optDouble("totalEarnedCents", data.optDouble("unpaidBalanceCents", Double.NaN))
@@ -102,6 +108,7 @@ fun TechDashboardScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // 1. Radar Online / Offline Toggle Card
+            RevealCard(index = 0) {
             Surface(
                 color = if (isOnline) extraColors.verified.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
                 shape = RoundedCornerShape(18.dp),
@@ -117,11 +124,11 @@ fun TechDashboardScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
+                        RadarPulseDot(
                             color = if (isOnline) extraColors.verified else MaterialTheme.colorScheme.outline,
-                            shape = CircleShape,
-                            modifier = Modifier.size(14.dp)
-                        ) {}
+                            isActive = isOnline,
+                            size = 11.dp
+                        )
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
@@ -149,6 +156,7 @@ fun TechDashboardScreen(
                         }
                     )
                 }
+            }
             }
 
             // 2. Today's Net Earnings Card (85% Net Escrow Share)
@@ -248,7 +256,7 @@ fun TechDashboardScreen(
             Button(
                 onClick = onSimulateBroadcast,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error
+                    containerColor = MaterialTheme.colorScheme.primary
                 ),
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
@@ -258,7 +266,11 @@ fun TechDashboardScreen(
                 Icon(Icons.Default.NotificationsActive, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Simulate 60s Broadcast Alert",
+                    text = if (pendingBroadcastCount > 0) {
+                        "View Active Broadcasts ($pendingBroadcastCount)"
+                    } else {
+                        "Check Dispatch Broadcasts"
+                    },
                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.ExtraBold)
                 )
             }

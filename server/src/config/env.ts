@@ -61,6 +61,7 @@ const envSchema = z.object({
   APP_ENCRYPTION_KEY: z.string().default('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'),
   
   // Anti-Bot & Captcha Protection (Cloudflare Turnstile / hCaptcha)
+  CAPTCHA_SITE_KEY: z.string().optional(),
   CAPTCHA_SECRET_KEY: z.string().optional(),
   CAPTCHA_ENFORCED: z.string().default('false'),
   CAPTCHA_PROVIDER: z.enum(['turnstile', 'hcaptcha']).default('turnstile'),
@@ -71,6 +72,7 @@ const envSchema = z.object({
   INITIAL_ADMIN_BOOTSTRAP_SECRET: z.string().min(16).optional(),
   
   // External Provider Credentials (Optional during development / self-hosting)
+  STRIPE_PUBLISHABLE_KEY: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   TWILIO_ACCOUNT_SID: z.string().optional(),

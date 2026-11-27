@@ -181,7 +181,7 @@ export const Page15AddEditService: React.FC = () => {
                       onClick={() => setChecklist(checklist.filter((_, i) => i !== idx))}
                       className="text-slate-400 hover:text-rose-600 text-xs cursor-pointer"
                     >
-                      Ã—
+                      ×
                     </button>
                   </div>
                 ))}

@@ -1,11 +1,14 @@
 package com.serviceos.app.core.theme
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
@@ -29,55 +32,53 @@ val LocalExtraColors = staticCompositionLocalOf {
     )
 }
 
-private val DayColorScheme = lightColorScheme(
-    primary = DayPrimary,
-    secondary = DayAccent,
-    background = DayCanvas,
-    surface = DaySurface,
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onBackground = DayTextPrimary,
-    onSurface = DayTextPrimary,
-    outline = DayBorder
-)
-
-private val NightColorScheme = darkColorScheme(
-    primary = NightPrimary,
-    secondary = NightAccent,
-    background = NightCanvas,
-    surface = NightSurface,
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onBackground = NightTextPrimary,
-    onSurface = NightTextPrimary,
-    outline = NightBorder
-)
-
 @Composable
 fun ServiceOSTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) NightColorScheme else DayColorScheme
-    val extraColors = if (darkTheme) {
-        ServiceOSExtraColors(
-            border = NightBorder,
-            rating = RatingAmber,
-            verified = VerifiedEmerald,
-            warning = WarningOrange,
-            heroGradientStart = Color(0xFF0F172A),
-            heroGradientEnd = Color(0xFF1E1B4B)
+    val animSpec = tween<Color>(durationMillis = 260)
+    val primary by animateColorAsState(if (darkTheme) NightPrimary else DayPrimary, animSpec, label = "primary")
+    val secondary by animateColorAsState(if (darkTheme) NightAccent else DayAccent, animSpec, label = "secondary")
+    val background by animateColorAsState(if (darkTheme) NightCanvas else DayCanvas, animSpec, label = "background")
+    val surface by animateColorAsState(if (darkTheme) NightSurface else DaySurface, animSpec, label = "surface")
+    val onBackground by animateColorAsState(if (darkTheme) NightTextPrimary else DayTextPrimary, animSpec, label = "onBackground")
+    val outline by animateColorAsState(if (darkTheme) NightBorder else DayBorder, animSpec, label = "outline")
+
+    val colorScheme = if (darkTheme) {
+        darkColorScheme(
+            primary = primary,
+            secondary = secondary,
+            background = background,
+            surface = surface,
+            onPrimary = Color.White,
+            onSecondary = Color.White,
+            onBackground = onBackground,
+            onSurface = onBackground,
+            outline = outline
         )
     } else {
-        ServiceOSExtraColors(
-            border = DayBorder,
-            rating = RatingAmber,
-            verified = VerifiedEmerald,
-            warning = WarningOrange,
-            heroGradientStart = Color(0xFFEEF2FF),
-            heroGradientEnd = Color(0xFFEDE9FE)
+        lightColorScheme(
+            primary = primary,
+            secondary = secondary,
+            background = background,
+            surface = surface,
+            onPrimary = Color.White,
+            onSecondary = Color.White,
+            onBackground = onBackground,
+            onSurface = onBackground,
+            outline = outline
         )
     }
+
+    val extraColors = ServiceOSExtraColors(
+        border = outline,
+        rating = RatingAmber,
+        verified = VerifiedEmerald,
+        warning = WarningOrange,
+        heroGradientStart = if (darkTheme) Color(0xFF0F172A) else Color(0xFFEEF2FF),
+        heroGradientEnd = if (darkTheme) Color(0xFF1E1B4B) else Color(0xFFEDE9FE)
+    )
 
     CompositionLocalProvider(LocalExtraColors provides extraColors) {
         MaterialTheme(

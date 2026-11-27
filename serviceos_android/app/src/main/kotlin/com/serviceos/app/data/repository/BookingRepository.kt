@@ -69,20 +69,20 @@ object BookingRepository {
             .ifBlank { row.optString("final_price_cents", "0") }
             .toDoubleOrNull() ?: quotedCents
 
-        val baseAmount = if (quotedCents > 0.0) quotedCents / 100.0 else row.optDouble("baseAmount", 129.0)
-        val totalAmount = if (finalCents > 0.0) finalCents / 100.0 else (baseAmount * 1.05)
+        val baseAmount = if (quotedCents > 0.0) quotedCents / 100.0 else row.optDouble("baseAmount", 0.0)
+        val totalAmount = if (finalCents > 0.0) finalCents / 100.0 else baseAmount
         val taxAmount = (totalAmount - baseAmount).coerceAtLeast(0.0)
         val statusRaw = row.optString("status", "REQUESTED").uppercase()
         val parsedStatus = runCatching { BookingStatus.valueOf(statusRaw) }.getOrDefault(BookingStatus.REQUESTED)
 
         return Booking(
             id = row.optString("id", row.optString("bookingId", "")),
-            reference = row.optString("bookingReference", row.optString("booking_reference", "SO-10000")),
+            reference = row.optString("bookingReference", row.optString("booking_reference", "")),
             serviceTitle = row.optString("serviceName", row.optString("serviceTitle", "Service Order")),
             categoryName = row.optString("categoryName", "Home Service"),
-            technicianName = row.optString("providerName", row.optString("technicianName", "Assigned Pro")),
+            technicianName = row.optString("providerName", row.optString("technicianName", "Awaiting Pro")),
             technicianAvatar = "",
-            technicianRating = 4.95,
+            technicianRating = row.optDouble("providerRating", 0.0),
             customerAddress = row.optString("addressText", row.optString("customerAddress", "")),
             scheduledTime = row.optString("scheduledStart", row.optString("scheduledTime", "Scheduled")),
             baseAmount = baseAmount,
@@ -163,20 +163,71 @@ object BookingRepository {
         return true
     }
 
+    suspend fun fetchBookingDetail(bookingId: String): Result<JSONObject> {
+        val res = ApiClient.fetchBookingDetails(bookingId)
+        res.onSuccess { json ->
+            val data = json.optJSONObject("data") ?: json
+            val bookingObj = data.optJSONObject("booking") ?: data
+            val parsed = parseServerBookingObject(bookingObj)
+            if (parsed.id.isNotBlank()) {
+                _bookings.update { list ->
+                    val replaced = list.map { if (it.id == parsed.id) parsed else it }
+                    if (replaced.any { it.id == parsed.id }) replaced else listOf(parsed) + replaced
+                }
+                if (_selectedBooking.value?.id == parsed.id || _selectedBooking.value == null) {
+                    _selectedBooking.value = parsed
+                }
+                saveToPreferences()
+            }
+        }
+        return res
+    }
+
+    suspend fun cancelBooking(bookingId: String, reason: String): Result<Unit> {
+        val res = ApiClient.cancelBooking(bookingId, reason)
+        return res.fold(
+            onSuccess = {
+                updateStatus(bookingId, BookingStatus.CANCELLED)
+                syncFromBackend()
+                Result.success(Unit)
+            },
+            onFailure = { Result.failure(it) }
+        )
+    }
+
+    suspend fun rescheduleBooking(
+        bookingId: String,
+        scheduledStart: String,
+        reason: String? = null
+    ): Result<Unit> {
+        val res = ApiClient.rescheduleBooking(bookingId, scheduledStart, reason)
+        return res.fold(
+            onSuccess = {
+                syncFromBackend()
+                Result.success(Unit)
+            },
+            onFailure = { Result.failure(it) }
+        )
+    }
+
     suspend fun createAndAuthorizeBooking(
         serviceId: String,
         serviceTitle: String,
         categoryName: String,
         addressText: String,
         baseAmount: Double,
-        isEmergency: Boolean
+        isEmergency: Boolean,
+        accessInstructions: String? = null,
+        scheduledStart: String? = null
     ): Result<Booking> {
         val payload = JSONObject().apply {
             put("serviceId", serviceId)
             put("addressText", addressText)
-            put("latitude", 25.1972)
-            put("longitude", 55.2744)
+            put("latitude", ApiClient.defaultMapLat)
+            put("longitude", ApiClient.defaultMapLng)
             put("priority", if (isEmergency) "EMERGENCY" else "STANDARD")
+            if (!accessInstructions.isNullOrBlank()) put("accessInstructions", accessInstructions)
+            if (!scheduledStart.isNullOrBlank()) put("scheduledStart", scheduledStart)
         }
         val createRes = ApiClient.createBooking(payload)
         val resJson = createRes.getOrElse { return Result.failure(it) }
@@ -186,26 +237,31 @@ object BookingRepository {
             return Result.failure(Exception("Server did not return a valid booking ID."))
         }
         val confirmRes = ApiClient.waitForPaymentIntentAndConfirm(bookingId)
-        if (confirmRes.isFailure) {
-            return Result.failure(confirmRes.exceptionOrNull() ?: Exception("Escrow authorization failed"))
+        val confirmJson = confirmRes.getOrElse {
+            return Result.failure(it)
         }
+        val confirmData = confirmJson.optJSONObject("data") ?: confirmJson
+        val requiresClientAction = confirmData.optBoolean("requiresClientAction", false)
+        val checkoutRedirectUrl = confirmData.optString("checkoutRedirectUrl", "").ifBlank { null }
         val tax = baseAmount * (ApiClient.vatPercent / 100.0)
         val created = Booking(
             id = bookingId,
             reference = data.optString("bookingReference", bookingId),
             serviceTitle = serviceTitle,
             categoryName = categoryName,
-            technicianName = "Assigned Service Specialist",
+            technicianName = "Awaiting Assigned Pro",
             technicianAvatar = "",
-            technicianRating = 4.95,
+            technicianRating = 0.0,
             customerAddress = addressText,
-            scheduledTime = "Today",
+            scheduledTime = scheduledStart ?: "Today",
             baseAmount = baseAmount,
             extraPartsAmount = 0.0,
             taxAmount = tax,
             totalAmount = baseAmount + tax,
             status = BookingStatus.REQUESTED,
-            safetyPin = data.optString("customerSafetyPin", data.optString("safetyPin", ""))
+            safetyPin = data.optString("customerSafetyPin", data.optString("safetyPin", "")),
+            requiresClientAction = requiresClientAction,
+            checkoutRedirectUrl = checkoutRedirectUrl
         )
         addBooking(created)
         return Result.success(created)

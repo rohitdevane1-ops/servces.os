@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAdmin } from '../../context/adminContextCore';
+import { RevealSection, StaggerCard } from '../../components/common/MotionPrimitives';
 import {
   ChevronLeft,
   ChevronRight,
@@ -106,36 +107,37 @@ export const Page11DispatchBoard: React.FC = () => {
 
       {/* KPI Stats Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
+        <StaggerCard index={0} className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs serviceos-card-glow">
           <div className="text-[10px] uppercase font-bold text-slate-400">Scheduled Techs</div>
           <div className="text-lg font-extrabold text-slate-900 mt-0.5">
             {technicians.filter(t => t.status !== 'Offline').length} of {technicians.length} Online
           </div>
-        </div>
-        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
+        </StaggerCard>
+        <StaggerCard index={1} className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs serviceos-card-glow">
           <div className="text-[10px] uppercase font-bold text-slate-400">Capacity Load</div>
           <div className="text-lg font-extrabold text-emerald-600 mt-0.5">
             {technicians.length > 0
               ? Math.min(100, Math.round((bookings.filter(b => b.status === 'In Progress' || b.status === 'Scheduled').length / technicians.length) * 100))
               : 0}% Utilized
           </div>
-        </div>
-        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
+        </StaggerCard>
+        <StaggerCard index={2} className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs serviceos-card-glow">
           <div className="text-[10px] uppercase font-bold text-slate-400">Total Booked Hours</div>
           <div className="text-lg font-extrabold text-slate-900 mt-0.5">
             {(bookings.filter(b => b.status === 'In Progress' || b.status === 'Scheduled').length * 2).toFixed(1)} Hours
           </div>
-        </div>
-        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs">
+        </StaggerCard>
+        <StaggerCard index={3} className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-xs serviceos-card-glow">
           <div className="text-[10px] uppercase font-bold text-slate-400">Unassigned Backlog</div>
           <div className="text-lg font-extrabold text-rose-600 mt-0.5">
             {bookings.filter(b => b.status === 'Pending' || b.technicianName === 'Unassigned').length} Jobs Pending
           </div>
-        </div>
+        </StaggerCard>
       </div>
 
       {/* Gantt Timeline Board */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+      <RevealSection delay={0.08} className="bg-white rounded-2xl border border-slate-200/80 shadow-xs serviceos-card-glow overflow-x-auto thin-scrollbar">
+        <div className="min-w-[760px]">
         {/* Timeline Header */}
         <div className="grid grid-cols-12 border-b border-slate-200 bg-slate-50/70 text-xs font-bold text-slate-600 divide-x divide-slate-200">
           <div className="col-span-3 p-3 text-slate-500 uppercase tracking-wider text-[11px]">
@@ -165,7 +167,7 @@ export const Page11DispatchBoard: React.FC = () => {
                     <div className="text-[11px] text-slate-400">{tech.specialization}</div>
                     <div className="text-[10px] font-bold text-emerald-600 flex items-center gap-1 mt-0.5">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                      â˜… {tech.rating} ({tech.jobsCompleted})
+                      ★ {tech.rating} ({tech.jobsCompleted})
                     </div>
                   </div>
                 </div>
@@ -198,7 +200,7 @@ export const Page11DispatchBoard: React.FC = () => {
                       <div className="text-xs font-extrabold text-slate-900 truncate mt-0.5">{job.serviceName}</div>
                       <div className="text-[11px] text-slate-500 truncate flex items-center gap-1 mt-0.5">
                         <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
-                        {job.customerName} â€¢ {job.customerAddress}
+                        {job.customerName} • {job.customerAddress}
                       </div>
                     </div>
                   ))
@@ -211,7 +213,8 @@ export const Page11DispatchBoard: React.FC = () => {
             </div>
           ))}
         </div>
-      </div>
+        </div>
+      </RevealSection>
     </div>
   );
 };

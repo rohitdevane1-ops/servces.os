@@ -23,15 +23,14 @@ object ApiClient {
     private const val KEY_REFRESH_TOKEN = "refresh_token"
     private const val KEY_TENANT_ID = "tenant_id"
     private const val KEY_USER_ROLE = "user_role"
-    private const val DEFAULT_BASE_URL = "http://10.0.2.2:3000/api/v1"
 
     private var prefs: SharedPreferences? = null
-    private var baseUrl: String = DEFAULT_BASE_URL
+    private var baseUrl: String = BuildConfig.API_BASE_URL.trimEnd('/')
     private var tenantId: String? = null
     private val refreshMutex = Mutex()
 
     @Volatile
-    var isDemoMode: Boolean = BuildConfig.DEMO_MODE
+    var isDemoMode: Boolean = false
         private set
 
     @Volatile
@@ -39,11 +38,39 @@ object ApiClient {
         private set
 
     @Volatile
+    var currencySymbol: String = "AED "
+        private set
+
+    @Volatile
     var vatPercent: Double = 5.0
+        private set
+
+    @Volatile
+    var taxName: String = "VAT"
+        private set
+
+    @Volatile
+    var emergencyPhone: String? = null
+        private set
+
+    @Volatile
+    var supportPhone: String? = null
+        private set
+
+    @Volatile
+    var defaultMapLat: Double = 25.2048
+        private set
+
+    @Volatile
+    var defaultMapLng: Double = 55.2708
         private set
 
     fun formatCurrency(amount: Double): String {
         val safe = if (amount.isFinite()) amount else 0.0
+        val sym = currencySymbol.trim()
+        if (sym == "$" || sym == "€" || sym == "£" || sym == "₹") {
+            return String.format(java.util.Locale.US, "%s%.2f", sym, safe)
+        }
         return String.format(java.util.Locale.US, "%s %.2f", currencyCode, safe)
     }
 
@@ -208,17 +235,55 @@ object ApiClient {
     // =========================================================================
     // SYSTEM RUNTIME & TENANT CONFIG
     // =========================================================================
+    suspend fun fetchHealth(): Result<JSONObject> = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+        try {
+            val origin = baseUrl.removeSuffix("/api/v1").trimEnd('/')
+            val url = URL("$origin/health")
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("Accept", "application/json")
+            }
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
+            val json = runCatching { JSONObject(body) }.getOrElse { JSONObject() }
+            if (code in 200..299) Result.success(json)
+            else Result.failure(Exception("Health check failed ($code)"))
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
     suspend fun fetchSystemConfig(): Result<JSONObject> {
         val result = executeRequest("/system/config", "GET")
         result.onSuccess { res ->
             val data = res.optJSONObject("data")
             if (data != null) {
-                isDemoMode = BuildConfig.DEMO_MODE || data.optBoolean("demoMode", false)
+                isDemoMode = data.optBoolean("demoMode", false)
                 val tenant = data.optJSONObject("tenant")
                 currencyCode = tenant?.optString("currencyCode")
                     ?.ifBlank { data.optString("defaultCurrency", "AED") } ?: "AED"
-                vatPercent = tenant?.optDouble("vatPercent", 5.0)
-                    ?: data.optDouble("defaultVatPercent", 5.0)
+                currencySymbol = tenant?.optString("currencySymbol")
+                    ?.ifBlank { "$currencyCode " } ?: "$currencyCode "
+                taxName = tenant?.optString("taxName")
+                    ?.ifBlank { data.optString("defaultTaxName", "VAT") } ?: "VAT"
+                val tenantVat = tenant?.optDouble("vatPercent", Double.NaN)
+                vatPercent = if (tenantVat != null && !tenantVat.isNaN()) {
+                    tenantVat
+                } else {
+                    data.optDouble("defaultVatPercent", 5.0)
+                }
+                emergencyPhone = tenant?.optString("emergencyPhone")?.takeIf { it.isNotBlank() && it != "null" }
+                supportPhone = tenant?.optString("supportPhone")?.takeIf { it.isNotBlank() && it != "null" }
+                val lat = tenant?.optDouble("defaultMapLat", Double.NaN)
+                if (lat != null && !lat.isNaN()) defaultMapLat = lat
+                val lng = tenant?.optDouble("defaultMapLng", Double.NaN)
+                if (lng != null && !lng.isNaN()) defaultMapLng = lng
             }
         }
         return result
@@ -227,6 +292,25 @@ object ApiClient {
     // =========================================================================
     // AUTHENTICATION OPERATIONS
     // =========================================================================
+    suspend fun register(
+        email: String,
+        password: String,
+        fullName: String,
+        phone: String? = null
+    ): Result<JSONObject> {
+        val body = JSONObject().apply {
+            put("email", email)
+            put("password", password)
+            put("fullName", fullName)
+            if (!phone.isNullOrBlank()) put("phone", phone)
+        }
+        val result = executeRequest("/auth/register", "POST", body, allowRetry = false)
+        result.onSuccess { res ->
+            extractAndPersistTokens(res.optJSONObject("data"))
+        }
+        return result
+    }
+
     suspend fun login(email: String, password: String): Result<JSONObject> {
         val body = JSONObject().apply {
             put("email", email)
@@ -313,6 +397,22 @@ object ApiClient {
         val endpoint = if (!status.isNullOrBlank()) "/bookings?status=$status" else "/bookings"
         val result = executeRequest(endpoint, "GET")
         return result.map { it.optJSONArray("data") ?: JSONArray() }
+    }
+
+    suspend fun fetchBookingDetails(bookingId: String): Result<JSONObject> {
+        return executeRequest("/bookings/$bookingId", "GET")
+    }
+
+    suspend fun rescheduleBooking(
+        bookingId: String,
+        scheduledStart: String,
+        reason: String? = null
+    ): Result<JSONObject> {
+        val body = JSONObject().apply {
+            put("scheduledStart", scheduledStart)
+            if (!reason.isNullOrBlank()) put("reason", reason)
+        }
+        return executeRequest("/bookings/$bookingId/reschedule", "PATCH", body)
     }
 
     suspend fun createBooking(bookingJson: JSONObject): Result<JSONObject> {
@@ -436,8 +536,110 @@ object ApiClient {
         return executeRequest("/support/reviews", "POST", body)
     }
 
+    suspend fun fetchReviews(providerId: String? = null): Result<JSONArray> {
+        val endpoint = if (!providerId.isNullOrBlank()) "/support/reviews?providerId=$providerId" else "/support/reviews"
+        val result = executeRequest(endpoint, "GET")
+        return result.map { it.optJSONArray("data") ?: JSONArray() }
+    }
+
+    suspend fun fetchCmsConfig(): Result<JSONObject> {
+        return executeRequest("/support/settings/cms", "GET")
+    }
+
+    suspend fun fetchTickets(): Result<JSONArray> {
+        val result = executeRequest("/support/tickets", "GET")
+        return result.map { it.optJSONArray("data") ?: JSONArray() }
+    }
+
+    suspend fun fetchTicketDetails(ticketId: String): Result<JSONObject> {
+        return executeRequest("/support/tickets/$ticketId", "GET")
+    }
+
+    suspend fun openSupportTicket(
+        subject: String,
+        initialMessage: String,
+        category: String = "General Support",
+        priority: String = "NORMAL",
+        bookingId: String? = null
+    ): Result<JSONObject> {
+        val body = JSONObject().apply {
+            put("subject", subject)
+            put("category", category)
+            put("priority", priority)
+            put("initialMessage", initialMessage)
+            if (!bookingId.isNullOrBlank()) put("bookingId", bookingId)
+        }
+        return executeRequest("/support/tickets", "POST", body)
+    }
+
+    suspend fun postTicketMessage(ticketId: String, messageBody: String): Result<JSONObject> {
+        val body = JSONObject().apply {
+            put("messageBody", messageBody)
+            put("attachmentsUrls", JSONArray())
+        }
+        return executeRequest("/support/tickets/$ticketId/messages", "POST", body)
+    }
+
     suspend fun fetchTechnicianEarnings(): Result<JSONObject> {
         return executeRequest("/crm/technicians/me/earnings", "GET")
+    }
+
+    suspend fun getBookingMessages(bookingId: String): Result<JSONArray> {
+        val result = executeRequest("/bookings/$bookingId/messages", "GET")
+        return result.map { it.optJSONArray("data") ?: JSONArray() }
+    }
+
+    suspend fun sendBookingMessage(
+        bookingId: String,
+        messageBody: String,
+        attachmentUrls: List<String> = emptyList()
+    ): Result<JSONObject> {
+        val urlsJson = JSONArray()
+        attachmentUrls.forEach { urlsJson.put(it) }
+        val body = JSONObject().apply {
+            put("messageBody", messageBody)
+            if (attachmentUrls.isNotEmpty()) put("attachmentsUrls", urlsJson)
+        }
+        return executeRequest("/bookings/$bookingId/messages", "POST", body)
+    }
+
+    suspend fun getTechnicianOnboarding(): Result<JSONArray> {
+        val result = executeRequest("/crm/technicians/onboarding", "GET")
+        return result.map { it.optJSONArray("data") ?: JSONArray() }
+    }
+
+    suspend fun submitTechnicianOnboarding(
+        licenseNumber: String,
+        nationalIdNumber: String?,
+        vehicleMakeModel: String,
+        vehicleLicensePlate: String,
+        tradeCategory: String,
+        documentUrls: List<String>
+    ): Result<JSONObject> {
+        val urlsJson = JSONArray()
+        documentUrls.forEach { urlsJson.put(it) }
+        val body = JSONObject().apply {
+            put("licenseNumber", licenseNumber)
+            if (!nationalIdNumber.isNullOrBlank()) put("nationalIdNumber", nationalIdNumber)
+            put("vehicleMakeModel", vehicleMakeModel)
+            put("vehicleLicensePlate", vehicleLicensePlate)
+            put("tradeCategory", tradeCategory)
+            put("documentUrls", urlsJson)
+        }
+        return executeRequest("/crm/technicians/onboarding", "POST", body)
+    }
+
+    suspend fun updateProfile(
+        fullName: String? = null,
+        phone: String? = null,
+        defaultAddress: String? = null
+    ): Result<JSONObject> {
+        val body = JSONObject().apply {
+            if (!fullName.isNullOrBlank()) put("fullName", fullName)
+            if (phone != null) put("phone", phone)
+            if (defaultAddress != null) put("defaultAddress", defaultAddress)
+        }
+        return executeRequest("/auth/me", "PUT", body)
     }
 
     suspend fun uploadProofImage(

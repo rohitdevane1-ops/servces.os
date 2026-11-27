@@ -964,9 +964,12 @@ describe('Phase 1 Gate: Non-Superuser FORCE RLS, Universal 2030 Tax Accounting, 
       (env as any).PAYTABS_SERVER_KEY = savedPtKey;
     }
 
-    // Migration 014 down -> verify dropped -> up round-trip on real Postgres
+    // Migration 014 down -> verify data-loss guard rejects while refund/non-EN-AR rows exist -> clean -> down/up round-trip
     const downSql = fs.readFileSync(path.join(MIGRATIONS_DIR, '014_universal_tax_refunds_and_rls_helpers.down.sql'), 'utf8');
     const upSql = fs.readFileSync(path.join(MIGRATIONS_DIR, '014_universal_tax_refunds_and_rls_helpers.sql'), 'utf8');
+    await assert.rejects(() => db.pool.query(downSql), /MIGRATION 014 ROLLBACK ABORTED/);
+    await db.pool.query(`DELETE FROM payment_refunds`);
+    await db.pool.query(`UPDATE tenants SET default_locale = 'en' WHERE default_locale NOT IN ('en', 'ar')`);
     await db.pool.query(downSql);
     const tblAfterDown = await db.pool.query(`SELECT to_regclass('public.payment_refunds') AS t`);
     assert.equal(tblAfterDown.rows[0].t, null);

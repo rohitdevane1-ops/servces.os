@@ -94,7 +94,7 @@ export interface AdminContextType {
 
   userProfile: UserProfile;
   adminProfile: UserProfile;
-  updateUserProfile: (profile: Partial<UserProfile>) => void;
+  updateUserProfile: (profile: Partial<UserProfile>) => Promise<MutationResult> | void;
   isProfileModalOpen: boolean;
   profileModalTab: 'view' | 'edit';
   openProfileModal: (tab?: 'view' | 'edit') => void;
@@ -183,7 +183,31 @@ export interface AdminContextType {
   updateCustomer: (id: string, updates: Partial<Customer>) => Promise<MutationResult>;
   addTechnician: (tech: Partial<Technician>) => Promise<Technician | null>;
   updateTechnician: (id: string, updates: Partial<Technician>) => Promise<MutationResult>;
+  updateTechnicianDutyStatus: (
+    id: string,
+    dutyStatus: 'ONLINE' | 'OFFLINE' | 'ON_JOB' | 'EN_ROUTE'
+  ) => Promise<MutationResult>;
   verifyTechnician: (id: string, isVerified: boolean, notes?: string) => Promise<MutationResult>;
+  createStaffMember: (payload: {
+    email: string;
+    fullName: string;
+    phone?: string;
+    department?: string;
+    assignedTerritory?: string;
+    shiftHours?: string;
+    password?: string;
+  }) => Promise<MutationResult>;
+  updateStaffMember: (
+    id: string,
+    updates: {
+      fullName?: string;
+      phone?: string | null;
+      department?: string | null;
+      assignedTerritory?: string | null;
+      shiftHours?: string | null;
+      isActive?: boolean;
+    }
+  ) => Promise<MutationResult>;
   addService: (service: Partial<ServiceItem>) => Promise<ServiceItem | null>;
   updateService: (id: string, updates: Partial<ServiceItem>) => Promise<MutationResult>;
   deleteService: (id: string) => Promise<MutationResult>;

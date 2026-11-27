@@ -1,5 +1,7 @@
 package com.serviceos.app.ui.customer
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -11,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -29,6 +32,7 @@ fun BookingWizardScreen(
     baseLabor: Double = 149.0,
     dispatchFee: Double = 20.0
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var step by remember { mutableStateOf(1) }
     var issueDetails by remember { mutableStateOf("") }
@@ -52,16 +56,30 @@ fun BookingWizardScreen(
         isSubmitting = true
         errorMessage = null
         coroutineScope.launch {
+            val combinedNotes = listOf(issueDetails.trim(), accessNotes.trim())
+                .filter { it.isNotBlank() }
+                .joinToString(" | ")
+                .ifBlank { null }
             val result = BookingRepository.createAndAuthorizeBooking(
                 serviceId = serviceId,
                 serviceTitle = serviceTitle,
                 categoryName = categoryName,
                 addressText = trimmedAddress,
                 baseAmount = subtotal,
-                isEmergency = isEmergency
+                isEmergency = isEmergency,
+                accessInstructions = combinedNotes
             )
             isSubmitting = false
-            result.onSuccess {
+            result.onSuccess { booking ->
+                val redirectUrl = booking.checkoutRedirectUrl
+                if (booking.requiresClientAction && !redirectUrl.isNullOrBlank()) {
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(redirectUrl)))
+                    } catch (_: Exception) {
+                        errorMessage = "Complete payment authentication in browser: $redirectUrl"
+                        return@launch
+                    }
+                }
                 onConfirmed()
             }.onFailure { err ->
                 errorMessage = err.message ?: "Unable to create booking. Verify connection and try again."

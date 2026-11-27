@@ -21,18 +21,22 @@ import com.serviceos.app.core.theme.LocalExtraColors
 import com.serviceos.app.data.model.BookingStatus
 import com.serviceos.app.data.network.ApiClient
 import com.serviceos.app.data.repository.BookingRepository
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TechWalletScreen(
     onBack: () -> Unit = {}
 ) {
+    val coroutineScope = rememberCoroutineScope()
     val extraColors = LocalExtraColors.current
     val allBookings by BookingRepository.bookingsFlow.collectAsState()
     var serverAvailableBalance by remember { mutableStateOf<Double?>(null) }
     var serverLedgerRows by remember { mutableStateOf<List<Triple<String, String, String>>>(emptyList()) }
+    var payoutDialogTitle by remember { mutableStateOf<String?>(null) }
+    var payoutDialogMessage by remember { mutableStateOf("") }
 
-    LaunchedEffect(Unit) {
+    suspend fun refreshEarnings() {
         ApiClient.fetchTechnicianEarnings().onSuccess { json ->
             val data = json.optJSONObject("data") ?: json
             val unpaidCents = data.optDouble("unpaidBalanceCents", data.optDouble("totalEarnedCents", Double.NaN))
@@ -54,6 +58,10 @@ fun TechWalletScreen(
                 serverLedgerRows = list
             }
         }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshEarnings()
     }
 
     val completedJobs = remember(allBookings) {
@@ -138,7 +146,17 @@ fun TechWalletScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
-                            onClick = {},
+                            onClick = {
+                                coroutineScope.launch {
+                                    refreshEarnings()
+                                    payoutDialogTitle = "Stripe Express Payout Status"
+                                    payoutDialogMessage = if (availableBalance > 0.0) {
+                                        "Available balance ${ApiClient.formatCurrency(availableBalance)} is eligible for disbursement via the Finance Admin Payouts desk."
+                                    } else {
+                                        "No unpaid completed balance is currently eligible for disbursement."
+                                    }
+                                }
+                            },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.primary
                             ),
@@ -149,10 +167,13 @@ fun TechWalletScreen(
                         ) {
                             Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Instant Cashout", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Sync Payouts", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
                         OutlinedButton(
-                            onClick = {},
+                            onClick = {
+                                payoutDialogTitle = "Scheduled Settlement"
+                                payoutDialogMessage = "Double-entry ledger settlements are disbursed through your Admin Finance desk once Stripe Express transfers are reconciled."
+                            },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .weight(1f)
@@ -160,7 +181,7 @@ fun TechWalletScreen(
                         ) {
                             Icon(Icons.Default.AccountBalance, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("Free ACH (2-Day)", fontSize = 13.sp)
+                            Text("Settlement Info", fontSize = 13.sp)
                         }
                     }
                 }
@@ -211,6 +232,19 @@ fun TechWalletScreen(
                 }
             }
         }
+    }
+
+    if (payoutDialogTitle != null) {
+        AlertDialog(
+            onDismissRequest = { payoutDialogTitle = null },
+            title = { Text(payoutDialogTitle ?: "") },
+            text = { Text(payoutDialogMessage) },
+            confirmButton = {
+                TextButton(onClick = { payoutDialogTitle = null }) {
+                    Text("OK")
+                }
+            }
+        )
     }
 }
 

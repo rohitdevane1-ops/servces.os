@@ -119,7 +119,7 @@ export const Page16ServiceDetails: React.FC = () => {
 
         <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
           <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Customer Satisfaction</div>
-          <div className="text-2xl font-extrabold text-amber-600 mt-0.5">â˜… {avgRating} / 5.0</div>
+          <div className="text-2xl font-extrabold text-amber-600 mt-0.5">★ {avgRating} / 5.0</div>
           <div className="text-[10px] text-slate-400 font-bold mt-0.5">From {matchingReviews.length} verified reviews</div>
         </div>
 
@@ -202,7 +202,7 @@ export const Page16ServiceDetails: React.FC = () => {
                           <div className="bg-slate-900/95 backdrop-blur-md text-white p-2.5 rounded-xl shadow-lg border border-slate-700 text-xs">
                             <div className="font-bold text-slate-300">{label}</div>
                             <div className="text-indigo-400 font-extrabold mt-0.5">
-                              {val} Completed Jobs â€¢ ${val * service.basePrice} Volume
+                              {val} Completed Jobs • ${val * service.basePrice} Volume
                             </div>
                           </div>
                         );
@@ -243,7 +243,7 @@ export const Page16ServiceDetails: React.FC = () => {
                     </div>
 
                     <div className="flex items-center gap-3">
-                      <span className="text-xs font-bold text-amber-600">â˜… {tech.rating}</span>
+                      <span className="text-xs font-bold text-amber-600">★ {tech.rating}</span>
                       <span className="text-[11px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
                         {tech.status}
                       </span>
@@ -267,7 +267,7 @@ export const Page16ServiceDetails: React.FC = () => {
             <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-sm space-y-3">
               <div className="w-full h-28 rounded-xl bg-gradient-to-r from-purple-500 to-indigo-600 p-3 text-white flex flex-col justify-between">
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white/20 backdrop-blur-xs w-fit">
-                  â˜… 4.9 Verified Pro
+                  ★ 4.9 Verified Pro
                 </span>
                 <div>
                   <div className="text-xs font-bold uppercase tracking-wider opacity-80">Certified Pro Service</div>
@@ -288,7 +288,7 @@ export const Page16ServiceDetails: React.FC = () => {
                   }}
                   className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
                 >
-                  Book Now â†’
+                  Book Now →
                 </button>
               </div>
             </div>

@@ -109,9 +109,9 @@ export async function verifyCaptcha(request: FastifyRequest, reply: FastifyReply
       );
     }
 
-    // Validate expected hostname if configured
+    // Validate expected hostname if configured (fail closed when hostname omitted)
     const expectedHostname = process.env.CAPTCHA_EXPECTED_HOSTNAME;
-    if (expectedHostname && data.hostname && data.hostname !== expectedHostname) {
+    if (expectedHostname && data.hostname !== expectedHostname) {
       request.log.warn({ hostname: data.hostname, expected: expectedHostname }, 'Turnstile verification token hostname mismatch');
       return reply.status(400).send(
         errorResponse('CAPTCHA_VERIFICATION_FAILED', 'Anti-bot verification challenge origin mismatch.', requestId)

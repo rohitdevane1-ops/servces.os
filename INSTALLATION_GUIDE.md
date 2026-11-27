@@ -69,7 +69,7 @@ You will see:
 All database CLI commands in `server/package.json` automatically work both in local development (`tsx src/database/*.ts`) and inside the compiled production Docker container (`node dist/database/*.js`):
 
 ```bash
-# 1. Apply all 15 PostgreSQL + PostGIS migrations and verify schema integrity
+# 1. Apply all 16 PostgreSQL + PostGIS migrations and verify schema integrity
 docker compose exec backend npm run db:migrate
 docker compose exec backend npm run db:verify
 
@@ -214,13 +214,13 @@ ANDROID_KEY_PASSWORD=your-key-password \
 ### Pre-Release Verification Suite
 
 ```bash
-# 1. Validate all 15 SQL migration pairs & RLS coverage
+# 1. Validate all 16 SQL migration pairs & RLS coverage
 node scripts/validate_migrations.cjs
 
 # 2. Validate Flutter & Android mobile codebases for zero placeholders/mocks
 node scripts/validate_dart_codebase.cjs
 
-# 3. Run full 116-test Backend & Real-PostgreSQL integration suite
+# 3. Run full 120-test Backend & Real-PostgreSQL integration suite
 npm --prefix server test
 
 # 4. Build Admin & Staff Web Portal production bundle

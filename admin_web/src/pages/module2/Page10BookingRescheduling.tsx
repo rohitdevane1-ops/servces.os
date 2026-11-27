@@ -69,7 +69,7 @@ export const Page10BookingRescheduling: React.FC = () => {
               ) : (
                 bookings.map((b) => (
                   <option key={b.id} value={b.id}>
-                    #{b.jobNo} â€” {b.customerName} ({b.serviceName}) â€¢ Currently {b.scheduleDate} at {b.scheduleTime}
+                    #{b.jobNo} — {b.customerName} ({b.serviceName}) • Currently {b.scheduleDate} at {b.scheduleTime}
                   </option>
                 ))
               )}

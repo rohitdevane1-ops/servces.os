@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/widgets/motion_primitives.dart';
 
 class LiveDispatchRadarScreen extends StatefulWidget {
   final VoidCallback onBack;
@@ -51,7 +52,14 @@ class _LiveDispatchRadarScreenState extends State<LiveDispatchRadarScreen> with 
     return Scaffold(
       backgroundColor: isDark ? AppColors.nightCanvas : AppColors.dayCanvas,
       appBar: AppBar(
-        title: const Text('Live Dispatch Radar', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            PulsingStatusDot(color: AppColors.verifiedEmerald, size: 8, isActive: _isMatched),
+            const SizedBox(width: 8),
+            const Text('Live Dispatch Radar', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+          ],
+        ),
         centerTitle: true,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),

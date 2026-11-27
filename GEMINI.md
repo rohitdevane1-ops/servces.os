@@ -20,7 +20,7 @@
    * Never hardcode mock users, fake identities, or unverified credentials inside application source code.
    * Showcase data lives exclusively inside the isolated **Demo Sandbox DB (`servicepro_demo`, `APP_DEMO_MODE=true`)** seeded via `npm --prefix server run seed:demo`, while the **Clean Production DB (`servicepro`, `APP_DEMO_MODE=false`)** is provisioned via `npm --prefix server run seed:prod` or the one-time `/installer` wizard with zero fake records.
 3. **No Random or AI-Generated Ugly UIs**:
-   * All mobile screens must strictly follow the **Day Vision (Light Mode)** design system extracted from the approved master reference image (`design_references/brand/serviceos_master_ui.jpg`):
+   * All mobile screens must strictly follow the **Day Vision (Light Mode)** design system defined in the ServiceOS Dual-Vision design tokens (`app_theme.dart` / `Color.kt`):
      * Pure white elevated cards (`#FFFFFF`) with `rounded-2xl` corners.
      * Soft clean slate canvas background (`#F8FAFC`).
      * Royal Purple (`#6366F1`) & Vivid Violet (`#7C3AED`) brand accents.
@@ -46,12 +46,8 @@
 ├── COMMERCIAL_HANDOVER.md           # Turnkey asset inventory & buyer valuation dossier
 ├── INSTALLATION_GUIDE.md            # Docker Compose, migrations, Dual-DB & mobile build guide
 │
-├── design_references/               # Approved visual mockups & cropped image assets
-│   ├── brand/                       # Master UI reference image & brand logo
-│   └── booking/                     # Cropped category banners (plumbing, cleaning, etc.)
-│
 ├── server/                          # Fastify 5 + PostgreSQL 16 + PostGIS + Redis API Server
-│   └── src/database/migrations/     # 15 paired Up/Down PostgreSQL + PostGIS migrations (001–015)
+│   └── src/database/migrations/     # 16 paired Up/Down PostgreSQL + PostGIS migrations (001–016)
 │
 ├── scripts/                         # Release & Security Validators + Secret Generator
 │   ├── generate_secrets.cjs         # Cryptographic key generator for .env

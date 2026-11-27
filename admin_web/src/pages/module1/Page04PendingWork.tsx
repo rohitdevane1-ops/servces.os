@@ -162,7 +162,7 @@ export const Page04PendingWork: React.FC = () => {
                       </span>
                       <span className="font-bold text-slate-900">{b.serviceName}</span>
                     </div>
-                    <div className="text-[11px] text-slate-400 mt-0.5">{b.category} â€¢ Est: ${b.estimate}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">{b.category} • Est: ${b.estimate}</div>
                   </td>
 
                   <td className="py-3.5 px-4">

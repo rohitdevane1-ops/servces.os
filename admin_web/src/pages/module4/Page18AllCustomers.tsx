@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 
 export const Page18AllCustomers: React.FC = () => {
-  const { customers, navigateToPage, addToast, setSelectedCustomerId, setIsCreateCustomerModalOpen } = useAdmin();
+  const { customers, tenantConfig, formatCurrency, navigateToPage, addToast, setSelectedCustomerId, setIsCreateCustomerModalOpen } = useAdmin();
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterTier, setFilterTier] = useState<string>('All');
 
@@ -46,7 +46,7 @@ export const Page18AllCustomers: React.FC = () => {
         <div className="flex items-center gap-3">
           <button
             onClick={() => {
-              downloadCSV('customer_directory', ['ID', 'Name', 'Phone', 'Email', 'Address', 'Total Bookings', 'Lifetime Spend ($)', 'Status'], customers.map(c => [c.id, c.name, c.phone, c.email, c.address, c.totalBookings, c.lifetimeSpend, c.status]));
+              downloadCSV('customer_directory', ['ID', 'Name', 'Phone', 'Email', 'Address', 'Total Bookings', `Lifetime Spend (${tenantConfig.currencyCode})`, 'Status'], customers.map(c => [c.id, c.name, c.phone, c.email, c.address, c.totalBookings, c.lifetimeSpend, c.status]));
               addToast('Customer Directory exported to CSV spreadsheet!', 'success');
             }}
             className="px-3.5 py-2 bg-white border border-slate-200 hover:border-slate-300 text-slate-700 font-bold text-xs rounded-xl shadow-2xs transition-all cursor-pointer flex items-center gap-1.5"
@@ -76,7 +76,7 @@ export const Page18AllCustomers: React.FC = () => {
         <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
           <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Average Lifetime Value</div>
           <div className="text-2xl font-extrabold text-slate-900 mt-0.5">
-            {customers.length > 0 ? `$${(customers.reduce((acc, c) => acc + (c.lifetimeSpend || 0), 0) / customers.length).toFixed(2)}` : '$0.00'}
+            {customers.length > 0 ? formatCurrency(customers.reduce((acc, c) => acc + (c.lifetimeSpend || 0), 0) / customers.length) : formatCurrency(0)}
           </div>
           <div className="text-[10px] text-slate-400 font-bold mt-0.5">
             {customers.length > 0 ? `${(customers.reduce((acc, c) => acc + (c.totalBookings || 0), 0) / customers.length).toFixed(1)} avg bookings` : '0 bookings'}
@@ -88,7 +88,7 @@ export const Page18AllCustomers: React.FC = () => {
           <div className="text-2xl font-extrabold text-purple-700 mt-0.5">
             {customers.filter(c => (c.lifetimeSpend || 0) >= 1000).length} VIPs
           </div>
-          <div className="text-[10px] text-purple-600 font-bold mt-0.5">Lifetime spend &gt; $1,000</div>
+          <div className="text-[10px] text-purple-600 font-bold mt-0.5">Lifetime spend &gt; {formatCurrency(1000)}</div>
         </div>
 
         <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs">
@@ -160,7 +160,7 @@ export const Page18AllCustomers: React.FC = () => {
                         <div className="font-extrabold text-slate-900">{cust.name}</div>
                         <div className="text-[11px] text-amber-600 font-bold flex items-center gap-1 mt-0.5">
                           <Star className="w-3 h-3 fill-current text-amber-500" />
-                          â˜… {cust.rating}
+                          ★ {cust.rating}
                         </div>
                       </div>
                     </div>

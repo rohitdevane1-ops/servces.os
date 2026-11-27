@@ -153,7 +153,7 @@ export const StaffEmergencyHandover: React.FC = () => {
                   </span>
                   <div className="text-sm font-black text-slate-900 mt-0.5 flex items-center gap-2">
                     <span>{selectedBooking.jobNo}</span>
-                    <span>â€¢</span>
+                    <span>•</span>
                     <span>{selectedBooking.serviceName}</span>
                   </div>
                   <div className="text-xs text-slate-600 mt-0.5">
@@ -213,7 +213,7 @@ export const StaffEmergencyHandover: React.FC = () => {
                         <div className="min-w-0 flex-1">
                           <div className="text-xs font-bold text-slate-900 truncate">{tech.name}</div>
                           <div className="text-[10px] text-slate-500">
-                            {tech.specialization} â€¢ â˜… {tech.rating}
+                            {tech.specialization} • ★ {tech.rating}
                           </div>
                           <div className="text-[10px] font-semibold text-emerald-700">
                             Status: {tech.status}

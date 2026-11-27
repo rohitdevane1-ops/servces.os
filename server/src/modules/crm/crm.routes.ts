@@ -7,6 +7,13 @@ import { authenticate, requirePermission } from '../../middleware/rbac.js';
 import { blockInDemoMode } from '../../middleware/demoGuard.js';
 import { AuthService } from '../auth/auth.service.js';
 import { getTechnicianEarningsSummary } from '../finances/earnings.service.js';
+import { safeMediaUrlSchema } from '../../utils/urlValidator.js';
+import {
+  normalizeStoredMediaUrl,
+  normalizeStoredMediaUrls,
+  signStoredMediaUrl,
+  signStoredMediaUrls,
+} from '../../utils/mediaSigning.js';
 
 const customerQuerySchema = z.object({
   page: z.coerce.number().min(1).default(1),
@@ -20,6 +27,11 @@ const createCustomerSchema = z.object({
   fullName: z.string().trim().min(2).max(150),
   phone: z.string().trim().min(5).max(40).optional(),
   defaultAddress: z.string().trim().max(500).optional(),
+  city: z.string().trim().max(120).optional(),
+  accountTier: z.enum(['STANDARD', 'VIP', 'ENTERPRISE']).default('STANDARD'),
+  notes: z.string().trim().max(2000).optional(),
+  avatarUrl: safeMediaUrlSchema.nullable().optional(),
+  coverUrl: safeMediaUrlSchema.nullable().optional(),
   courtesyCreditCents: z.number().int().min(0).default(0),
 });
 
@@ -27,6 +39,11 @@ const updateCustomerSchema = z.object({
   fullName: z.string().trim().min(2).max(150).optional(),
   phone: z.string().trim().min(5).max(40).nullable().optional(),
   defaultAddress: z.string().trim().max(500).nullable().optional(),
+  city: z.string().trim().max(120).nullable().optional(),
+  accountTier: z.enum(['STANDARD', 'VIP', 'ENTERPRISE']).optional(),
+  notes: z.string().trim().max(2000).nullable().optional(),
+  avatarUrl: safeMediaUrlSchema.nullable().optional(),
+  coverUrl: safeMediaUrlSchema.nullable().optional(),
   courtesyCreditCents: z.number().int().min(0).optional(),
   isActive: z.boolean().optional(),
 });
@@ -53,6 +70,9 @@ const createTechnicianSchema = z.object({
   hourlyRateCents: z.number().int().min(0).default(0),
   vehicleMakeModel: z.string().trim().max(150).optional(),
   vehicleLicensePlate: z.string().trim().max(50).optional(),
+  baseLocation: z.string().trim().max(255).optional(),
+  avatarUrl: safeMediaUrlSchema.nullable().optional(),
+  coverUrl: safeMediaUrlSchema.nullable().optional(),
   isVerified: z.boolean().default(false),
 });
 
@@ -64,6 +84,9 @@ const updateTechnicianSchema = z.object({
   hourlyRateCents: z.number().int().min(0).optional(),
   vehicleMakeModel: z.string().trim().max(150).nullable().optional(),
   vehicleLicensePlate: z.string().trim().max(50).nullable().optional(),
+  baseLocation: z.string().trim().max(255).nullable().optional(),
+  avatarUrl: safeMediaUrlSchema.nullable().optional(),
+  coverUrl: safeMediaUrlSchema.nullable().optional(),
   isVerified: z.boolean().optional(),
   isActive: z.boolean().optional(),
 });
@@ -131,6 +154,11 @@ export async function crmRoutes(fastify: FastifyInstance) {
         u.email,
         u.phone as "phoneNumber",
         c.default_address_text as "defaultAddress",
+        c.city,
+        COALESCE(c.account_tier, 'STANDARD') as "accountTier",
+        c.notes,
+        c.avatar_url as "avatarUrl",
+        c.cover_url as "coverUrl",
         c.courtesy_credit_cents as "courtesyCreditCents",
         c.created_at as "createdAt",
         COUNT(b.id)::int as "totalBookings",
@@ -150,7 +178,7 @@ export async function crmRoutes(fastify: FastifyInstance) {
     }
 
     dataQuery += `
-      GROUP BY c.user_id, c.full_name, u.email, u.phone, c.default_address_text, c.courtesy_credit_cents, c.created_at
+      GROUP BY c.user_id, c.full_name, u.email, u.phone, c.default_address_text, c.city, c.account_tier, c.notes, c.avatar_url, c.cover_url, c.courtesy_credit_cents, c.created_at
       ORDER BY c.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
     `;
@@ -160,15 +188,25 @@ export async function crmRoutes(fastify: FastifyInstance) {
       tenantQuery(dataQuery, [...params, limit, offset], tenantId)
     ]);
 
-    const total = countRes.rows[0]?.total || 0;
+    const total = Number(countRes.rows[0]?.total || 0);
 
     return reply.status(200).send(
-      successResponse(dataRes.rows, requestId, {
-        page,
-        limit,
-        totalRecords: total,
-        totalPages: Math.ceil(total / limit)
-      })
+      successResponse(
+        dataRes.rows.map((r: any) => ({
+          ...r,
+          courtesyCreditCents: Number(r.courtesyCreditCents || 0),
+          totalSpentCents: Number(r.totalSpentCents || 0),
+          avatarUrl: signStoredMediaUrl(r.avatarUrl, tenantId),
+          coverUrl: signStoredMediaUrl(r.coverUrl, tenantId),
+        })),
+        requestId,
+        {
+          page,
+          limit,
+          totalRecords: total,
+          totalPages: Math.ceil(total / limit),
+        }
+      )
     );
   });
 
@@ -192,6 +230,11 @@ export async function crmRoutes(fastify: FastifyInstance) {
         u.email,
         u.phone as "phoneNumber",
         c.default_address_text as "defaultAddress",
+        c.city,
+        COALESCE(c.account_tier, 'STANDARD') as "accountTier",
+        c.notes,
+        c.avatar_url as "avatarUrl",
+        c.cover_url as "coverUrl",
         c.courtesy_credit_cents as "courtesyCreditCents",
         c.stripe_customer_id as "stripeCustomerId",
         c.created_at as "createdAt"
@@ -242,6 +285,8 @@ export async function crmRoutes(fastify: FastifyInstance) {
     return reply.status(200).send(
       successResponse({
         ...customer,
+        avatarUrl: signStoredMediaUrl(customer.avatarUrl, tenantId),
+        coverUrl: signStoredMediaUrl(customer.coverUrl, tenantId),
         addresses: addressesRes.rows,
         recentBookings: bookingsRes.rows,
         supportTickets: ticketsRes.rows,
@@ -251,7 +296,7 @@ export async function crmRoutes(fastify: FastifyInstance) {
 
   // 2b. Create Customer (Admin/Staff)
   fastify.post('/customers', {
-    preHandler: [requirePermission('crm:customers:manage')],
+    preHandler: [requirePermission('crm:customers:manage'), blockInDemoMode('Creating customer profile')],
     schema: {
       tags: ['CRM & Customers'],
       summary: 'Create a new tenant customer profile',
@@ -268,7 +313,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { email, password, fullName, phone, defaultAddress, courtesyCreditCents } = parsed.data;
+    const { email, password, fullName, phone, defaultAddress, city, accountTier, notes, avatarUrl, coverUrl, courtesyCreditCents } = parsed.data;
+    const normalizedAvatar = normalizeStoredMediaUrl(avatarUrl);
+    const normalizedCover = normalizeStoredMediaUrl(coverUrl);
     const rawPassword = password || crypto.randomBytes(16).toString('hex');
     const passwordHash = await AuthService.hashPassword(rawPassword);
 
@@ -283,9 +330,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
         const u = uRes.rows[0];
 
         await client.query(
-          `INSERT INTO customer_profiles (user_id, tenant_id, full_name, default_address_text, courtesy_credit_cents)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [u.id, tenantId, fullName, defaultAddress || null, courtesyCreditCents]
+          `INSERT INTO customer_profiles (user_id, tenant_id, full_name, default_address_text, city, account_tier, notes, avatar_url, cover_url, courtesy_credit_cents)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [u.id, tenantId, fullName, defaultAddress || null, city || null, accountTier, notes || null, normalizedAvatar, normalizedCover, courtesyCreditCents]
         );
 
         await client.query(
@@ -300,6 +347,11 @@ export async function crmRoutes(fastify: FastifyInstance) {
           phoneNumber: u.phone,
           fullName,
           defaultAddress: defaultAddress || null,
+          city: city || null,
+          accountTier,
+          notes: notes || null,
+          avatarUrl: signStoredMediaUrl(normalizedAvatar, tenantId),
+          coverUrl: signStoredMediaUrl(normalizedCover, tenantId),
           courtesyCreditCents,
           createdAt: u.created_at,
         };
@@ -318,7 +370,7 @@ export async function crmRoutes(fastify: FastifyInstance) {
 
   // 2c. Update Customer (Admin/Staff)
   fastify.put('/customers/:id', {
-    preHandler: [requirePermission('crm:customers:manage')],
+    preHandler: [requirePermission('crm:customers:manage'), blockInDemoMode('Updating customer profile')],
     schema: {
       tags: ['CRM & Customers'],
       summary: 'Update an existing tenant customer profile',
@@ -339,22 +391,34 @@ export async function crmRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { fullName, phone, defaultAddress, courtesyCreditCents, isActive } = parsed.data;
+    const { fullName, phone, defaultAddress, city, accountTier, notes, avatarUrl, coverUrl, courtesyCreditCents, isActive } = parsed.data;
+    const normalizedAvatar = avatarUrl !== undefined ? normalizeStoredMediaUrl(avatarUrl) : undefined;
+    const normalizedCover = coverUrl !== undefined ? normalizeStoredMediaUrl(coverUrl) : undefined;
 
     const updated = await withTenantTransaction(tenantId, async (client) => {
       const profRes = await client.query<{
         user_id: string;
         full_name: string;
         default_address_text: string | null;
+        city: string | null;
+        account_tier: string;
+        notes: string | null;
+        avatar_url: string | null;
+        cover_url: string | null;
         courtesy_credit_cents: string;
       }>(
         `UPDATE customer_profiles
          SET full_name = COALESCE($1, full_name),
              default_address_text = CASE WHEN $2::boolean THEN $3 ELSE default_address_text END,
+             city = CASE WHEN $7::boolean THEN $8 ELSE city END,
+             account_tier = COALESCE($9, account_tier),
+             notes = CASE WHEN $10::boolean THEN $11 ELSE notes END,
+             avatar_url = CASE WHEN $12::boolean THEN $13 ELSE avatar_url END,
+             cover_url = CASE WHEN $14::boolean THEN $15 ELSE cover_url END,
              courtesy_credit_cents = COALESCE($4, courtesy_credit_cents),
              updated_at = NOW()
          WHERE user_id = $5 AND tenant_id = $6
-         RETURNING user_id, full_name, default_address_text, courtesy_credit_cents`,
+         RETURNING user_id, full_name, default_address_text, city, COALESCE(account_tier, 'STANDARD') AS account_tier, notes, avatar_url, cover_url, courtesy_credit_cents`,
         [
           fullName ?? null,
           defaultAddress !== undefined,
@@ -362,6 +426,15 @@ export async function crmRoutes(fastify: FastifyInstance) {
           courtesyCreditCents ?? null,
           customerId,
           tenantId,
+          city !== undefined,
+          city ?? null,
+          accountTier ?? null,
+          notes !== undefined,
+          notes ?? null,
+          normalizedAvatar !== undefined,
+          normalizedAvatar ?? null,
+          normalizedCover !== undefined,
+          normalizedCover ?? null,
         ]
       );
 
@@ -392,6 +465,11 @@ export async function crmRoutes(fastify: FastifyInstance) {
         isActive: uRes.rows[0]?.is_active ?? true,
         fullName: profRes.rows[0].full_name,
         defaultAddress: profRes.rows[0].default_address_text,
+        city: profRes.rows[0].city,
+        accountTier: profRes.rows[0].account_tier,
+        notes: profRes.rows[0].notes,
+        avatarUrl: signStoredMediaUrl(profRes.rows[0].avatar_url, tenantId),
+        coverUrl: signStoredMediaUrl(profRes.rows[0].cover_url, tenantId),
         courtesyCreditCents: Number(profRes.rows[0].courtesy_credit_cents || 0),
       };
     });
@@ -449,6 +527,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
         p.hourly_rate_cents as "hourlyRateCents",
         p.vehicle_make_model as "vehicleMakeModel",
         p.vehicle_license_plate as "vehicleLicensePlate",
+        p.base_location as "baseLocation",
+        p.avatar_url as "avatarUrl",
+        p.cover_url as "coverUrl",
         COALESCE(pl.duty_status, 'OFFLINE') as "dutyStatus",
         pl.last_ping_at as "lastPingAt",
         ST_Y(pl.location::geometry) as latitude,
@@ -490,7 +571,7 @@ export async function crmRoutes(fastify: FastifyInstance) {
     dataQuery += `
       GROUP BY p.user_id, p.full_name, u.email, u.phone, p.trade_category, p.license_number,
                p.is_verified, p.verified_at, p.hourly_rate_cents, p.vehicle_make_model, p.vehicle_license_plate,
-               pl.duty_status, pl.last_ping_at, pl.location
+               p.base_location, p.avatar_url, p.cover_url, pl.duty_status, pl.last_ping_at, pl.location
       ORDER BY p.is_verified DESC, p.created_at DESC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
     `;
@@ -500,15 +581,24 @@ export async function crmRoutes(fastify: FastifyInstance) {
       tenantQuery(dataQuery, [...params, limit, offset], tenantId)
     ]);
 
-    const total = countRes.rows[0]?.total || 0;
+    const total = Number(countRes.rows[0]?.total || 0);
 
     return reply.status(200).send(
-      successResponse(dataRes.rows, requestId, {
-        page,
-        limit,
-        totalRecords: total,
-        totalPages: Math.ceil(total / limit)
-      })
+      successResponse(
+        dataRes.rows.map((r: any) => ({
+          ...r,
+          hourlyRateCents: Number(r.hourlyRateCents || 0),
+          avatarUrl: signStoredMediaUrl(r.avatarUrl, tenantId),
+          coverUrl: signStoredMediaUrl(r.coverUrl, tenantId),
+        })),
+        requestId,
+        {
+          page,
+          limit,
+          totalRecords: total,
+          totalPages: Math.ceil(total / limit),
+        }
+      )
     );
   });
 
@@ -584,6 +674,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
         p.hourly_rate_cents as "hourlyRateCents",
         p.vehicle_make_model as "vehicleMakeModel",
         p.vehicle_license_plate as "vehicleLicensePlate",
+        p.base_location as "baseLocation",
+        p.avatar_url as "avatarUrl",
+        p.cover_url as "coverUrl",
         COALESCE(pl.duty_status, 'OFFLINE') as "dutyStatus",
         pl.last_ping_at as "lastPingAt",
         ST_Y(pl.location::geometry) as latitude,
@@ -633,6 +726,8 @@ export async function crmRoutes(fastify: FastifyInstance) {
     return reply.status(200).send(
       successResponse({
         ...tech,
+        avatarUrl: signStoredMediaUrl(tech.avatarUrl, tenantId),
+        coverUrl: signStoredMediaUrl(tech.coverUrl, tenantId),
         shifts: shiftsRes.rows,
         recentReviews: reviewsRes.rows,
         recentPayouts: payoutsRes.rows,
@@ -642,7 +737,7 @@ export async function crmRoutes(fastify: FastifyInstance) {
 
   // 4b. Create Technician (Admin/Staff)
   fastify.post('/technicians', {
-    preHandler: [requirePermission('crm:technicians:manage')],
+    preHandler: [requirePermission('crm:technicians:manage'), blockInDemoMode('Creating technician profile')],
     schema: {
       tags: ['CRM & Technicians'],
       summary: 'Create a new tenant technician profile',
@@ -669,8 +764,13 @@ export async function crmRoutes(fastify: FastifyInstance) {
       hourlyRateCents,
       vehicleMakeModel,
       vehicleLicensePlate,
+      baseLocation,
+      avatarUrl,
+      coverUrl,
       isVerified,
     } = parsed.data;
+    const normalizedAvatar = normalizeStoredMediaUrl(avatarUrl);
+    const normalizedCover = normalizeStoredMediaUrl(coverUrl);
     const rawPassword = password || crypto.randomBytes(16).toString('hex');
     const passwordHash = await AuthService.hashPassword(rawPassword);
 
@@ -688,8 +788,8 @@ export async function crmRoutes(fastify: FastifyInstance) {
           `INSERT INTO provider_profiles (
              user_id, tenant_id, full_name, trade_category, license_number,
              hourly_rate_cents, vehicle_make_model, vehicle_license_plate,
-             is_verified, verified_at, is_active
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $9 THEN NOW() ELSE NULL END, TRUE)`,
+             base_location, avatar_url, cover_url, is_verified, verified_at, is_active
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CASE WHEN $12 THEN NOW() ELSE NULL END, TRUE)`,
           [
             u.id,
             tenantId,
@@ -699,6 +799,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
             hourlyRateCents,
             vehicleMakeModel || null,
             vehicleLicensePlate || null,
+            baseLocation || null,
+            normalizedAvatar,
+            normalizedCover,
             isVerified,
           ]
         );
@@ -719,6 +822,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
           hourlyRateCents,
           vehicleMakeModel: vehicleMakeModel || null,
           vehicleLicensePlate: vehicleLicensePlate || null,
+          baseLocation: baseLocation || null,
+          avatarUrl: signStoredMediaUrl(normalizedAvatar, tenantId),
+          coverUrl: signStoredMediaUrl(normalizedCover, tenantId),
           isVerified,
           isActive: true,
           dutyStatus: 'OFFLINE',
@@ -768,9 +874,14 @@ export async function crmRoutes(fastify: FastifyInstance) {
       hourlyRateCents,
       vehicleMakeModel,
       vehicleLicensePlate,
+      baseLocation,
+      avatarUrl,
+      coverUrl,
       isVerified,
       isActive,
     } = parsed.data;
+    const normalizedAvatar = avatarUrl !== undefined ? normalizeStoredMediaUrl(avatarUrl) : undefined;
+    const normalizedCover = coverUrl !== undefined ? normalizeStoredMediaUrl(coverUrl) : undefined;
 
     const updated = await withTenantTransaction(tenantId, async (client) => {
       const profRes = await client.query<{
@@ -781,6 +892,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
         hourly_rate_cents: string;
         vehicle_make_model: string | null;
         vehicle_license_plate: string | null;
+        base_location: string | null;
+        avatar_url: string | null;
+        cover_url: string | null;
         is_verified: boolean;
         is_active: boolean;
       }>(
@@ -791,6 +905,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
              hourly_rate_cents = COALESCE($5, hourly_rate_cents),
              vehicle_make_model = CASE WHEN $6::boolean THEN $7 ELSE vehicle_make_model END,
              vehicle_license_plate = CASE WHEN $8::boolean THEN $9 ELSE vehicle_license_plate END,
+             base_location = CASE WHEN $14::boolean THEN $15 ELSE base_location END,
+             avatar_url = CASE WHEN $16::boolean THEN $17 ELSE avatar_url END,
+             cover_url = CASE WHEN $18::boolean THEN $19 ELSE cover_url END,
              is_verified = COALESCE($10, is_verified),
              verified_at = CASE
                WHEN $10 IS TRUE THEN COALESCE(verified_at, NOW())
@@ -801,7 +918,7 @@ export async function crmRoutes(fastify: FastifyInstance) {
              updated_at = NOW()
          WHERE user_id = $12 AND tenant_id = $13
          RETURNING user_id, full_name, trade_category, license_number, hourly_rate_cents,
-                   vehicle_make_model, vehicle_license_plate, is_verified, is_active`,
+                   vehicle_make_model, vehicle_license_plate, base_location, avatar_url, cover_url, is_verified, is_active`,
         [
           fullName ?? null,
           tradeCategory ?? null,
@@ -816,6 +933,12 @@ export async function crmRoutes(fastify: FastifyInstance) {
           isActive ?? null,
           techId,
           tenantId,
+          baseLocation !== undefined,
+          baseLocation ?? null,
+          normalizedAvatar !== undefined,
+          normalizedAvatar ?? null,
+          normalizedCover !== undefined,
+          normalizedCover ?? null,
         ]
       );
 
@@ -850,6 +973,9 @@ export async function crmRoutes(fastify: FastifyInstance) {
         hourlyRateCents: Number(p.hourly_rate_cents || 0),
         vehicleMakeModel: p.vehicle_make_model,
         vehicleLicensePlate: p.vehicle_license_plate,
+        baseLocation: p.base_location,
+        avatarUrl: signStoredMediaUrl(p.avatar_url, tenantId),
+        coverUrl: signStoredMediaUrl(p.cover_url, tenantId),
         isVerified: p.is_verified,
         isActive: p.is_active,
       };
@@ -1228,5 +1354,471 @@ export async function crmRoutes(fastify: FastifyInstance) {
     return reply.status(200).send(
       successResponse({ providerId: id, shifts: outcome.shifts }, requestId)
     );
+  });
+
+  // 8. Admin/Staff Remote Technician Duty Status Toggle
+  fastify.put('/technicians/:id/duty-status', {
+    preHandler: [requirePermission('crm:technicians:manage'), blockInDemoMode('Updating technician duty status')],
+    schema: {
+      tags: ['CRM & Technicians'],
+      summary: 'Admin or dispatcher updates target technician duty status',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const { id: techId } = request.params as { id: string };
+    if (!z.string().uuid().safeParse(techId).success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Valid technician UUID is required.', requestId));
+    }
+
+    const parsed = updateDutyStatusSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Invalid duty status payload.', requestId));
+    }
+
+    const { dutyStatus } = parsed.data;
+    const outcome = await withTenantTransaction<
+      | { ok: true; dutyStatus: string; hasLocation: boolean }
+      | { ok: false; status: number; code: string; message: string }
+    >(tenantId, async (client) => {
+      const profRes = await client.query<{ user_id: string; is_active: boolean }>(
+        `SELECT user_id, is_active FROM provider_profiles WHERE user_id = $1 AND tenant_id = $2 FOR UPDATE`,
+        [techId, tenantId]
+      );
+      if (profRes.rows.length === 0) {
+        return { ok: false, status: 404, code: 'NOT_FOUND', message: 'Technician profile not found.' };
+      }
+      if (!profRes.rows[0].is_active && dutyStatus !== 'OFFLINE') {
+        return { ok: false, status: 403, code: 'PROVIDER_DEACTIVATED', message: 'Deactivated technician cannot be marked available.' };
+      }
+
+      const upsertRes = await client.query<{ duty_status: string; has_location: boolean }>(
+        `INSERT INTO provider_locations (provider_id, tenant_id, location, duty_status, last_ping_at)
+         VALUES ($1, $2, NULL, $3, NOW())
+         ON CONFLICT (provider_id) DO UPDATE SET
+           duty_status = EXCLUDED.duty_status,
+           last_ping_at = NOW()
+         RETURNING duty_status, (location IS NOT NULL) AS has_location`,
+        [techId, tenantId, dutyStatus]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (tenant_id, actor_id, actor_role, action, resource_type, resource_id, diff_payload)
+         VALUES ($1, $2, $3, 'TECHNICIAN_DUTY_STATUS_UPDATED', 'provider_locations', $4, $5)`,
+        [tenantId, request.user!.id, request.user!.role, techId, JSON.stringify({ dutyStatus })]
+      );
+
+      return {
+        ok: true,
+        dutyStatus: upsertRes.rows[0].duty_status,
+        hasLocation: upsertRes.rows[0].has_location,
+      };
+    });
+
+    if (!outcome.ok) {
+      return reply.status(outcome.status).send(errorResponse(outcome.code, outcome.message, requestId));
+    }
+
+    return reply.status(200).send(
+      successResponse({ providerId: techId, dutyStatus: outcome.dutyStatus, hasLocation: outcome.hasLocation }, requestId)
+    );
+  });
+
+  // 9. Staff / Operations Team Directory & Management
+  fastify.get('/staff', {
+    preHandler: [requirePermission('crm:technicians:manage')],
+    schema: {
+      tags: ['CRM & Team'],
+      summary: 'List tenant operations staff members',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const res = await tenantQuery(
+      `SELECT u.id, u.email, u.phone AS "phoneNumber", u.is_active AS "isActive", u.created_at AS "createdAt",
+              sp.full_name AS "fullName", sp.department, sp.assigned_territory AS "assignedTerritory",
+              sp.shift_hours AS "shiftHours", sp.avatar_url AS "avatarUrl", sp.cover_url AS "coverUrl"
+       FROM staff_profiles sp
+       JOIN users u ON u.id = sp.user_id AND u.tenant_id = sp.tenant_id
+       WHERE sp.tenant_id = $1
+       ORDER BY sp.created_at DESC`,
+      [tenantId],
+      tenantId
+    );
+    return reply.status(200).send(
+      successResponse(
+        res.rows.map((r: any) => ({
+          ...r,
+          avatarUrl: signStoredMediaUrl(r.avatarUrl, tenantId),
+          coverUrl: signStoredMediaUrl(r.coverUrl, tenantId),
+        })),
+        requestId
+      )
+    );
+  });
+
+  fastify.post('/staff', {
+    preHandler: [requirePermission('system:settings:update'), blockInDemoMode('Creating staff member')],
+    schema: {
+      tags: ['CRM & Team'],
+      summary: 'Create a tenant operations staff member account',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const parsed = z.object({
+      email: z.string().trim().email().max(250),
+      password: z.string().min(8).max(100).optional(),
+      fullName: z.string().trim().min(2).max(150),
+      phone: z.string().trim().min(5).max(40).optional(),
+      department: z.string().trim().max(120).optional(),
+      assignedTerritory: z.string().trim().max(150).optional(),
+      shiftHours: z.string().trim().max(120).optional(),
+    }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', parsed.error.issues[0]?.message || 'Invalid staff payload.', requestId));
+    }
+
+    const d = parsed.data;
+    const passwordHash = await AuthService.hashPassword(d.password || crypto.randomBytes(16).toString('hex'));
+
+    try {
+      const created = await withTenantTransaction(tenantId, async (client) => {
+        const uRes = await client.query<{ id: string; email: string; phone: string | null; created_at: Date }>(
+          `INSERT INTO users (tenant_id, email, phone, password_hash, role, is_active, is_verified)
+           VALUES ($1, $2, $3, $4, 'STAFF', TRUE, TRUE)
+           RETURNING id, email, phone, created_at`,
+          [tenantId, d.email.toLowerCase(), d.phone || null, passwordHash]
+        );
+        const u = uRes.rows[0];
+        const staffDept = d.department || 'Dispatch Operations';
+        const staffTerritory = d.assignedTerritory || 'Metro Region';
+        const staffShift = d.shiftHours || '08:00 - 17:00 UTC';
+        await client.query(
+          `INSERT INTO staff_profiles (user_id, tenant_id, full_name, department, assigned_territory, shift_hours)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [u.id, tenantId, d.fullName, staffDept, staffTerritory, staffShift]
+        );
+        await client.query(
+          `INSERT INTO audit_logs (tenant_id, actor_id, actor_role, action, resource_type, resource_id, diff_payload)
+           VALUES ($1, $2, $3, 'STAFF_CREATED', 'staff_profile', $4, $5)`,
+          [tenantId, request.user!.id, request.user!.role, u.id, JSON.stringify({ email: u.email, fullName: d.fullName, department: staffDept })]
+        );
+        return {
+          id: u.id,
+          email: u.email,
+          phoneNumber: u.phone,
+          isActive: true,
+          fullName: d.fullName,
+          department: staffDept,
+          assignedTerritory: staffTerritory,
+          shiftHours: staffShift,
+          createdAt: u.created_at,
+        };
+      });
+      return reply.status(201).send(successResponse(created, requestId));
+    } catch (err: any) {
+      if (err?.code === '23505') {
+        return reply.status(409).send(errorResponse('EMAIL_ALREADY_EXISTS', 'A user with this email already exists in this organization.', requestId));
+      }
+      throw err;
+    }
+  });
+
+  fastify.put('/staff/:id', {
+    preHandler: [requirePermission('system:settings:update'), blockInDemoMode('Updating staff member')],
+    schema: {
+      tags: ['CRM & Team'],
+      summary: 'Update a tenant operations staff member profile or active status',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const { id: staffId } = request.params as { id: string };
+    if (!z.string().uuid().safeParse(staffId).success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Valid staff UUID is required.', requestId));
+    }
+
+    const parsed = z.object({
+      fullName: z.string().trim().min(2).max(150).optional(),
+      phone: z.string().trim().min(5).max(40).nullable().optional(),
+      department: z.string().trim().max(120).nullable().optional(),
+      assignedTerritory: z.string().trim().max(150).nullable().optional(),
+      shiftHours: z.string().trim().max(120).nullable().optional(),
+      isActive: z.boolean().optional(),
+    }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', parsed.error.issues[0]?.message || 'Invalid staff update payload.', requestId));
+    }
+
+    const d = parsed.data;
+    const updated = await withTenantTransaction(tenantId, async (client) => {
+      const spRes = await client.query<{
+        full_name: string;
+        department: string | null;
+        assigned_territory: string | null;
+        shift_hours: string | null;
+      }>(
+        `UPDATE staff_profiles
+         SET full_name = COALESCE($1, full_name),
+             department = COALESCE($2, department),
+             assigned_territory = COALESCE($3, assigned_territory),
+             shift_hours = COALESCE($4, shift_hours),
+             updated_at = NOW()
+         WHERE user_id = $5 AND tenant_id = $6
+         RETURNING full_name, department, assigned_territory, shift_hours`,
+        [
+          d.fullName ?? null,
+          d.department || null,
+          d.assignedTerritory || null,
+          d.shiftHours || null,
+          staffId,
+          tenantId,
+        ]
+      );
+      if (spRes.rows.length === 0) return null;
+
+      const uRes = await client.query<{ email: string; phone: string | null; is_active: boolean }>(
+        `UPDATE users
+         SET phone = CASE WHEN $1::boolean THEN $2 ELSE phone END,
+             is_active = COALESCE($3, is_active),
+             updated_at = NOW()
+         WHERE id = $4 AND tenant_id = $5
+         RETURNING email, phone, is_active`,
+        [d.phone !== undefined, d.phone ?? null, d.isActive ?? null, staffId, tenantId]
+      );
+
+      await client.query(
+        `INSERT INTO audit_logs (tenant_id, actor_id, actor_role, action, resource_type, resource_id, diff_payload)
+         VALUES ($1, $2, $3, 'STAFF_UPDATED', 'staff_profile', $4, $5)`,
+        [tenantId, request.user!.id, request.user!.role, staffId, JSON.stringify(d)]
+      );
+
+      return {
+        id: staffId,
+        email: uRes.rows[0]?.email,
+        phoneNumber: uRes.rows[0]?.phone ?? null,
+        isActive: uRes.rows[0]?.is_active ?? true,
+        fullName: spRes.rows[0].full_name,
+        department: spRes.rows[0].department,
+        assignedTerritory: spRes.rows[0].assigned_territory,
+        shiftHours: spRes.rows[0].shift_hours,
+      };
+    });
+
+    if (!updated) {
+      return reply.status(404).send(errorResponse('NOT_FOUND', 'Staff profile not found.', requestId));
+    }
+    return reply.status(200).send(successResponse(updated, requestId));
+  });
+
+  // 10. Technician Onboarding & KYC Verification Workflow
+  fastify.get('/technicians/onboarding', {
+    schema: {
+      tags: ['CRM & Technicians'],
+      summary: 'List technician KYC/vehicle onboarding submissions (self for technician, tenant queue for Admin/Staff)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const role = request.user!.role;
+    const userId = request.user!.id;
+
+    if (role === 'CUSTOMER') {
+      return reply.status(403).send(errorResponse('FORBIDDEN', 'Customers cannot access technician onboarding.', requestId));
+    }
+
+    const q = (request.query || {}) as { status?: string };
+    const params: any[] = [tenantId];
+    let where = 'WHERE s.tenant_id = $1';
+    if (role === 'TECHNICIAN') {
+      params.push(userId);
+      where += ` AND s.user_id = $${params.length}`;
+    } else if (q.status && ['DRAFT', 'SUBMITTED', 'UNDER_REVIEW', 'APPROVED', 'REJECTED'].includes(q.status)) {
+      params.push(q.status);
+      where += ` AND s.status = $${params.length}`;
+    }
+
+    const res = await tenantQuery(
+      `SELECT s.id, s.user_id AS "providerId", p.full_name AS "providerName", u.email,
+              s.license_number AS "licenseNumber", s.government_id_number AS "nationalIdNumber",
+              s.vehicle_make_model AS "vehicleMakeModel", s.vehicle_license_plate AS "vehicleLicensePlate",
+              s.trade_category AS "tradeCategory", s.document_urls AS "documentUrls",
+              s.status, s.reviewer_notes AS "reviewerNotes",
+              s.created_at AS "submittedAt", s.reviewed_at AS "reviewedAt"
+       FROM provider_onboarding_submissions s
+       JOIN provider_profiles p ON p.user_id = s.user_id AND p.tenant_id = s.tenant_id
+       JOIN users u ON u.id = s.user_id
+       ${where}
+       ORDER BY s.created_at DESC
+       LIMIT 100`,
+      params,
+      tenantId
+    );
+
+    return reply.status(200).send(
+      successResponse(
+        res.rows.map((r: any) => ({
+          ...r,
+          documentUrls: signStoredMediaUrls(r.documentUrls, tenantId),
+        })),
+        requestId
+      )
+    );
+  });
+
+  fastify.post('/technicians/onboarding', {
+    preHandler: [blockInDemoMode('Submitting technician onboarding documents')],
+    schema: {
+      tags: ['CRM & Technicians'],
+      summary: 'Submit or update technician KYC and vehicle verification documents',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const role = request.user!.role;
+    const userId = request.user!.id;
+
+    if (role !== 'TECHNICIAN' && role !== 'ADMIN') {
+      return reply.status(403).send(errorResponse('FORBIDDEN', 'Only technicians can submit onboarding documents.', requestId));
+    }
+
+    const parsed = z.object({
+      licenseNumber: z.string().trim().min(2).max(120),
+      nationalIdNumber: z.string().trim().max(120).optional(),
+      vehicleMakeModel: z.string().trim().min(2).max(150),
+      vehicleLicensePlate: z.string().trim().min(2).max(60),
+      tradeCategory: z.string().trim().min(2).max(100),
+      documentUrls: z.array(safeMediaUrlSchema).min(1).max(10),
+    }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', parsed.error.issues[0]?.message || 'Invalid onboarding payload.', requestId));
+    }
+
+    const d = parsed.data;
+    const normalizedDocs = normalizeStoredMediaUrls(d.documentUrls);
+
+    const saved = await withTenantTransaction(tenantId, async (client) => {
+      const ins = await client.query(
+        `INSERT INTO provider_onboarding_submissions (
+          tenant_id, user_id, license_number, government_id_number,
+          vehicle_make_model, vehicle_license_plate, trade_category, document_urls, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, 'SUBMITTED')
+        ON CONFLICT (tenant_id, user_id) DO UPDATE SET
+          license_number = EXCLUDED.license_number,
+          government_id_number = EXCLUDED.government_id_number,
+          vehicle_make_model = EXCLUDED.vehicle_make_model,
+          vehicle_license_plate = EXCLUDED.vehicle_license_plate,
+          trade_category = EXCLUDED.trade_category,
+          document_urls = EXCLUDED.document_urls,
+          status = 'SUBMITTED',
+          updated_at = NOW()
+        RETURNING id, user_id AS "providerId", license_number AS "licenseNumber",
+                  government_id_number AS "nationalIdNumber", vehicle_make_model AS "vehicleMakeModel",
+                  vehicle_license_plate AS "vehicleLicensePlate", trade_category AS "tradeCategory",
+                  document_urls AS "documentUrls", status, created_at AS "submittedAt"`,
+        [tenantId, userId, d.licenseNumber, d.nationalIdNumber || null, d.vehicleMakeModel, d.vehicleLicensePlate, d.tradeCategory, JSON.stringify(normalizedDocs)]
+      );
+
+      await client.query(
+        `UPDATE provider_profiles
+         SET license_number = $1,
+             vehicle_make_model = $2,
+             vehicle_license_plate = $3,
+             trade_category = $4,
+             updated_at = NOW()
+         WHERE user_id = $5 AND tenant_id = $6`,
+        [d.licenseNumber, d.vehicleMakeModel, d.vehicleLicensePlate, d.tradeCategory, userId, tenantId]
+      );
+
+      return ins.rows[0];
+    });
+
+    return reply.status(201).send(
+      successResponse({
+        ...saved,
+        documentUrls: signStoredMediaUrls(saved.documentUrls, tenantId),
+      }, requestId)
+    );
+  });
+
+  fastify.patch('/technicians/onboarding/:id/review', {
+    preHandler: [requirePermission('crm:technicians:manage'), blockInDemoMode('Reviewing technician onboarding')],
+    schema: {
+      tags: ['CRM & Technicians'],
+      summary: 'Approve, reject, or move technician onboarding documents under review',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const { id: subId } = request.params as { id: string };
+    if (!z.string().uuid().safeParse(subId).success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Valid onboarding submission UUID is required.', requestId));
+    }
+
+    const parsed = z.object({
+      status: z.enum(['UNDER_REVIEW', 'APPROVED', 'REJECTED']),
+      reviewerNotes: z.string().trim().max(1000).optional(),
+    }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Invalid review status payload.', requestId));
+    }
+
+    const updated = await withTenantTransaction(tenantId, async (client) => {
+      const upd = await client.query<{
+        id: string;
+        user_id: string;
+        status: string;
+        reviewer_notes: string | null;
+        reviewed_at: Date;
+      }>(
+        `UPDATE provider_onboarding_submissions
+         SET status = $1,
+             reviewer_notes = $2,
+             reviewed_by = $3,
+             reviewed_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $4 AND tenant_id = $5
+         RETURNING id, user_id, status, reviewer_notes, reviewed_at`,
+        [parsed.data.status, parsed.data.reviewerNotes || null, request.user!.id, subId, tenantId]
+      );
+      if (upd.rows.length === 0) return null;
+      const row = upd.rows[0];
+
+      if (parsed.data.status === 'APPROVED') {
+        await client.query(
+          `UPDATE provider_profiles
+           SET is_verified = TRUE, verified_at = COALESCE(verified_at, NOW()), updated_at = NOW()
+           WHERE user_id = $1 AND tenant_id = $2`,
+          [row.user_id, tenantId]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO audit_logs (tenant_id, actor_id, actor_role, action, resource_type, resource_id, diff_payload)
+         VALUES ($1, $2, $3, 'TECHNICIAN_ONBOARDING_REVIEWED', 'provider_onboarding_submissions', $4, $5)`,
+        [tenantId, request.user!.id, request.user!.role, subId, JSON.stringify({ status: row.status, providerId: row.user_id })]
+      );
+
+      return {
+        id: row.id,
+        providerId: row.user_id,
+        status: row.status,
+        reviewerNotes: row.reviewer_notes,
+        reviewedAt: row.reviewed_at,
+      };
+    });
+
+    if (!updated) {
+      return reply.status(404).send(errorResponse('NOT_FOUND', 'Onboarding submission not found.', requestId));
+    }
+    return reply.status(200).send(successResponse(updated, requestId));
   });
 }

@@ -1,5 +1,11 @@
 package com.serviceos.app.core.navigation
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.*
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -85,7 +91,23 @@ fun ServiceOSNavHost(
 
     NavHost(
         navController = navController,
-        startDestination = resolvedDestination
+        startDestination = resolvedDestination,
+        enterTransition = {
+            fadeIn(animationSpec = tween(240)) +
+                slideInHorizontally(animationSpec = tween(260, easing = FastOutSlowInEasing)) { it / 12 }
+        },
+        exitTransition = {
+            fadeOut(animationSpec = tween(180)) +
+                slideOutHorizontally(animationSpec = tween(220, easing = FastOutSlowInEasing)) { -it / 16 }
+        },
+        popEnterTransition = {
+            fadeIn(animationSpec = tween(240)) +
+                slideInHorizontally(animationSpec = tween(260, easing = FastOutSlowInEasing)) { -it / 12 }
+        },
+        popExitTransition = {
+            fadeOut(animationSpec = tween(180)) +
+                slideOutHorizontally(animationSpec = tween(220, easing = FastOutSlowInEasing)) { it / 16 }
+        }
     ) {
         composable(Screen.Splash.route) {
             SplashScreen(
@@ -244,6 +266,7 @@ fun ServiceOSNavHost(
             CustomerProfileScreen(
                 onBack = { navController.popBackStack() },
                 onThemeToggle = onThemeToggle,
+                onOpenUtilities = { navController.navigate(Screen.CommonUtilities.route) },
                 onLogout = {
                     ApiClient.clearTokens()
                     navController.navigate(Screen.Login.route) {

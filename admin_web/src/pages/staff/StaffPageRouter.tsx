@@ -1,6 +1,8 @@
 import React, { Suspense, lazy } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { Loader2 } from 'lucide-react';
 import { useAdmin } from '../../context/adminContextCore';
+import { EASE_CINEMATIC } from '../../components/common/motionTokens';
 
 const StaffDashboard = lazy(() => import('./StaffDashboard').then((m) => ({ default: m.StaffDashboard })));
 const StaffOrderIntake = lazy(() => import('./StaffOrderIntake').then((m) => ({ default: m.StaffOrderIntake })));
@@ -47,5 +49,17 @@ export const StaffPageRouter: React.FC = () => {
     }
   };
 
-  return <Suspense fallback={<StaffLoadingFallback />}>{renderStaffPage()}</Suspense>;
+  return (
+    <AnimatePresence mode="wait">
+      <motion.div
+        key={currentStaffPageId}
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.24, ease: EASE_CINEMATIC }}
+      >
+        <Suspense fallback={<StaffLoadingFallback />}>{renderStaffPage()}</Suspense>
+      </motion.div>
+    </AnimatePresence>
+  );
 };

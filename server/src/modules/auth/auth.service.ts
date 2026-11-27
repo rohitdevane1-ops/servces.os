@@ -45,13 +45,14 @@ export class AuthService {
     return bcrypt.compare(password, hash);
   }
 
-  static generateAccessToken(user: { id?: string; sub?: string; role: string; tenantId: string; email: string }): string {
+  static generateAccessToken(user: { id?: string; sub?: string; role: string; tenantId: string; email: string; sessionId?: string }): string {
     return jwt.sign(
       {
         sub: user.id || user.sub,
         role: user.role,
         tenantId: user.tenantId,
         email: user.email,
+        ...(user.sessionId ? { sid: user.sessionId } : {}),
         tokenType: 'ACCESS_TOKEN',
       },
       env.JWT_ACCESS_SECRET,
@@ -81,7 +82,7 @@ export class AuthService {
     return crypto.createHash('sha256').update(token).digest('hex');
   }
 
-  static verifyAccessToken(token: string): { sub: string; role: string; tenantId: string; email: string; tokenType?: string } {
+  static verifyAccessToken(token: string): { sub: string; role: string; tenantId: string; email: string; sid?: string; tokenType?: string } {
     const payload = jwt.verify(token, env.JWT_ACCESS_SECRET) as any;
     if (payload.tokenType === 'MFA_CHALLENGE') {
       throw new Error('MFA_CHALLENGE_TOKEN_NOT_AUTHORIZED');
@@ -161,25 +162,45 @@ export class AuthService {
     return { rawCodes, hashedCodes };
   }
 
-  static async createSession(userId: string, tenantId: string, ipAddress?: string, userAgent?: string): Promise<string> {
+  static async createSessionWithMeta(userId: string, tenantId: string, ipAddress?: string, userAgent?: string): Promise<{
+    refreshToken: string;
+    sessionId: string;
+    sessionCreatedAt: string;
+  }> {
     const rawRefreshToken = this.generateRefreshToken();
     const tokenHash = this.hashToken(rawRefreshToken);
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + env.JWT_REFRESH_EXPIRY_DAYS);
 
-    await tenantQuery(
+    const res = await tenantQuery<{ id: string; created_at: string }>(
       `INSERT INTO user_sessions (user_id, tenant_id, refresh_token_hash, ip_address, user_agent, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, created_at`,
       [userId, tenantId, tokenHash, ipAddress || null, userAgent || null, expiresAt],
       tenantId
     );
 
-    return rawRefreshToken;
+    return {
+      refreshToken: rawRefreshToken,
+      sessionId: res.rows[0].id,
+      sessionCreatedAt: new Date(res.rows[0].created_at).toISOString(),
+    };
+  }
+
+  static async createSession(userId: string, tenantId: string, ipAddress?: string, userAgent?: string): Promise<string> {
+    const meta = await this.createSessionWithMeta(userId, tenantId, ipAddress, userAgent);
+    return meta.refreshToken;
   }
 
   static async rotateSession(rawRefreshToken: string, ipAddress?: string, userAgent?: string, expectedTenantId?: string): Promise<{
+    locked?: false;
     accessToken: string;
     newRefreshToken: string;
+    sessionId: string;
+    sessionCreatedAt: string;
+    user: { id: string; role: string; tenantId: string; email: string; mfaEnabled: boolean };
+  } | {
+    locked: true;
     user: { id: string; role: string; tenantId: string; email: string };
   } | null> {
     const tokenHash = this.hashToken(rawRefreshToken);
@@ -197,10 +218,12 @@ export class AuthService {
 
     return withTenantTransaction(tenantId, async (client) => {
       const sessionRes = await client.query(
-        `SELECT s.id, s.user_id, s.tenant_id, s.expires_at, s.revoked_at,
-                u.email, u.role, u.is_active
+        `SELECT s.id, s.user_id, s.tenant_id, s.expires_at, s.revoked_at, s.locked_at, s.created_at,
+                u.email, u.role, u.is_active,
+                COALESCE(mfa.is_enabled, FALSE) AS mfa_enabled
          FROM user_sessions s
          JOIN users u ON u.id = s.user_id
+         LEFT JOIN user_mfa_credentials mfa ON mfa.user_id = u.id
          WHERE s.refresh_token_hash = $1
          FOR UPDATE OF s`,
         [tokenHash]
@@ -230,6 +253,19 @@ export class AuthService {
         return null;
       }
 
+      // Server-backed lock screen: refuse silent refresh until password reauthentication unlocks
+      if (session.locked_at) {
+        return {
+          locked: true as const,
+          user: {
+            id: session.user_id,
+            role: session.role,
+            tenantId: session.tenant_id,
+            email: session.email,
+          },
+        };
+      }
+
       // Revoke old session immediately
       await client.query(
         'UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1',
@@ -241,25 +277,32 @@ export class AuthService {
         role: session.role,
         tenantId: session.tenant_id,
         email: session.email,
+        mfaEnabled: Boolean(session.mfa_enabled),
       };
 
-      // Generate new pair within the locked transaction
-      const newAccessToken = this.generateAccessToken(user);
       const rawNewRefreshToken = this.generateRefreshToken();
       const newTokenHash = this.hashToken(rawNewRefreshToken);
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + env.JWT_REFRESH_EXPIRY_DAYS);
 
-      await client.query(
+      const newSessRes = await client.query<{ id: string; created_at: string }>(
         `INSERT INTO user_sessions (user_id, tenant_id, refresh_token_hash, ip_address, user_agent, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, created_at`,
         [user.id, user.tenantId, newTokenHash, ipAddress || null, userAgent || null, expiresAt]
       );
+
+      const newAccessToken = this.generateAccessToken({
+        ...user,
+        sessionId: newSessRes.rows[0].id,
+      });
 
       return {
         accessToken: newAccessToken,
         newRefreshToken: rawNewRefreshToken,
-        user
+        sessionId: newSessRes.rows[0].id,
+        sessionCreatedAt: new Date(newSessRes.rows[0].created_at).toISOString(),
+        user,
       };
     });
   }

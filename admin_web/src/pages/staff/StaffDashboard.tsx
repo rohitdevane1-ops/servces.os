@@ -371,7 +371,7 @@ export const StaffDashboard: React.FC = () => {
                   <div className="min-w-0">
                     <div className="text-xs font-bold text-slate-900 truncate">{tech.name}</div>
                     <div className="text-[10px] text-slate-500 font-medium">
-                      {tech.specialization} â€¢ â˜… {tech.rating} ({tech.jobsCompleted} jobs)
+                      {tech.specialization} • ★ {tech.rating} ({tech.jobsCompleted} jobs)
                     </div>
                   </div>
                 </div>

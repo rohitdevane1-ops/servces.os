@@ -59,7 +59,7 @@ export const Page32TicketDetailsConversation: React.FC = () => {
           onClick={() => navigateToPage(31)}
           className="px-4 py-2 bg-slate-900 text-white font-bold text-xs rounded-xl cursor-pointer"
         >
-          â† Back to Ticket Dashboard
+          ← Back to Ticket Dashboard
         </button>
       </div>
     );
@@ -115,7 +115,7 @@ export const Page32TicketDetailsConversation: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              {activeTicketSummary.subject} â€¢ Customer: {activeTicketSummary.customerName}
+              {activeTicketSummary.subject} • Customer: {activeTicketSummary.customerName}
             </p>
           </div>
         </div>
@@ -128,7 +128,7 @@ export const Page32TicketDetailsConversation: React.FC = () => {
           >
             {tickets.map((t) => (
               <option key={t.id} value={t.id}>
-                #{t.ticketNo} â€” {t.customerName}
+                #{t.ticketNo} — {t.customerName}
               </option>
             ))}
           </select>
@@ -172,7 +172,7 @@ export const Page32TicketDetailsConversation: React.FC = () => {
                 return (
                   <div key={msg.id} className={`flex flex-col ${isSupport ? 'items-end' : 'items-start'}`}>
                     <div className="text-[11px] font-bold text-slate-400 mb-1 px-1">
-                      {msg.senderEmail} ({msg.senderRole}) â€¢{' '}
+                      {msg.senderEmail} ({msg.senderRole}) •{' '}
                       {msg.createdAt ? new Date(msg.createdAt).toLocaleString() : ''}
                     </div>
                     <div

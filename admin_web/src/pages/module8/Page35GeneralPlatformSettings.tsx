@@ -160,7 +160,7 @@ export const Page35GeneralPlatformSettings: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-emerald-200/90 mt-0.5">
-              {userProfile.title} â€¢ {userProfile.email}
+              {userProfile.title} • {userProfile.email}
             </p>
           </div>
         </div>
@@ -304,10 +304,10 @@ export const Page35GeneralPlatformSettings: React.FC = () => {
                   const symMap: Record<string, string> = {
                     AED: 'AED ',
                     USD: '$',
-                    EUR: 'â‚¬',
-                    GBP: 'Â£',
+                    EUR: '€',
+                    GBP: '£',
                     SAR: 'SAR ',
-                    INR: 'â‚¹',
+                    INR: '₹',
                   };
                   setCurrencySymbol(symMap[code] || `${code} `);
                 }}

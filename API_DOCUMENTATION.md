@@ -96,12 +96,14 @@ Content-Type: application/json
 | `POST` | `/mfa/setup` | Generate encrypted pending TOTP secret & `otpauth://` URI | Authenticated |
 | `POST` | `/mfa/confirm` | Confirm pending TOTP code, activate MFA, and issue 8 one-time recovery codes | Authenticated |
 | `POST` | `/mfa/disable` | Disable MFA after verifying password + current TOTP/backup code | Authenticated (Blocked in Demo Mode) |
-| `POST` | `/reauthenticate` | Verify current password for session unlock (`SessionLockModal`) | Authenticated |
+| `POST` | `/reauthenticate` | Verify current password for session unlock (`SessionLockModal`) & restore access token | Authenticated / Refresh Cookie |
+| `POST` | `/lock` | Mark active session locked server-side (`user_sessions.locked_at`) and require `reauthenticate` | Authenticated |
 | `POST` | `/change-password` | Verify current password, update hash, and revoke other sessions | Authenticated (Blocked in Demo Mode) |
 | `POST` | `/forgot-password` | Generate SHA-256 password reset token (anti-enumeration 200 response) | Public |
 | `POST` | `/reset-password` | Consume one-time reset token, update password, and revoke all user sessions | Public (Blocked in Demo Mode) |
 | `POST` | `/logout` | Revoke active refresh session | Authenticated |
 | `GET` | `/me` | Get authenticated user identity, profile, and tenant metadata | Authenticated |
+| `PUT` | `/me` | Update authenticated user profile fields (`fullName`, `phone`, `department`, `assignedTerritory`, `avatarUrl`) | Authenticated (Blocked in Demo Mode) |
 
 ### Turnkey Installer (`/api/v1/installer`)
 
@@ -138,6 +140,8 @@ Content-Type: application/json
 | `POST` | `/bookings/:id/cancel` | Cancel booking (blocks customer self-cancel once `ON_SITE`) and void/refund hold | Customer / Admin / Staff |
 | `POST` | `/bookings/:id/verify-arrival` | Verify 4-digit Safety PIN (5-attempt lockout) + 500m PostGIS arrival geofence | Provider (Assigned) |
 | `POST` | `/bookings/:id/complete` | Validate photo proof URLs, capture payment, post pre-tax + `2030` VAT double-entry ledger | Provider (Assigned) / Admin / Staff |
+| `GET` | `/bookings/:id/messages` | List two-way messages and signed media attachments on a booking thread | Customer / Provider / Admin / Staff |
+| `POST` | `/bookings/:id/messages` | Post message and optional attachments to booking communication thread | Customer / Provider / Admin / Staff |
 | `GET` | `/dispatch/radar` | PostGIS `ST_DWithin` spatial radar search for online technicians | Authenticated |
 | `POST` | `/dispatch/broadcast` | Trigger automated or manual dispatch broadcast wave for a booking (alias for `/dispatch/broadcasts`) | Admin / Staff |
 | `GET` | `/dispatch/broadcasts/pending` | Fetch pending 60-second timed broadcast offers for logged-in technician | Provider |
@@ -163,7 +167,14 @@ Content-Type: application/json
 | `GET` | `/technicians/me/earnings` | Authenticated technician net earnings summary, recent completed jobs & payouts | Provider |
 | `PATCH` | `/technicians/:id/verify` | Toggle technician compliance verification badge | Admin |
 | `POST` | `/technicians/location-ping` | Ingest live GPS coordinates into PostGIS `provider_locations` | Provider |
-| `PUT` | `/technicians/duty-status` | UPSERT technician duty status (`ONLINE`, `OFFLINE`, `ON_JOB`) | Provider / Admin / Staff |
+| `PUT` | `/technicians/duty-status` | UPSERT authenticated technician duty status (`ONLINE`, `OFFLINE`, `ON_JOB`) | Provider / Admin / Staff |
+| `PUT` | `/technicians/:id/duty-status` | Dispatcher/Admin updates target technician duty status (`ONLINE`, `OFFLINE`, `ON_JOB`, `EN_ROUTE`) | Admin / Staff (Blocked in Demo Mode) |
+| `GET` | `/technicians/onboarding` | List technician KYC/vehicle onboarding packets (self or tenant queue) | Technician / Admin / Staff |
+| `POST` | `/technicians/onboarding` | Submit or update technician KYC, license, vehicle, and document proofs | Technician / Admin (Blocked in Demo Mode) |
+| `PATCH` | `/technicians/onboarding/:id/review` | Approve, reject, or move technician KYC packet `UNDER_REVIEW` | Admin / Staff (Blocked in Demo Mode) |
+| `GET` | `/staff` | List tenant operations staff directory | Admin / Staff |
+| `POST` | `/staff` | Provision new tenant operations staff account and profile | Admin (Blocked in Demo Mode) |
+| `PUT` | `/staff/:id` | Update staff profile, department, territory, shift hours, or active flag | Admin (Blocked in Demo Mode) |
 
 ### Finances, Double-Entry Ledger & Refunds (`/api/v1/finances`)
 
@@ -178,6 +189,8 @@ Content-Type: application/json
 | `GET` | `/payouts` | List provider payout transfers and available unpaid balances | Admin / Staff |
 | `POST` | `/payouts` | Initiate durable 2-phase provider payout with `Idempotency-Key` and request fingerprint | Admin |
 | `POST` | `/payouts/:id/reconcile` | Reconcile processing payout transfer status with payment gateway | Admin |
+| `GET` | `/bonuses` | List technician performance & incentive bonuses (`provider_bonuses`) | Admin / Staff / Provider |
+| `POST` | `/bonuses` | Award idempotent technician bonus crediting Technician Payable (`2020`) & Commission/Incentive (`5020`) | Admin (Blocked in Demo Mode) |
 | `GET` | `/refunds` | List customer payment refunds | Admin / Staff |
 | `POST` | `/refunds` | Execute full or partial refund with proportional `2030`/`4010`/`2020` ledger reversal | Admin / Staff |
 | `POST` | `/refunds/:id/reconcile` | Reconcile stuck `PROCESSING` refund against payment gateway | Admin |
@@ -193,6 +206,10 @@ Content-Type: application/json
 | `POST` | `/tickets/:id/messages` | Post reply message to ticket thread | Authenticated |
 | `PATCH` | `/tickets/:id/status` | Update ticket status or assigned staff agent | Admin / Staff |
 | `POST` | `/sms/send` | Dispatch direct SMS via tenant Twilio secret (with `notification_logs` audit trail) | Admin / Staff |
+| `GET` | `/sms/status` | Get masked Twilio gateway status and recent SMS delivery logs | Admin / Staff |
+| `GET` | `/communications/:customerId` | Unified customer timeline across SMS notifications, tickets, and booking chat | Admin / Staff |
+| `GET` | `/daily-reports` | List staff daily shift handover reports (`staff_daily_reports`) | Admin / Staff |
+| `POST` | `/daily-reports` | Submit or update daily shift handover summary & blockers | Admin / Staff (Blocked in Demo Mode) |
 | `GET` | `/incidents` | List critical operational incidents (`support_tickets` with `category='INCIDENT'`) | Admin / Staff |
 | `POST` | `/incidents` | Log new operational incident | Admin / Staff |
 | `PATCH` | `/incidents/:id/resolve` | Resolve critical operational incident and append timeline note | Admin / Staff |

@@ -2,25 +2,35 @@ import Stripe from 'stripe';
 import { env } from '../config/env.js';
 
 let testStripeOverride: Stripe | null = null;
-let cachedStripeClient: Stripe | null = null;
-let cachedStripeKey: string | null = null;
+const MAX_STRIPE_CLIENTS = 64;
+const cachedStripeClients = new Map<string, Stripe>();
 
 /** Override the Stripe SDK client in tests. Pass null to restore default behavior. */
 export function setStripeForTest(mock: Stripe | null): void {
   testStripeOverride = mock;
 }
 
-/** Return the active Stripe SDK client (cached singleton per key, or test override). */
+/** Return the active Stripe SDK client (LRU-bounded per key, or test override). */
 export function getStripe(secretKey?: string): Stripe {
   if (testStripeOverride) {
     return testStripeOverride;
   }
   const key = secretKey ?? env.STRIPE_SECRET_KEY ?? '';
-  if (!cachedStripeClient || cachedStripeKey !== key) {
-    cachedStripeClient = new Stripe(key);
-    cachedStripeKey = key;
+  const existing = cachedStripeClients.get(key);
+  if (existing) {
+    cachedStripeClients.delete(key);
+    cachedStripeClients.set(key, existing);
+    return existing;
   }
-  return cachedStripeClient;
+  if (cachedStripeClients.size >= MAX_STRIPE_CLIENTS) {
+    const oldestKey = cachedStripeClients.keys().next().value;
+    if (oldestKey !== undefined) {
+      cachedStripeClients.delete(oldestKey);
+    }
+  }
+  const client = new Stripe(key);
+  cachedStripeClients.set(key, client);
+  return client;
 }
 
 /** True when a Stripe secret key (env or tenant override) is configured or a test Stripe mock is active. */

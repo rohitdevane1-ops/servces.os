@@ -1,10 +1,13 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useRef } from 'react';
+import { MotionConfig } from 'motion/react';
 import { Loader2 } from 'lucide-react';
 import { AdminProvider } from './context/AdminContext';
 import { useAdmin } from './context/adminContextCore';
+import { ThemeProvider } from './context/ThemeContext';
 import { LocaleProvider } from './i18n/LocaleContext';
 import { useLocale } from './i18n/localeCore';
 import { ToastContainer } from './components/common/ToastContainer';
+import { ScrollProgressBar } from './components/common/MotionPrimitives';
 
 const LoginPage = lazy(() => import('./pages/auth/LoginPage').then((m) => ({ default: m.LoginPage })));
 const NavigationSidebar = lazy(() =>
@@ -88,6 +91,7 @@ const AppContent: React.FC = () => {
   } = useAdmin();
 
   const { t, dir } = useLocale();
+  const mainScrollRef = useRef<HTMLElement | null>(null);
 
   const demoBanner = isDemoMode ? (
     <div
@@ -120,7 +124,7 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <div dir={dir} className="flex flex-col h-screen w-screen overflow-hidden bg-[#F4F7FB] text-slate-800 font-sans antialiased">
+    <div dir={dir} className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--so-canvas)] text-[var(--so-text)] font-sans antialiased transition-colors duration-300">
       {demoBanner}
       <div className="flex flex-1 min-h-0 w-full overflow-hidden">
         <Suspense fallback={<div className="w-20 bg-[#0C3832] shrink-0" />}>
@@ -132,13 +136,15 @@ const AppContent: React.FC = () => {
             <TopNavbar />
           </Suspense>
 
-          <div className="px-4 sm:px-6 lg:px-8 pt-4 pb-0 bg-[#F4F7FB]">
+          <ScrollProgressBar containerRef={mainScrollRef} />
+
+          <div className="px-4 sm:px-6 lg:px-8 pt-4 pb-0 bg-[var(--so-canvas)] transition-colors duration-300">
             <Suspense fallback={null}>
               <ModuleSubnav />
             </Suspense>
           </div>
 
-          <main className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 pb-8 bg-[#F4F7FB]">
+          <main ref={mainScrollRef} className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 pb-8 bg-[var(--so-canvas)] transition-colors duration-300">
             <div className="max-w-7xl mx-auto">
               <Suspense fallback={<FullScreenLoader />}>
                 {currentRole === 'ADMIN' ? <PageRouter /> : <StaffPageRouter />}
@@ -233,11 +239,15 @@ class AppErrorBoundary extends React.Component<
 export const App: React.FC = () => {
   return (
     <AppErrorBoundary>
-      <LocaleProvider>
-        <AdminProvider>
-          <AppContent />
-        </AdminProvider>
-      </LocaleProvider>
+      <MotionConfig reducedMotion="user">
+        <ThemeProvider>
+          <LocaleProvider>
+            <AdminProvider>
+              <AppContent />
+            </AdminProvider>
+          </LocaleProvider>
+        </ThemeProvider>
+      </MotionConfig>
     </AppErrorBoundary>
   );
 };

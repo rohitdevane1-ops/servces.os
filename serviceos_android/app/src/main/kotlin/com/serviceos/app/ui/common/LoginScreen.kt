@@ -1,12 +1,15 @@
 package com.serviceos.app.ui.common
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,7 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.serviceos.app.BuildConfig
 import com.serviceos.app.data.network.ApiClient
 import kotlinx.coroutines.launch
 
@@ -28,6 +31,9 @@ fun LoginScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
 
+    var isRegisterMode by remember { mutableStateOf(false) }
+    var fullName by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var totpCode by remember { mutableStateOf("") }
@@ -35,11 +41,11 @@ fun LoginScreen(
     var mfaSessionToken by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
-    var isDemoMode by remember { mutableStateOf(ApiClient.isDemoMode) }
+    var isDemoMode by remember { mutableStateOf(ApiClient.isDemoMode && BuildConfig.DEMO_MODE) }
 
     LaunchedEffect(Unit) {
         ApiClient.fetchSystemConfig().onSuccess {
-            isDemoMode = ApiClient.isDemoMode
+            isDemoMode = ApiClient.isDemoMode && BuildConfig.DEMO_MODE
         }
     }
 
@@ -88,7 +94,6 @@ fun LoginScreen(
                     }
                 }
 
-                // If access token was saved, advance with authoritative role
                 if (!ApiClient.getAccessToken().isNullOrBlank()) {
                     val role = ApiClient.getUserRole() ?: "CUSTOMER"
                     onLoginSuccess(role)
@@ -97,6 +102,47 @@ fun LoginScreen(
                 }
             }.onFailure { err ->
                 errorMessage = err.message ?: "Authentication failed. Please verify your credentials."
+            }
+        }
+    }
+
+    fun handleRegister() {
+        val trimmedName = fullName.trim()
+        val trimmedEmail = email.trim()
+        if (trimmedName.length < 2) {
+            errorMessage = "Please enter your full name."
+            return
+        }
+        if (trimmedEmail.isBlank() || !trimmedEmail.contains("@")) {
+            errorMessage = "Please enter a valid email address."
+            return
+        }
+        if (password.length < 8) {
+            errorMessage = "Password must be at least 8 characters."
+            return
+        }
+
+        errorMessage = null
+        isLoading = true
+
+        coroutineScope.launch {
+            val result = ApiClient.register(
+                email = trimmedEmail,
+                password = password,
+                fullName = trimmedName,
+                phone = phone.trim().ifBlank { null }
+            )
+            isLoading = false
+            result.onSuccess {
+                if (!ApiClient.getAccessToken().isNullOrBlank()) {
+                    val role = ApiClient.getUserRole() ?: "CUSTOMER"
+                    onLoginSuccess(role)
+                } else {
+                    errorMessage = "Registration succeeded, please sign in."
+                    isRegisterMode = false
+                }
+            }.onFailure { err ->
+                errorMessage = err.message ?: "Unable to create account."
             }
         }
     }
@@ -163,11 +209,12 @@ fun LoginScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(24.dp),
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Spacer(modifier = Modifier.height(20.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Spacer(modifier = Modifier.height(12.dp))
                 Surface(
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                     shape = RoundedCornerShape(16.dp),
@@ -183,18 +230,49 @@ fun LoginScreen(
                 }
 
                 Text(
-                    text = if (step == 1) "Sign In to ServiceOS" else "Two-Factor Verification",
+                    text = when {
+                        step == 2 -> "Two-Factor Verification"
+                        isRegisterMode -> "Create ServiceOS Account"
+                        else -> "Sign In to ServiceOS"
+                    },
                     style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black)
                 )
 
                 Text(
-                    text = if (step == 1)
-                        "Enter your credentials to access your enterprise services account."
-                    else
-                        "Enter the 6-digit verification code from your authenticator app.",
+                    text = when {
+                        step == 2 -> "Enter the 6-digit verification code from your authenticator app."
+                        isRegisterMode -> "Register a new Customer account. Technicians sign in with credentials provisioned by Operations."
+                        else -> "Enter your credentials to access your enterprise services account."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
+
+                if (step == 1) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = !isRegisterMode,
+                            onClick = {
+                                isRegisterMode = false
+                                errorMessage = null
+                            },
+                            label = { Text("Sign In") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = isRegisterMode,
+                            onClick = {
+                                isRegisterMode = true
+                                errorMessage = null
+                            },
+                            label = { Text("Create Account") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
 
                 if (!errorMessage.isNullOrBlank()) {
                     Surface(
@@ -212,6 +290,28 @@ fun LoginScreen(
                 }
 
                 if (step == 1) {
+                    if (isRegisterMode) {
+                        OutlinedTextField(
+                            value = fullName,
+                            onValueChange = { fullName = it },
+                            label = { Text("Full Name") },
+                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = phone,
+                            onValueChange = { phone = it },
+                            label = { Text("Phone Number (Optional)") },
+                            leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
                     OutlinedTextField(
                         value = email,
                         onValueChange = { email = it },
@@ -258,10 +358,16 @@ fun LoginScreen(
                 }
             }
 
+            Spacer(modifier = Modifier.height(20.dp))
+
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
                     onClick = {
-                        if (step == 1) handleLogin() else handleVerifyMfa()
+                        when {
+                            step == 2 -> handleVerifyMfa()
+                            isRegisterMode -> handleRegister()
+                            else -> handleLogin()
+                        }
                     },
                     enabled = !isLoading,
                     colors = ButtonDefaults.buttonColors(
@@ -281,13 +387,17 @@ fun LoginScreen(
                         )
                     } else {
                         Text(
-                            text = if (step == 1) "Sign In →" else "Verify & Continue →",
+                            text = when {
+                                step == 2 -> "Verify & Continue →"
+                                isRegisterMode -> "Create Account →"
+                                else -> "Sign In →"
+                            },
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                     }
                 }
 
-                if (step == 1) {
+                if (step == 1 && !isRegisterMode) {
                     if (isDemoMode) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),

@@ -32,7 +32,7 @@ export const SessionLockModal: React.FC = () => {
       maxWidthClass="max-w-md"
       backdropClassName="bg-slate-950/90 backdrop-blur-md"
       containerClassName="bg-white rounded-3xl shadow-2xl border border-slate-200/90 w-full p-8 text-center space-y-6"
-      ariaLabel="Session Locked â€” Server Re-authentication Required"
+      ariaLabel="Session Locked — Server Re-authentication Required"
     >
       <div className="w-16 h-16 rounded-2xl bg-[#0C3832] text-emerald-400 flex items-center justify-center mx-auto shadow-lg">
         <Lock className="w-8 h-8" />
@@ -40,7 +40,7 @@ export const SessionLockModal: React.FC = () => {
 
       <div>
         <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-800 border border-amber-200 uppercase tracking-wider">
-          Session Locked â€¢ Server Verification Required
+          Session Locked • Server Verification Required
         </span>
         <h2 className="text-xl font-extrabold text-slate-900 mt-2">Console Temporarily Locked</h2>
         <p className="text-xs text-slate-500 mt-1">

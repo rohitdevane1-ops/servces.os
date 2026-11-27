@@ -6,9 +6,11 @@ import { requirePermission } from '../../middleware/rbac.js';
 import { blockInDemoMode } from '../../middleware/demoGuard.js';
 import { safeMediaUrlSchema } from '../../utils/urlValidator.js';
 import { toUnicodeSlug } from '../../utils/slug.js';
+import { normalizeStoredMediaUrl, signStoredMediaUrl } from '../../utils/mediaSigning.js';
 
 const createCategorySchema = z.object({
   name: z.string().trim().min(2).max(150),
+  description: z.string().trim().max(500).nullable().optional(),
   iconName: z.string().trim().min(1).max(50).default('wrench'),
   bannerUrl: safeMediaUrlSchema.nullable().optional(),
   displayOrder: z.number().int().default(0),
@@ -16,6 +18,7 @@ const createCategorySchema = z.object({
 
 const updateCategorySchema = z.object({
   name: z.string().trim().min(2).max(150).optional(),
+  description: z.string().trim().max(500).nullable().optional(),
   iconName: z.string().trim().min(1).max(50).optional(),
   bannerUrl: safeMediaUrlSchema.nullable().optional(),
   displayOrder: z.number().int().optional(),
@@ -35,6 +38,9 @@ const createServiceSchema = z.object({
   basePriceCents: z.number().int().min(0),
   estimatedDurationMinutes: z.number().int().min(15).default(60),
   isPopular: z.boolean().default(false),
+  checklistItems: z.array(z.string().trim().min(1).max(200)).max(50).default([]),
+  isSurgeEligible: z.boolean().default(true),
+  requiresPin: z.boolean().default(true),
   tiers: z.array(pricingTierSchema).optional(),
 });
 
@@ -46,6 +52,9 @@ const updateServiceSchema = z.object({
   estimatedDurationMinutes: z.number().int().min(15).optional(),
   isPopular: z.boolean().optional(),
   isActive: z.boolean().optional(),
+  checklistItems: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
+  isSurgeEligible: z.boolean().optional(),
+  requiresPin: z.boolean().optional(),
   tiers: z.array(pricingTierSchema).optional(),
 });
 
@@ -61,7 +70,7 @@ export async function serviceRoutes(fastify: FastifyInstance) {
     const tenantId = request.tenantId;
 
     const res = await tenantQuery(
-      `SELECT c.id, c.name, c.slug, c.icon_name, c.banner_url, c.display_order,
+      `SELECT c.id, c.name, c.slug, c.description, c.icon_name, c.banner_url, c.display_order,
               COUNT(s.id)::int as service_count
        FROM service_categories c
        LEFT JOIN services s ON s.category_id = c.id AND s.is_active = TRUE
@@ -73,13 +82,19 @@ export async function serviceRoutes(fastify: FastifyInstance) {
     );
 
     return reply.status(200).send(
-      successResponse(res.rows, requestId)
+      successResponse(
+        res.rows.map((r: any) => ({
+          ...r,
+          banner_url: signStoredMediaUrl(r.banner_url, tenantId),
+        })),
+        requestId
+      )
     );
   });
 
   // 2. Create Service Category (Admin)
   fastify.post('/categories', {
-    preHandler: [requirePermission('system:settings:update')],
+    preHandler: [requirePermission('system:settings:update'), blockInDemoMode('Creating service categories')],
     schema: {
       tags: ['Services & Catalog'],
       summary: 'Create a new service category',
@@ -95,17 +110,18 @@ export async function serviceRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { name, iconName, bannerUrl, displayOrder } = parsed.data;
+    const { name, description, iconName, bannerUrl, displayOrder } = parsed.data;
     const slug = toUnicodeSlug(name, 'cat');
     const tenantId = request.tenantId;
+    const normalizedBanner = normalizeStoredMediaUrl(bannerUrl);
 
     let res;
     try {
       res = await tenantQuery(
-        `INSERT INTO service_categories (tenant_id, name, slug, icon_name, banner_url, display_order)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO service_categories (tenant_id, name, slug, description, icon_name, banner_url, display_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [tenantId, name, slug, iconName, bannerUrl || null, displayOrder],
+        [tenantId, name, slug, description ?? null, iconName, normalizedBanner, displayOrder],
         tenantId
       );
     } catch (err: any) {
@@ -118,7 +134,13 @@ export async function serviceRoutes(fastify: FastifyInstance) {
     }
 
     return reply.status(201).send(
-      successResponse(res.rows[0], requestId)
+      successResponse(
+        {
+          ...res.rows[0],
+          banner_url: signStoredMediaUrl(res.rows[0]?.banner_url, tenantId),
+        },
+        requestId
+      )
     );
   });
 
@@ -145,14 +167,16 @@ export async function serviceRoutes(fastify: FastifyInstance) {
     }
 
     const tenantId = request.tenantId;
-    const { name, iconName, bannerUrl, displayOrder, isActive } = parsed.data;
+    const { name, description, iconName, bannerUrl, displayOrder, isActive } = parsed.data;
     const newSlug = name !== undefined ? toUnicodeSlug(name, 'cat') : undefined;
+    const normalizedBanner = bannerUrl !== undefined ? normalizeStoredMediaUrl(bannerUrl) : undefined;
 
     try {
       const res = await tenantQuery(
         `UPDATE service_categories
          SET name = COALESCE($1, name),
              slug = COALESCE($2, slug),
+             description = CASE WHEN $10::boolean THEN $11 ELSE description END,
              icon_name = COALESCE($3, icon_name),
              banner_url = CASE WHEN $4::boolean THEN $5 ELSE banner_url END,
              display_order = COALESCE($6, display_order),
@@ -164,12 +188,14 @@ export async function serviceRoutes(fastify: FastifyInstance) {
           name ?? null,
           newSlug ?? null,
           iconName ?? null,
-          bannerUrl !== undefined,
-          bannerUrl ?? null,
+          normalizedBanner !== undefined,
+          normalizedBanner ?? null,
           displayOrder ?? null,
           isActive ?? null,
           id,
           tenantId,
+          description !== undefined,
+          description ?? null,
         ],
         tenantId
       );
@@ -178,7 +204,15 @@ export async function serviceRoutes(fastify: FastifyInstance) {
         return reply.status(404).send(errorResponse('NOT_FOUND', 'Service category not found.', requestId));
       }
 
-      return reply.status(200).send(successResponse(res.rows[0], requestId));
+      return reply.status(200).send(
+        successResponse(
+          {
+            ...res.rows[0],
+            banner_url: signStoredMediaUrl(res.rows[0]?.banner_url, tenantId),
+          },
+          requestId
+        )
+      );
     } catch (err: any) {
       if (err?.code === '23505') {
         return reply.status(409).send(
@@ -232,6 +266,9 @@ export async function serviceRoutes(fastify: FastifyInstance) {
     let queryText = `
       SELECT s.id, s.category_id, s.name, s.slug, s.description, s.base_price_cents,
              s.estimated_duration_minutes, s.is_popular, s.is_active,
+             COALESCE(s.checklist_items, '[]'::jsonb) AS checklist_items,
+             COALESCE(s.is_surge_eligible, TRUE) AS is_surge_eligible,
+             COALESCE(s.requires_pin, TRUE) AS requires_pin,
              c.name as category_name, c.slug as category_slug,
              COALESCE(
                (SELECT json_agg(json_build_object(
@@ -313,7 +350,7 @@ export async function serviceRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { categoryId, name, description, basePriceCents, estimatedDurationMinutes, isPopular, tiers } = parsed.data;
+    const { categoryId, name, description, basePriceCents, estimatedDurationMinutes, isPopular, checklistItems, isSurgeEligible, requiresPin, tiers } = parsed.data;
     const slug = toUnicodeSlug(name, 'svc');
     const tenantId = request.tenantId;
 
@@ -334,10 +371,22 @@ export async function serviceRoutes(fastify: FastifyInstance) {
           const serviceRes = await client.query(
             `INSERT INTO services (
               tenant_id, category_id, name, slug, description, base_price_cents,
-              estimated_duration_minutes, is_popular
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              estimated_duration_minutes, is_popular, checklist_items, is_surge_eligible, requires_pin
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
             RETURNING *`,
-            [tenantId, categoryId, name, slug, description || null, basePriceCents, estimatedDurationMinutes, isPopular]
+            [
+              tenantId,
+              categoryId,
+              name,
+              slug,
+              description || null,
+              basePriceCents,
+              estimatedDurationMinutes,
+              isPopular,
+              JSON.stringify(checklistItems || []),
+              isSurgeEligible,
+              requiresPin,
+            ]
           );
           const service = serviceRes.rows[0];
 
@@ -376,7 +425,7 @@ export async function serviceRoutes(fastify: FastifyInstance) {
   };
 
   const createServiceOpts = {
-    preHandler: [requirePermission('system:settings:update')],
+    preHandler: [requirePermission('system:settings:update'), blockInDemoMode('Creating service catalog products')],
     schema: {
       tags: ['Services & Catalog'],
       summary: 'Create a new service catalog product',
@@ -402,7 +451,7 @@ export async function serviceRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { categoryId, name, description, basePriceCents, estimatedDurationMinutes, isPopular, isActive, tiers } = parsed.data;
+    const { categoryId, name, description, basePriceCents, estimatedDurationMinutes, isPopular, isActive, checklistItems, isSurgeEligible, requiresPin, tiers } = parsed.data;
     const newSlug = name !== undefined ? toUnicodeSlug(name, 'svc') : undefined;
     const tenantId = request.tenantId;
 
@@ -431,6 +480,9 @@ export async function serviceRoutes(fastify: FastifyInstance) {
                estimated_duration_minutes = COALESCE($7, estimated_duration_minutes),
                is_popular = COALESCE($8, is_popular),
                is_active = COALESCE($9, is_active),
+               checklist_items = CASE WHEN $12::boolean THEN $13::jsonb ELSE checklist_items END,
+               is_surge_eligible = COALESCE($14, is_surge_eligible),
+               requires_pin = COALESCE($15, requires_pin),
                updated_at = NOW()
            WHERE id = $10 AND tenant_id = $11
            RETURNING *`,
@@ -446,6 +498,10 @@ export async function serviceRoutes(fastify: FastifyInstance) {
             isActive ?? null,
             id,
             tenantId,
+            checklistItems !== undefined,
+            JSON.stringify(checklistItems ?? []),
+            isSurgeEligible ?? null,
+            requiresPin ?? null,
           ]
         );
 

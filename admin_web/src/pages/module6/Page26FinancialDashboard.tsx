@@ -3,6 +3,7 @@ import { useAdmin } from '../../context/adminContextCore';
 import { apiClient } from '../../services/apiClient';
 import { downloadCSV } from '../../utils/exportUtils';
 import { formatMoneyCents } from '../../utils/formatters';
+import { RevealSection, StaggerCard } from '../../components/common/MotionPrimitives';
 import {
   ResponsiveContainer,
   BarChart,
@@ -174,7 +175,7 @@ export const Page26FinancialDashboard: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <RevealSection className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Financial Dashboard &amp; Revenue</h1>
           <p className="text-xs text-slate-500 mt-1">
@@ -182,7 +183,7 @@ export const Page26FinancialDashboard: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <select
             value={periodFilter}
             onChange={(e) => setPeriodFilter(e.target.value as any)}
@@ -203,13 +204,13 @@ export const Page26FinancialDashboard: React.FC = () => {
 
           <button
             onClick={handleExport}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+            className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
           >
             <Download className="w-3.5 h-3.5" />
             Export Financial CSV
           </button>
         </div>
-      </div>
+      </RevealSection>
 
       {error && (
         <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between text-xs text-rose-900">
@@ -230,14 +231,14 @@ export const Page26FinancialDashboard: React.FC = () => {
 
       {/* 4 Financial KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-2">
+        <StaggerCard index={0} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Gross Booking Volume</span>
             <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600">
               <DollarSign className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-slate-900">
+          <div className="text-2xl font-extrabold text-slate-900 tabular-nums">
             {formatMoneyCents(grossCents, currencyCode, currencySymbol)}
           </div>
           <div className="text-xs font-bold text-emerald-600 flex items-center gap-1">
@@ -247,54 +248,54 @@ export const Page26FinancialDashboard: React.FC = () => {
               {formatMoneyCents(refundedCents, currencyCode, currencySymbol)})
             </span>
           </div>
-        </div>
+        </StaggerCard>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-2">
+        <StaggerCard index={1} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
               Platform Commission ({commissionPercent}%)
             </span>
-            <div className="p-2 rounded-xl bg-blue-50 text-blue-600">
+            <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
               <Percent className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-blue-700">
+          <div className="text-2xl font-extrabold text-indigo-600 tabular-nums">
             {formatMoneyCents(platformFeeCents, currencyCode, currencySymbol)}
           </div>
           <div className="text-xs font-bold text-slate-500">
             {tenantConfig.taxName} Collected: {formatMoneyCents(taxCollectedCents, currencyCode, currencySymbol)}
           </div>
-        </div>
+        </StaggerCard>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-2">
+        <StaggerCard index={2} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Technician Payout Pool</span>
             <div className="p-2 rounded-xl bg-purple-50 text-purple-600">
               <Wallet className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-slate-900">
+          <div className="text-2xl font-extrabold text-slate-900 tabular-nums">
             {formatMoneyCents(techNetPoolCents, currencyCode, currencySymbol)}
           </div>
           <div className="text-xs font-bold text-purple-600">
             {(100 - commissionPercent).toFixed(1)}% Pre-Tax Net Share
           </div>
-        </div>
+        </StaggerCard>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs space-y-2">
+        <StaggerCard index={3} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Unsettled / In Escrow</span>
             <div className="p-2 rounded-xl bg-amber-50 text-amber-600">
               <ShieldCheck className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-amber-600">
+          <div className="text-2xl font-extrabold text-amber-600 tabular-nums">
             {formatMoneyCents(escrowHoldCents, currencyCode, currencySymbol)}
           </div>
           <div className="text-xs font-bold text-slate-500">
             Settled: {formatMoneyCents(settledCents, currencyCode, currencySymbol)}
           </div>
-        </div>
+        </StaggerCard>
       </div>
 
       {/* Charts Section */}
@@ -414,13 +415,13 @@ export const Page26FinancialDashboard: React.FC = () => {
               onClick={() => navigateToPage(27)}
               className="text-xs font-bold text-blue-600 hover:text-blue-700 cursor-pointer"
             >
-              Double-Entry Journal â†’
+              Double-Entry Journal →
             </button>
             <button
               onClick={() => navigateToPage(29)}
               className="text-xs font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
             >
-              Technician Payouts â†’
+              Technician Payouts →
             </button>
           </div>
         </div>

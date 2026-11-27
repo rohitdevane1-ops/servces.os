@@ -35,7 +35,7 @@ export const StaffActivityStream: React.FC = () => {
         type: 'audit',
         title: log.action,
         time: log.timestamp || 'Today',
-        desc: `${log.details} â€¢ Logged by ${log.user}`,
+        desc: `${log.details} • Logged by ${log.user}`,
         icon: log.action.toLowerCase().includes('complete') ? CheckCircle2 :
               log.action.toLowerCase().includes('payment') ? DollarSign :
               log.action.toLowerCase().includes('alert') ? AlertTriangle : Activity,
@@ -51,7 +51,7 @@ export const StaffActivityStream: React.FC = () => {
         type: b.status.toLowerCase(),
         title: `Order ${b.jobNo}: ${b.serviceName} (${b.status})`,
         time: b.scheduleTime || 'Today',
-        desc: `Customer: ${b.customerName} â€¢ Pro: ${b.technicianName} â€¢ Address: ${b.customerAddress || 'Client Location'}`,
+        desc: `Customer: ${b.customerName} • Pro: ${b.technicianName} • Address: ${b.customerAddress || 'Client Location'}`,
         icon: b.status === 'Completed' ? CheckCircle2 :
               b.status === 'In Progress' ? MapPin :
               b.technicianName === 'Unassigned' ? Clock : UserCheck,

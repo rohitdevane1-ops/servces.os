@@ -76,7 +76,7 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: 'Â© OpenStreetMap contributors'
+      attribution: '© OpenStreetMap contributors'
     }).addTo(map);
 
     if (hasActiveRoute) {
@@ -86,7 +86,7 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
           <div style="position: relative; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
             <div style="position: absolute; width: 36px; height: 36px; border-radius: 50%; background: rgba(16, 185, 129, 0.3); animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
             <div style="width: 32px; height: 32px; border-radius: 50%; background: #0C3832; border: 2.5px solid #10B981; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.3); color: white; font-size: 14px;">
-              ðŸšš
+              🚚
             </div>
           </div>
         `,
@@ -99,7 +99,7 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
         html: `
           <div style="position: relative; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;">
             <div style="width: 30px; height: 30px; border-radius: 50%; background: #E11D48; border: 2.5px solid #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.3); color: white; font-size: 13px;">
-              ðŸ 
+              🏠 
             </div>
           </div>
         `,
@@ -125,12 +125,12 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
 
       const techMarker = L.marker(techPoint, { icon: techIcon }).addTo(map);
       techMarker.bindPopup(
-        createSafePopup('#0C3832', `ðŸšš ${technicianName}`, ['Status: En Route to Job', 'Telemetry: Live Active'])
+        createSafePopup('#0C3832', `🚚 ${technicianName}`, ['Status: En Route to Job', 'Telemetry: Live Active'])
       );
 
       const customerMarker = L.marker(custPoint, { icon: customerIcon }).addTo(map);
       customerMarker.bindPopup(
-        createSafePopup('#E11D48', `ðŸ  Customer: ${customerName}`, [customerAddress])
+        createSafePopup('#E11D48', `🏠  Customer: ${customerName}`, [customerAddress])
       );
 
       const route = L.polyline([techPoint, custPoint], {
@@ -206,7 +206,7 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
           mapInstanceRef.current.setView(deviceCoords, 16);
         }
 
-        addToast(`Real GPS locked! ${formatCoordinates(latitude, longitude)} (Accuracy: Â±${Math.round(accuracy)}m)`, 'success');
+        addToast(`Real GPS locked! ${formatCoordinates(latitude, longitude)} (Accuracy: ±${Math.round(accuracy)}m)`, 'success');
       },
       (err) => {
         addToast(`GPS Error: ${err.message}. Showing default map coordinates.`, 'warning');
@@ -247,9 +247,9 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
             </div>
             <div className="text-[10px] text-slate-500">
               {hasActiveRoute ? (
-                <>Technician: <strong className="text-slate-700">{technicianName}</strong> â†’ Customer: <strong className="text-slate-700">{customerName}</strong></>
+                <>Technician: <strong className="text-slate-700">{technicianName}</strong> → Customer: <strong className="text-slate-700">{customerName}</strong></>
               ) : (
-                'Radar standing by â€¢ Telemetry activates automatically when order is en route'
+                'Radar standing by • Telemetry activates automatically when order is en route'
               )}
             </div>
           </div>
@@ -393,8 +393,8 @@ export const RealDispatchMap: React.FC<RealDispatchMapProps> = ({
       {/* Footer Info Bar */}
       <div className="p-3 bg-slate-50 border-t border-slate-200 text-xs text-slate-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-emerald-700 font-bold">âœ“ OpenStreetMap &amp; PostGIS Spatial Engine Active</span>
-          <span>â€¢</span>
+          <span className="text-emerald-700 font-bold">✓ OpenStreetMap &amp; PostGIS Spatial Engine Active</span>
+          <span>•</span>
           <span>Geofence radius: 50m</span>
         </div>
 

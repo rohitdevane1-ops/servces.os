@@ -18,7 +18,7 @@ dependencies:
   go_router: ^14.2.0
 
   # Networking & HTTP
-  dio: ^5.4.3+1
+  dio: ^5.7.0
 
   # Local Persistence & Encrypted Token Storage
   shared_preferences: ^2.2.3

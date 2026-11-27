@@ -76,7 +76,7 @@ export const StaffRescheduleDesk: React.FC = () => {
                   Selected Booking for Slot Change
                 </span>
                 <div className="text-sm font-black text-slate-900 mt-0.5">
-                  {selectedOrder.jobNo} â€¢ {selectedOrder.serviceName}
+                  {selectedOrder.jobNo} • {selectedOrder.serviceName}
                 </div>
                 <div className="text-xs text-slate-600 mt-0.5">
                   Current Schedule:{' '}
@@ -124,7 +124,7 @@ export const StaffRescheduleDesk: React.FC = () => {
                   onChange={(e) => setReason(e.target.value)}
                   className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-emerald-600"
                 >
-                  <option value="Customer Out of Town">Customer requested delay â€” Out of town</option>
+                  <option value="Customer Out of Town">Customer requested delay — Out of town</option>
                   <option value="Technician Shift Overlap">Technician previous job ran over SLA</option>
                   <option value="Customer Special Access Slot">Customer requested gated society morning slot</option>
                   <option value="Inclement Weather">Severe Weather Conditions / Rain</option>

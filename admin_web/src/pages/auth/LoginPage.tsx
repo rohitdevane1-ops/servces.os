@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion } from 'motion/react';
 import { useAdmin } from '../../context/adminContextCore';
 import {
   Shield,
@@ -16,8 +17,9 @@ import {
   ShieldAlert,
   Eye,
   EyeOff,
-  Activity,
   Radio,
+  FileText,
+  Smartphone,
 } from 'lucide-react';
 import { UserRole } from '../../types';
 import { validatePasswordStrength } from '../../security/passwordPolicy';
@@ -158,7 +160,8 @@ export const LoginPage: React.FC = () => {
         targetEmail,
         password,
         selectedRole,
-        captchaToken || undefined
+        captchaToken || undefined,
+        rememberMe
       );
       if (fastifyRes.success) {
         if (fastifyRes.data?.status === 'MFA_REQUIRED') {
@@ -440,117 +443,141 @@ export const LoginPage: React.FC = () => {
   const displayName = agencyName || companyName || 'ServicePro OS';
 
   return (
-    <div className="min-h-screen w-screen flex flex-col lg:flex-row bg-[#08101D] text-slate-800 antialiased overflow-x-hidden selection:bg-emerald-200 selection:text-black">
-      {/* LEFT PANEL: Enterprise Operations Overview */}
-      <div className="hidden lg:flex lg:w-[50%] xl:w-[52%] relative flex-col justify-between p-12 xl:p-16 bg-gradient-to-br from-[#060D17] via-[#0A1626] to-[#041E19] text-white overflow-hidden border-r border-slate-800/80">
-        <div className="absolute inset-0 bg-[radial-gradient(#10B981_1px,transparent_1px)] [background-size:24px_24px] opacity-15 pointer-events-none" />
-        <div className="absolute -top-32 -left-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute -bottom-32 -right-32 w-96 h-96 bg-teal-500/10 rounded-full blur-3xl pointer-events-none" />
+    <div className="min-h-screen w-screen flex flex-col lg:flex-row bg-[#060B14] text-slate-800 antialiased overflow-x-hidden selection:bg-indigo-500 selection:text-white">
+      {/* LEFT PANEL: Enterprise Operations Showcase */}
+      <div className="hidden lg:flex lg:w-[48%] xl:w-[50%] relative flex-col justify-between p-12 xl:p-16 bg-gradient-to-br from-[#060B14] via-[#0A1224] to-[#140D2E] text-white overflow-hidden border-r border-slate-800/80">
+        {/* Ambient Glow Orbs */}
+        <div className="absolute top-0 -left-20 w-[500px] h-[500px] bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-0 -right-20 w-[500px] h-[500px] bg-violet-600/15 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute inset-0 bg-[radial-gradient(#6366F1_1px,transparent_1px)] [background-size:28px_28px] opacity-10 pointer-events-none" />
 
+        {/* Top Branding */}
         <div className="relative z-10 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-[#0C3832] to-[#145a50] border border-emerald-400/30 flex items-center justify-center shadow-lg shadow-emerald-950/50">
-              <Shield className="w-6 h-6 text-emerald-400" />
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-600 p-0.5 shadow-xl shadow-indigo-500/20">
+              <div className="w-full h-full bg-[#0A1224] rounded-[14px] flex items-center justify-center">
+                <Shield className="w-6 h-6 text-indigo-400" />
+              </div>
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-black text-lg tracking-tight text-white">{displayName}</span>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-950/80 text-emerald-300 border border-emerald-500/30">
-                  {isDemoMode ? 'Sandbox' : 'Production'}
+                <span className="font-black text-xl tracking-tight text-white">{displayName}</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                  {isDemoMode ? 'Sandbox' : 'Enterprise'}
                 </span>
               </div>
-              <p className="text-xs text-slate-400 font-mono">Field Service Operations Platform</p>
+              <p className="text-xs text-slate-400">Home Services Operations &amp; Dispatch</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-xs font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-3 py-1.5 rounded-xl shadow-xs">
+          <div className="flex items-center gap-2 text-xs font-medium text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 px-3.5 py-1.5 rounded-full shadow-xs">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>{isDemoMode ? 'Interactive Demo Node' : 'Enterprise API Node'}</span>
+            <span className="font-mono text-[11px] font-bold">Platform Online</span>
           </div>
         </div>
 
-        <div className="relative z-10 my-auto py-8 max-w-xl space-y-6">
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/80 border border-slate-700/80 text-xs text-slate-300">
-            <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-            <span>International Home Services Management Platform</span>
+        {/* Center Presentation Pitch */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+          className="relative z-10 my-auto py-8 max-w-xl space-y-6"
+        >
+          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-950/60 border border-indigo-500/30 text-xs font-semibold text-indigo-300">
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Turnkey Software Acquisition Standard</span>
           </div>
 
           <h1 className="text-3xl xl:text-4xl font-black text-white tracking-tight leading-tight">
-            Centralized Command for High-Volume Trade &amp; Field Dispatch.
+            International Home Services Dispatch &amp; Financial Command Center.
           </h1>
 
           <p className="text-sm text-slate-300 leading-relaxed font-normal">
-            PostGIS spatial technician dispatch radar, verified trade credentialing, double-entry financial ledger, and row-level multi-tenant database isolation.
+            Orchestrate on-demand customer bookings, real-time spatial field technician dispatch, automated 4-digit Safety PIN arrival verification, and double-entry general ledger accounting.
           </p>
 
-          <div className="bg-slate-900/80 border border-emerald-500/30 backdrop-blur-xl rounded-2xl p-5 shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2 text-xs font-bold text-white">
-                <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-                <span>Platform Security Architecture</span>
+          {/* 3 Core Architecture Cards */}
+          <div className="grid grid-cols-1 gap-3.5 pt-2">
+            <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-md flex items-start gap-3.5 hover:border-indigo-500/40 transition-all">
+              <div className="p-2.5 rounded-xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 shrink-0">
+                <Radio className="w-4 h-4" />
               </div>
-              <span className="text-[10px] font-mono text-slate-400">PostgreSQL 16 + PostGIS</span>
+              <div>
+                <h4 className="text-xs font-bold text-white mb-0.5">PostGIS Spatial Dispatch Radar</h4>
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  60-second broadcast locks, 500m arrival geofencing, and sub-millisecond driver radius matching.
+                </p>
+              </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-3 text-center">
-              <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-800">
-                <div className="text-[10px] text-slate-400 uppercase font-mono">Spatial Engine</div>
-                <div className="text-xs font-black text-emerald-400 mt-1 flex items-center justify-center gap-1">
-                  <Activity className="w-3 h-3 text-emerald-400" />
-                  <span>PostGIS Radar</span>
-                </div>
+            <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-md flex items-start gap-3.5 hover:border-violet-500/40 transition-all">
+              <div className="p-2.5 rounded-xl bg-violet-600/20 text-violet-400 border border-violet-500/30 shrink-0">
+                <FileText className="w-4 h-4" />
               </div>
-
-              <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-800">
-                <div className="text-[10px] text-slate-400 uppercase font-mono">Tenant Guard</div>
-                <div className="text-xs font-black text-white mt-1">FORCE RLS</div>
+              <div>
+                <h4 className="text-xs font-bold text-white mb-0.5">Double-Entry Financial Ledger</h4>
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  Pre-tax commission splits, Accounts 1010/2010/2020/2030, and zero-drift VAT reconciliation.
+                </p>
               </div>
+            </div>
 
-              <div className="p-2.5 rounded-xl bg-slate-800/60 border border-slate-800">
-                <div className="text-[10px] text-slate-400 uppercase font-mono">Secret Vault</div>
-                <div className="text-xs font-black text-teal-300 mt-1">AES-256-GCM</div>
+            <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-md flex items-start gap-3.5 hover:border-emerald-500/40 transition-all">
+              <div className="p-2.5 rounded-xl bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 shrink-0">
+                <Smartphone className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-white mb-0.5">Dual Mobile Ecosystem Included</h4>
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  Native Android Jetpack Compose (Kotlin) and cross-platform iOS/Android (Flutter) suites.
+                </p>
               </div>
             </div>
           </div>
-        </div>
+        </motion.div>
 
+        {/* Bottom Trust Row */}
         <div className="relative z-10 pt-6 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-          <span className="flex items-center gap-1.5 text-slate-300 font-medium">
+          <span className="flex items-center gap-2 text-slate-300 font-medium">
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            HttpOnly Session Rotation &amp; RFC 6238 TOTP MFA
+            HttpOnly Session Cookies • RFC 6238 TOTP
           </span>
-          <div className="flex items-center gap-1.5 font-mono text-[11px] text-emerald-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            <span>Encrypted Session</span>
-          </div>
+          <span className="font-mono text-[11px] text-indigo-400">OWASP ASVS L3 Verified</span>
         </div>
       </div>
 
-      {/* RIGHT PANEL: Interactive Authentication Portal */}
+      {/* RIGHT PANEL: Clean Elevated Authentication Console */}
       <div className="flex-1 flex flex-col justify-between p-6 sm:p-10 lg:p-12 xl:p-16 bg-[#F8FAFC] min-h-screen">
+        {/* Mobile View Top Header */}
         <div className="flex lg:hidden items-center justify-between pb-6 border-b border-slate-200">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-[#0C3832] text-emerald-400 flex items-center justify-center shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 text-white flex items-center justify-center shadow-md shadow-indigo-500/20">
               <Shield className="w-5 h-5" />
             </div>
             <div>
-              <div className="font-extrabold text-sm text-slate-900">{displayName}</div>
-              <div className="text-[10px] text-slate-500 font-mono">Operations Portal</div>
+              <div className="font-black text-base text-slate-900">{displayName}</div>
+              <div className="text-[10px] text-slate-500 font-medium">Operations &amp; Dispatch</div>
             </div>
           </div>
-          <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-100 text-emerald-800">
+          <span className="px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase bg-indigo-50 text-indigo-700 border border-indigo-200">
             Secure Portal
           </span>
         </div>
 
-        <div className="w-full max-w-md mx-auto my-auto py-6 sm:py-8">
-          <div className="bg-white rounded-3xl border border-slate-200/90 shadow-xl shadow-slate-200/50 p-6 sm:p-8">
+        {/* Center Card */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.08, ease: [0.22, 1, 0.36, 1] }}
+          className="w-full max-w-md mx-auto my-auto py-6 sm:py-8"
+        >
+          <div className="bg-white rounded-3xl border border-slate-200/90 shadow-2xl shadow-slate-200/50 p-7 sm:p-9">
             {mfaStepRequired ? (
-              /* VIEW 1: Multi-Factor Authentication (6-Digit TOTP or Up-to-32-Char Recovery Code) */
+              /* VIEW 1: Two-Factor TOTP Authenticator */
               <div className="space-y-5 animate-in fade-in duration-200">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-emerald-100 text-emerald-800 flex items-center gap-1.5 uppercase tracking-wider">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1.5 uppercase tracking-wider">
+                    <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
                     Two-Factor Authentication
                   </span>
                   <button
@@ -562,28 +589,28 @@ export const LoginPage: React.FC = () => {
                     }}
                     className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
                   >
-                    â† Back to Login
+                    ← Back
                   </button>
                 </div>
 
                 <div className="text-center">
-                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-3 border border-emerald-200 shadow-xs">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3 border border-indigo-200 shadow-xs">
                     <KeyRound className="w-6 h-6 animate-pulse" />
                   </div>
-                  <h2 className="text-lg font-black text-slate-900 tracking-tight">
-                    {useBackupCode ? 'Enter Emergency Recovery Code' : 'Enter Authenticator Code'}
+                  <h2 className="text-xl font-black text-slate-900 tracking-tight">
+                    {useBackupCode ? 'Emergency Recovery Code' : 'Enter Authenticator Code'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
                     {useBackupCode
                       ? `Enter one of your single-use emergency backup codes for ${email}.`
-                      : `Open your TOTP Authenticator app and enter the 6-digit code for ${email}.`}
+                      : `Open your Authenticator app and enter the 6-digit code for ${email}.`}
                   </p>
                 </div>
 
                 {error && (
-                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+                  <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2.5">
                     <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-                    <span>{error}</span>
+                    <span className="font-medium">{error}</span>
                   </div>
                 )}
 
@@ -601,7 +628,7 @@ export const LoginPage: React.FC = () => {
                       autoComplete="one-time-code"
                       autoFocus
                       required
-                      className={`w-full py-3.5 text-center font-mono font-black bg-slate-50 border-2 border-slate-200 rounded-2xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all shadow-inner ${
+                      className={`w-full py-3.5 text-center font-mono font-black bg-slate-50 border-2 border-slate-200 rounded-2xl focus:outline-none focus:border-indigo-600 focus:bg-white text-slate-900 transition-all shadow-inner ${
                         useBackupCode ? 'text-base tracking-wider px-3' : 'text-2xl tracking-widest'
                       }`}
                     />
@@ -610,7 +637,7 @@ export const LoginPage: React.FC = () => {
                   <button
                     type="submit"
                     disabled={isLoading}
-                    className="w-full py-3 rounded-2xl font-extrabold text-xs text-white bg-[#0C3832] hover:bg-[#124e45] shadow-lg shadow-emerald-950/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
+                    className="w-full py-3.5 rounded-2xl font-extrabold text-xs text-white bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
                   >
                     {isLoading ? (
                       <span>Verifying...</span>
@@ -630,22 +657,22 @@ export const LoginPage: React.FC = () => {
                         setTotpCode('');
                         setError(null);
                       }}
-                      className="text-xs font-bold text-emerald-700 hover:text-emerald-800 transition-colors cursor-pointer"
+                      className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
                     >
                       {useBackupCode
-                        ? 'â† Use 6-Digit Authenticator App'
+                        ? '← Use 6-Digit Authenticator App'
                         : 'Use Emergency Recovery Code instead'}
                     </button>
                   </div>
                 </form>
               </div>
             ) : authMode === 'FIRST_TIME_SETUP' ? (
-              /* VIEW 2: Server-Controlled First-Time Master Admin Provisioning */
+              /* VIEW 2: First-Time Master Admin Provisioning */
               <div className="space-y-5 animate-in fade-in duration-200">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-emerald-100 text-emerald-800 flex items-center gap-1.5 uppercase tracking-wider">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                    First-Time Server Provisioning
+                  <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1.5 uppercase tracking-wider">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                    First-Time Server Setup
                   </span>
                   <button
                     type="button"
@@ -655,7 +682,7 @@ export const LoginPage: React.FC = () => {
                     }}
                     className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
                   >
-                    Standard Sign In â†’
+                    Standard Sign In →
                   </button>
                 </div>
 
@@ -663,15 +690,15 @@ export const LoginPage: React.FC = () => {
                   <h2 className="text-xl font-black text-slate-900 tracking-tight">
                     Initialize Master Administrator
                   </h2>
-                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                    Runs database migrations, provisions the primary tenant organization and Chart of Accounts, and permanently locks public bootstrap.
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                    Provisions the root organization, establishes Chart of Accounts, and locks server bootstrap.
                   </p>
                 </div>
 
                 {error && (
-                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+                  <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2.5">
                     <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-                    <span>{error}</span>
+                    <span className="font-medium">{error}</span>
                   </div>
                 )}
 
@@ -688,7 +715,7 @@ export const LoginPage: React.FC = () => {
                         onChange={(e) => setProvisioningToken(e.target.value)}
                         placeholder="INITIAL_ADMIN_BOOTSTRAP_SECRET"
                         required
-                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-mono"
+                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-500/10 focus:bg-white text-slate-900 transition-all font-mono"
                       />
                     </div>
                   </div>
@@ -705,7 +732,7 @@ export const LoginPage: React.FC = () => {
                         onChange={(e) => setAdminFullName(e.target.value)}
                         placeholder="Master Administrator"
                         required
-                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
+                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-500/10 focus:bg-white text-slate-900 transition-all font-medium"
                       />
                     </div>
                   </div>
@@ -722,7 +749,7 @@ export const LoginPage: React.FC = () => {
                         onChange={(e) => setCompanyName(e.target.value)}
                         placeholder="ServicePro Enterprise LLC"
                         required
-                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
+                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-500/10 focus:bg-white text-slate-900 transition-all font-medium"
                       />
                     </div>
                   </div>
@@ -739,7 +766,7 @@ export const LoginPage: React.FC = () => {
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="admin@yourcompany.com"
                         required
-                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
+                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-500/10 focus:bg-white text-slate-900 transition-all font-medium"
                       />
                     </div>
                   </div>
@@ -757,12 +784,12 @@ export const LoginPage: React.FC = () => {
                           onChange={(e) => setPassword(e.target.value)}
                           placeholder="Min 10 characters"
                           required
-                          className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
+                          className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
                         <button
                           type="button"
                           onClick={() => setShowPassword(!showPassword)}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                         >
                           {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
@@ -779,14 +806,14 @@ export const LoginPage: React.FC = () => {
                           type={showConfirmPassword ? 'text' : 'password'}
                           value={confirmPassword}
                           onChange={(e) => setConfirmPassword(e.target.value)}
-                          placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+                          placeholder="••••••••••••"
                           required
-                          className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
+                          className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
                         <button
                           type="button"
                           onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                         >
                           {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
@@ -797,7 +824,7 @@ export const LoginPage: React.FC = () => {
                   <button
                     type="submit"
                     disabled={isLoading}
-                    className="w-full mt-2 py-3 rounded-2xl font-extrabold text-xs text-white bg-[#0C3832] hover:bg-[#124e45] shadow-lg shadow-emerald-950/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
+                    className="w-full mt-2 py-3.5 rounded-2xl font-extrabold text-xs text-white bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
                   >
                     {isLoading ? (
                       <span>Provisioning Master Console...</span>
@@ -811,10 +838,10 @@ export const LoginPage: React.FC = () => {
                 </form>
               </div>
             ) : authMode === 'PASSWORD_RESET' ? (
-              /* VIEW 3: Server-Backed Account Recovery & Password Reset */
+              /* VIEW 3: Account Recovery & Password Reset */
               <div className="space-y-5 animate-in fade-in duration-200">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-amber-100 text-amber-800 flex items-center gap-1.5 uppercase tracking-wider">
+                  <span className="px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1.5 uppercase tracking-wider">
                     <KeyRound className="w-3.5 h-3.5 text-amber-600" />
                     Account Recovery
                   </span>
@@ -827,7 +854,7 @@ export const LoginPage: React.FC = () => {
                     }}
                     className="text-xs font-bold text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
                   >
-                    â† Back to Login
+                    ← Back to Login
                   </button>
                 </div>
 
@@ -835,24 +862,24 @@ export const LoginPage: React.FC = () => {
                   <h2 className="text-xl font-black text-slate-900 tracking-tight">
                     {resetStep === 'REQUEST' ? 'Reset Account Password' : 'Set New Account Password'}
                   </h2>
-                  <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">
                     {resetStep === 'REQUEST'
-                      ? 'Enter your verified account email. If an active account matches, a single-use 15-minute recovery token will be issued.'
-                      : 'Enter your single-use recovery token and choose a new password.'}
+                      ? 'Enter your verified account email to request a 15-minute recovery token.'
+                      : 'Enter your single-use recovery token and set your new password.'}
                   </p>
                 </div>
 
                 {resetSuccessMessage && (
-                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2">
+                  <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center gap-2.5">
                     <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
-                    <span>{resetSuccessMessage}</span>
+                    <span className="font-medium">{resetSuccessMessage}</span>
                   </div>
                 )}
 
                 {error && (
-                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+                  <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2.5">
                     <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
-                    <span>{error}</span>
+                    <span className="font-medium">{error}</span>
                   </div>
                 )}
 
@@ -870,7 +897,7 @@ export const LoginPage: React.FC = () => {
                           onChange={(e) => setEmail(e.target.value)}
                           placeholder="admin@yourcompany.com"
                           required
-                          className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
+                          className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
                       </div>
                     </div>
@@ -884,18 +911,18 @@ export const LoginPage: React.FC = () => {
                     <button
                       type="submit"
                       disabled={isLoading}
-                      className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
+                      className="w-full py-3.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-extrabold text-xs rounded-2xl shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
                     >
-                      {isLoading ? 'Requesting Recovery Token...' : 'Send Recovery Token â†’'}
+                      {isLoading ? 'Requesting Recovery Token...' : 'Send Recovery Token →'}
                     </button>
 
                     <div className="text-center pt-2">
                       <button
                         type="button"
                         onClick={() => setResetStep('VERIFY')}
-                        className="text-xs font-semibold text-emerald-700 hover:underline cursor-pointer"
+                        className="text-xs font-semibold text-indigo-600 hover:underline cursor-pointer"
                       >
-                        Already have a recovery token? Enter it here â†’
+                        Already have a recovery token? Enter it here →
                       </button>
                     </div>
                   </form>
@@ -913,7 +940,7 @@ export const LoginPage: React.FC = () => {
                           onChange={(e) => setResetToken(e.target.value)}
                           placeholder="Paste single-use recovery token..."
                           required
-                          className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-mono"
+                          className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:bg-white text-slate-900 transition-all font-mono"
                         />
                       </div>
                     </div>
@@ -928,14 +955,14 @@ export const LoginPage: React.FC = () => {
                           type={showPassword ? 'text' : 'password'}
                           value={password}
                           onChange={(e) => setPassword(e.target.value)}
-                          placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+                          placeholder="••••••••••••"
                           required
-                          className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
+                          className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
                         <button
                           type="button"
                           onClick={() => setShowPassword(!showPassword)}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                         >
                           {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
@@ -952,14 +979,14 @@ export const LoginPage: React.FC = () => {
                           type={showConfirmPassword ? 'text' : 'password'}
                           value={confirmPassword}
                           onChange={(e) => setConfirmPassword(e.target.value)}
-                          placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+                          placeholder="••••••••••••"
                           required
-                          className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium"
+                          className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:bg-white text-slate-900 transition-all font-medium"
                         />
                         <button
                           type="button"
                           onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                         >
                           {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
@@ -969,7 +996,7 @@ export const LoginPage: React.FC = () => {
                     <button
                       type="submit"
                       disabled={isLoading}
-                      className="w-full py-3 bg-[#0C3832] hover:bg-[#124e45] text-white font-extrabold text-xs rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
+                      className="w-full py-3.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-extrabold text-xs rounded-2xl shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50"
                     >
                       {isLoading ? 'Updating & Revoking Sessions...' : 'Confirm & Update Password'}
                     </button>
@@ -977,22 +1004,23 @@ export const LoginPage: React.FC = () => {
                 )}
               </div>
             ) : (
-              /* VIEW 4: Standard Enterprise Role-Based Sign In */
+              /* VIEW 4: Standard Clean Role-Based Sign In */
               <div className="space-y-6">
-                <div className="flex rounded-2xl bg-slate-100/90 p-1 border border-slate-200/80">
+                {/* Segmented Persona Selector */}
+                <div className="flex rounded-2xl bg-slate-100/90 p-1.5 border border-slate-200/80 shadow-inner">
                   <button
                     type="button"
                     onClick={() => {
                       setSelectedRole('ADMIN');
                       setError(null);
                     }}
-                    className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    className={`flex-1 py-2.5 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
                       selectedRole === 'ADMIN'
-                        ? 'bg-[#0C3832] text-white shadow-sm'
+                        ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md shadow-indigo-500/25'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    <Shield className={`w-3.5 h-3.5 ${selectedRole === 'ADMIN' ? 'text-emerald-400' : 'text-slate-400'}`} />
+                    <Shield className={`w-4 h-4 ${selectedRole === 'ADMIN' ? 'text-white' : 'text-slate-400'}`} />
                     <span>Admin Portal</span>
                   </button>
 
@@ -1002,25 +1030,25 @@ export const LoginPage: React.FC = () => {
                       setSelectedRole('STAFF');
                       setError(null);
                     }}
-                    className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    className={`flex-1 py-2.5 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
                       selectedRole === 'STAFF'
-                        ? 'bg-sky-700 text-white shadow-sm'
+                        ? 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white shadow-md shadow-sky-500/25'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    <UserCheck className={`w-3.5 h-3.5 ${selectedRole === 'STAFF' ? 'text-sky-300' : 'text-slate-400'}`} />
+                    <UserCheck className={`w-4 h-4 ${selectedRole === 'STAFF' ? 'text-white' : 'text-slate-400'}`} />
                     <span>Staff Desk</span>
                   </button>
                 </div>
 
                 <div>
-                  <h2 className="text-xl font-black text-slate-900 tracking-tight">
+                  <h2 className="text-2xl font-black text-slate-900 tracking-tight">
                     {selectedRole === 'ADMIN' ? 'Administrator Sign In' : 'Field Operations Desk'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
                     {selectedRole === 'ADMIN'
-                      ? 'Authorized executive access for company configuration and financials.'
-                      : 'Authorized operator access for technician dispatch and order queues.'}
+                      ? 'Executive control for company configuration, dispatch policies, and financials.'
+                      : 'Operator terminal for live technician radar, work orders, and customer intake.'}
                   </p>
                 </div>
 
@@ -1057,12 +1085,12 @@ export const LoginPage: React.FC = () => {
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder={
                           selectedRole === 'ADMIN'
-                            ? adminProfile.email || 'admin@yourcompany.com'
-                            : 'staff@yourcompany.com'
+                            ? adminProfile.email || 'admin@servicepro.com'
+                            : 'staff@servicepro.com'
                         }
                         autoComplete="username"
                         required
-                        className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium disabled:opacity-50"
+                        className="w-full pl-10 pr-4 py-3 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-500/10 focus:bg-white text-slate-900 transition-all font-medium disabled:opacity-50"
                       />
                     </div>
                   </div>
@@ -1078,15 +1106,15 @@ export const LoginPage: React.FC = () => {
                         value={password}
                         disabled={isLocked}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+                        placeholder="••••••••••••"
                         autoComplete="current-password"
                         required
-                        className="w-full pl-10 pr-9 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-emerald-600 focus:bg-white text-slate-900 transition-all font-medium disabled:opacity-50"
+                        className="w-full pl-10 pr-9 py-3 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-500/10 focus:bg-white text-slate-900 transition-all font-medium disabled:opacity-50"
                       />
                       <button
                         type="button"
                         onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                       >
                         {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
@@ -1100,7 +1128,7 @@ export const LoginPage: React.FC = () => {
                         checked={rememberMe}
                         disabled={isLocked}
                         onChange={(e) => setRememberMe(e.target.checked)}
-                        className="w-3.5 h-3.5 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer"
+                        className="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
                       />
                       <span className="text-xs text-slate-600 font-medium">Keep session active</span>
                     </label>
@@ -1113,7 +1141,7 @@ export const LoginPage: React.FC = () => {
                         setResetSuccessMessage(null);
                         setResetStep('REQUEST');
                       }}
-                      className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 transition-colors cursor-pointer"
+                      className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
                     >
                       Forgot Password?
                     </button>
@@ -1128,10 +1156,10 @@ export const LoginPage: React.FC = () => {
                   <button
                     type="submit"
                     disabled={isLoading || isLocked}
-                    className={`w-full py-3 rounded-2xl font-extrabold text-xs text-white shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50 ${
+                    className={`w-full py-3.5 rounded-2xl font-black text-xs text-white shadow-xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50 ${
                       selectedRole === 'ADMIN'
-                        ? 'bg-[#0C3832] hover:bg-[#124e45] shadow-emerald-950/20'
-                        : 'bg-sky-700 hover:bg-sky-800 shadow-sky-950/20'
+                        ? 'bg-gradient-to-r from-indigo-600 via-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 shadow-indigo-500/25'
+                        : 'bg-gradient-to-r from-sky-600 to-cyan-600 hover:from-sky-700 hover:to-cyan-700 shadow-sky-500/25'
                     }`}
                   >
                     {isLoading ? (
@@ -1145,22 +1173,30 @@ export const LoginPage: React.FC = () => {
                   </button>
                 </form>
 
-                {/* One-Click Sandbox Login (strictly rendered ONLY when Demo Mode is active) */}
-                {isDemoMode && (
-                  <div className="pt-4 border-t border-indigo-100 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-extrabold uppercase tracking-wider text-indigo-700">
-                        {t('oneClickDemo')}
+                {/* Language toggle & optional Interactive Demo Sandbox Access */}
+                <div className="pt-4 border-t border-slate-100 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    {isDemoMode ? (
+                      <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-indigo-600">
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>{t('oneClickDemo')}</span>
+                      </div>
+                    ) : (
+                      <span className="text-[11px] font-semibold text-slate-400">
+                        {t('secureAccess') || 'Enterprise RBAC'}
                       </span>
-                      <button
-                        type="button"
-                        onClick={toggleLocale}
-                        className="text-[11px] font-bold text-indigo-600 hover:underline cursor-pointer"
-                      >
-                        {t('switchLang')}
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
+                    )}
+                    <button
+                      type="button"
+                      onClick={toggleLocale}
+                      className="text-[11px] font-bold text-indigo-600 hover:underline cursor-pointer"
+                    >
+                      {t('switchLang')}
+                    </button>
+                  </div>
+
+                  {isDemoMode && (
+                    <div className="grid grid-cols-2 gap-2.5">
                       {(['ADMIN', 'STAFF'] as const).map((demoRole) => (
                         <button
                           key={demoRole}
@@ -1171,39 +1207,54 @@ export const LoginPage: React.FC = () => {
                             setError(null);
                             try {
                               const res = await apiClient.demoLogin(demoRole);
-                              if (!res.success || !res.data?.accessToken) {
-                                setError(
-                                  res.error?.message ||
-                                    'Demo login unavailable. Ensure APP_DEMO_MODE=true and seed:demo has been run.'
-                                );
-                                return;
+                              if (res.success && res.data?.accessToken) {
+                                login(demoRole, res.data.user.email, '', {
+                                  token: res.data.accessToken,
+                                  role: demoRole,
+                                  fullName: res.data.user.fullName || res.data.user.email,
+                                  tenantId: res.data.user.tenantId,
+                                });
+                                addToast(`Signed into Interactive Sandbox as ${demoRole}`, 'success');
+                              } else {
+                                const msg = res.error?.message || 'Demo sandbox sign-in unavailable. Verify backend server & DEMO_MODE.';
+                                setError(msg);
+                                addToast(msg, 'error');
                               }
-                              login(demoRole, res.data.user.email, '', {
-                                token: res.data.accessToken,
-                                role: demoRole,
-                                fullName: res.data.user.fullName || res.data.user.email,
-                                tenantId: res.data.user.tenantId,
-                              });
-                              addToast(`Signed into Interactive Sandbox as ${demoRole}`, 'success');
-                            } catch (e: any) {
-                              setError(e?.message || 'Demo login failed');
+                            } catch (err: unknown) {
+                              const msg = err instanceof Error ? err.message : 'Unable to reach ServiceOS backend for sandbox sign-in.';
+                              setError(msg);
+                              addToast(msg, 'error');
                             } finally {
                               setIsLoading(false);
                             }
                           }}
-                          className="py-2 px-3 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs font-bold transition-all cursor-pointer disabled:opacity-50"
+                          className={`py-2.5 px-3 rounded-xl border text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                            demoRole === 'ADMIN'
+                              ? 'bg-indigo-50/80 hover:bg-indigo-100/90 border-indigo-200 text-indigo-800 shadow-2xs'
+                              : 'bg-sky-50/80 hover:bg-sky-100/90 border-sky-200 text-sky-800 shadow-2xs'
+                          }`}
                         >
-                          {demoRole === 'ADMIN' ? t('demoAdmin') : t('demoStaff')}
+                          {demoRole === 'ADMIN' ? (
+                            <>
+                              <Shield className="w-3.5 h-3.5 text-indigo-600" />
+                              <span>{t('demoAdmin')}</span>
+                            </>
+                          ) : (
+                            <>
+                              <UserCheck className="w-3.5 h-3.5 text-sky-600" />
+                              <span>{t('demoStaff')}</span>
+                            </>
+                          )}
                         </button>
                       ))}
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
                 {!isSystemInitialized ? (
-                  <div className="pt-4 border-t border-slate-100 text-center space-y-2">
-                    <p className="text-[11px] text-slate-400 leading-relaxed">
-                      Unprovisioned installation detected â€” first-time Master Administrator setup is available.
+                  <div className="pt-3 border-t border-slate-100 text-center space-y-1.5">
+                    <p className="text-[11px] text-slate-400">
+                      Unprovisioned installation detected — first-time setup available.
                     </p>
                     <button
                       type="button"
@@ -1211,28 +1262,29 @@ export const LoginPage: React.FC = () => {
                         setAuthMode('FIRST_TIME_SETUP');
                         setError(null);
                       }}
-                      className="text-xs font-bold text-emerald-700 hover:text-emerald-800 transition-colors cursor-pointer inline-flex items-center gap-1.5"
+                      className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer inline-flex items-center gap-1.5"
                     >
-                      <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Run First-Time Master Admin Setup Wizard â†’</span>
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Run Master Admin Setup Wizard →</span>
                     </button>
                   </div>
                 ) : (
-                  <div className="pt-4 border-t border-slate-100 text-center">
+                  <div className="pt-2 text-center">
                     <span className="text-[11px] font-semibold text-slate-400 inline-flex items-center gap-1.5">
                       <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Master Administrator Provisioned â€¢ Public Bootstrap Locked</span>
+                      <span>Master Administrator Provisioned • Public Bootstrap Locked</span>
                     </span>
                   </div>
                 )}
               </div>
             )}
           </div>
-        </div>
+        </motion.div>
 
-        <div className="text-center text-[11px] text-slate-400 py-2 border-t border-slate-200/60 flex items-center justify-between">
+        {/* Footer */}
+        <div className="text-center text-[11px] text-slate-400 py-3 border-t border-slate-200/60 flex items-center justify-between">
           <span>&copy; {currentYear} {displayName}. All rights reserved.</span>
-          <span className="font-mono text-[10px]">OWASP ASVS Level 3 Verified</span>
+          <span className="font-mono text-[10px] text-slate-500">Dual-Vision Commercial Edition</span>
         </div>
       </div>
     </div>

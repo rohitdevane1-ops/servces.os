@@ -27,6 +27,7 @@ const FASTIFY_MIGRATIONS = [
   { id: '013', file: '013_security_rls_force_vat_and_uae_settings.sql', desc: 'FORCE ROW LEVEL SECURITY across tenant tables & statutory VAT columns' },
   { id: '014', file: '014_universal_tax_refunds_and_rls_helpers.sql', desc: 'payment_refunds table, proportional tax/fee reversal, SECURITY DEFINER RLS helpers' },
   { id: '015', file: '015_phase2_auth_resets_and_encrypted_integrations.sql', desc: 'password_reset_tokens with FORCE RLS & AES-256-GCM integration_configs vault' },
+  { id: '016', file: '016_full_stack_recovery_and_hardening.sql', desc: 'Provider bonuses, onboarding submissions, daily reports, tenant taglines & session lock tracking' },
 ];
 
 export const SystemInstallerPage: React.FC = () => {
@@ -95,13 +96,13 @@ export const SystemInstallerPage: React.FC = () => {
   }, [probeLiveHealth]);
 
   const handleDownloadDossier = () => {
-    const content = `# ServiceOS â€” Technical Architecture & Handover Summary
+    const content = `# ServiceOS — Technical Architecture & Handover Summary
 Organization: ${tenantConfig.name} (${tenantConfig.slug})
 Environment Mode: ${isDemoMode ? 'Interactive Demo Sandbox' : 'Production Deployment'}
 Active Currency & Tax: ${tenantConfig.currencyCode} (${tenantConfig.taxName} ${tenantConfig.vatPercent}%)
 Platform Commission: ${(tenantConfig.commissionBps / 100).toFixed(2)}%
 Payment Gateway Adapter: ${systemConfig?.paymentGateway || 'stripe'} (Configured: ${Boolean(systemConfig?.paymentGatewayConfigured)})
-Backend Stack: Fastify 5 + TypeScript + PostgreSQL 16 + PostGIS (15 Paired Up/Down SQL Migrations)
+Backend Stack: Fastify 5 + TypeScript + PostgreSQL 16 + PostGIS (16 Paired Up/Down SQL Migrations)
 Security Controls: FORCE ROW LEVEL SECURITY, AES-256-GCM Secret Vault, RFC 6238 TOTP MFA, HttpOnly Session Rotation`;
 
     const blob = new Blob([content], { type: 'text/markdown' });
@@ -216,10 +217,10 @@ Security Controls: FORCE ROW LEVEL SECURITY, AES-256-GCM Secret Vault, RFC 6238 
                 <span className="w-2 h-2 rounded-full bg-emerald-500" />
               </div>
               <h3 className="text-lg font-black text-slate-900">
-                {tenantConfig.currencyCode} â€¢ {tenantConfig.taxName} {tenantConfig.vatPercent}%
+                {tenantConfig.currencyCode} • {tenantConfig.taxName} {tenantConfig.vatPercent}%
               </h3>
               <p className="text-[11px] text-emerald-600 font-bold">
-                Take-Rate: {(tenantConfig.commissionBps / 100).toFixed(1)}% â€¢ Unit: {tenantConfig.distanceUnit}
+                Take-Rate: {(tenantConfig.commissionBps / 100).toFixed(1)}% • Unit: {tenantConfig.distanceUnit}
               </p>
             </div>
 
@@ -263,7 +264,7 @@ Security Controls: FORCE ROW LEVEL SECURITY, AES-256-GCM Secret Vault, RFC 6238 
               PostgreSQL 16 + PostGIS Paired Migration Suite (`server/src/database/migrations/`)
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              15 forward and rollback SQL migrations managed by `npm run db:migrate`.
+              16 forward and rollback SQL migrations managed by `npm run db:migrate`.
             </p>
           </div>
 

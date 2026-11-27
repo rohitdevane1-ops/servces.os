@@ -50,7 +50,7 @@ export const Page08ActiveBookings: React.FC = () => {
                   #{job.jobNo}
                 </span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wide bg-blue-100 text-blue-800">
-                  {job.status === 'In Progress' ? 'â— On-Site Working' : 'â— En Route'}
+                  {job.status === 'In Progress' ? '● On-Site Working' : '● En Route'}
                 </span>
               </div>
 
@@ -69,7 +69,7 @@ export const Page08ActiveBookings: React.FC = () => {
             {/* Service & Customer Info */}
             <div>
               <h3 className="text-base font-extrabold text-slate-900">{job.serviceName}</h3>
-              <p className="text-xs text-slate-500">{job.category} â€¢ Estimate: {formatCurrency(job.estimate)}</p>
+              <p className="text-xs text-slate-500">{job.category} • Estimate: {formatCurrency(job.estimate)}</p>
             </div>
 
             {/* Technician & Telemetry card */}
@@ -82,7 +82,7 @@ export const Page08ActiveBookings: React.FC = () => {
                   <div className="text-xs font-bold text-slate-900">{job.technicianName}</div>
                   <div className="text-[11px] text-emerald-700 font-bold flex items-center gap-1 mt-0.5">
                     <Navigation className="w-3 h-3" />
-                    {job.status === 'In Progress' ? 'On-Site Active' : 'En Route / Scheduled'} â€¢ {job.scheduleTime}
+                    {job.status === 'In Progress' ? 'On-Site Active' : 'En Route / Scheduled'} • {job.scheduleTime}
                   </div>
                 </div>
               </div>

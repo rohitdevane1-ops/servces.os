@@ -71,7 +71,7 @@ export const DirectSMSComposerModal: React.FC = () => {
         return;
       } else {
         addToast(
-          `Twilio SMS gateway is not configured in Page 36 â€” message queued as PENDING for ${smsRecipient.phone}.`,
+          `Twilio SMS gateway is not configured in Page 36 — message queued as PENDING for ${smsRecipient.phone}.`,
           isTwilioConfigured ? 'info' : 'warning'
         );
       }
@@ -93,7 +93,7 @@ export const DirectSMSComposerModal: React.FC = () => {
         <div className="flex items-center gap-2 text-xs text-slate-600">
           <MessageSquare className="w-4 h-4 text-blue-600" />
           <span>
-            To: <strong className="text-slate-900">{smsRecipient.name}</strong> â€¢ {smsRecipient.phone}
+            To: <strong className="text-slate-900">{smsRecipient.name}</strong> • {smsRecipient.phone}
           </span>
         </div>
         <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${

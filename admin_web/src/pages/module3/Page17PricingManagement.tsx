@@ -182,7 +182,7 @@ export const Page17PricingManagement: React.FC = () => {
             <div key={i} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50/50">
               <div>
                 <div className="font-extrabold text-slate-900 text-sm">{z.zone}</div>
-                <div className="text-slate-500 text-[11px] mt-0.5">{z.demand} â€¢ {z.techCount}</div>
+                <div className="text-slate-500 text-[11px] mt-0.5">{z.demand} • {z.techCount}</div>
               </div>
 
               <div className="flex items-center gap-3">

@@ -6,7 +6,9 @@ import { pool } from './pool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const MIGRATIONS_DIR = path.resolve(__dirname, 'migrations');
+const distMigrationsDir = path.resolve(__dirname, 'migrations');
+const srcMigrationsDir = path.resolve(__dirname, '../../src/database/migrations');
+const MIGRATIONS_DIR = fs.existsSync(distMigrationsDir) ? distMigrationsDir : srcMigrationsDir;
 
 async function ensureMigrationTable(client: pg.PoolClient) {
   await client.query(`

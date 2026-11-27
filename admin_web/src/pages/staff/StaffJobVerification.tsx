@@ -141,11 +141,11 @@ export const StaffJobVerification: React.FC = () => {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
                 <div>
                   <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                    Read-Only Proof Audit â€¢ {selectedOrder.jobNo}
+                    Read-Only Proof Audit • {selectedOrder.jobNo}
                   </span>
                   <h2 className="text-lg font-black text-slate-900 mt-1">{selectedOrder.serviceName}</h2>
                   <p className="text-xs text-slate-500">
-                    Technician: <strong className="text-slate-800">{selectedOrder.technicianName}</strong> â€¢ Customer:{' '}
+                    Technician: <strong className="text-slate-800">{selectedOrder.technicianName}</strong> • Customer:{' '}
                     <strong className="text-slate-800">{selectedOrder.customerName}</strong>
                   </p>
                 </div>

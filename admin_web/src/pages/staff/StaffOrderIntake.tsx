@@ -142,7 +142,7 @@ export const StaffOrderIntake: React.FC = () => {
                 <div className="space-y-1 text-xs text-slate-600 mb-3 bg-slate-50/70 p-2.5 rounded-xl border border-slate-100">
                   <div className="flex items-center gap-2 font-semibold text-slate-800">
                     <span className="truncate">{order.customerName}</span>
-                    <span className="text-slate-400">â€¢</span>
+                    <span className="text-slate-400">•</span>
                     <span className="text-slate-500 text-[11px] shrink-0">{order.customerPhone}</span>
                   </div>
                   <div className="flex items-center gap-1 text-[11px] text-slate-500">

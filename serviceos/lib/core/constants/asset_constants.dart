@@ -1,6 +1,5 @@
 class AssetConstants {
   // Brand Assets
-  static const String masterUiReference = 'design_references/brand/serviceos_master_ui.jpg';
   static const String womanBanner = 'assets/images/banner_woman.png';
 
   // Category & Service Card Photography

@@ -109,16 +109,19 @@ class _TechJobExecutionScreenState extends State<TechJobExecutionScreen> {
         _sampleProofPngBytes,
         '${prefix}_proof_2.png',
       );
+      if (url1 == null || url2 == null) {
+        throw Exception('Upload service did not return valid proof URLs.');
+      }
       if (mounted) {
         setState(() {
           if (isBefore) {
             _beforePhotoUrls
               ..clear()
-              ..addAll([url1 ?? '/api/v1/uploads/before_1.png', url2 ?? '/api/v1/uploads/before_2.png']);
+              ..addAll([url1, url2]);
           } else {
             _afterPhotoUrls
               ..clear()
-              ..addAll([url1 ?? '/api/v1/uploads/after_1.png', url2 ?? '/api/v1/uploads/after_2.png']);
+              ..addAll([url1, url2]);
           }
           _isBusy = false;
         });
@@ -143,7 +146,10 @@ class _TechJobExecutionScreenState extends State<TechJobExecutionScreen> {
         _sampleProofPngBytes,
         'customer_signature.png',
       );
-      _signatureUrl = sigUrl ?? '/api/v1/uploads/customer_signature.png';
+      if (sigUrl == null) {
+        throw Exception('Signature upload failed.');
+      }
+      _signatureUrl = sigUrl;
 
       if (_activeBookingId.isNotEmpty) {
         await ApiClient.instance.completeWorkOrder(

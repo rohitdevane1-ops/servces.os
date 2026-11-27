@@ -81,9 +81,26 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
       });
       final bookingId = (res['bookingId'] ?? res['id'])?.toString();
       if (bookingId != null && bookingId.isNotEmpty) {
+        Map<String, dynamic> paymentConfirm = const {};
         try {
-          await ApiClient.instance.waitForPaymentIntentAndConfirm(bookingId);
-        } catch (_) {}
+          paymentConfirm = await ApiClient.instance.waitForPaymentIntentAndConfirm(bookingId);
+        } catch (payErr) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Booking created; escrow verification pending: $payErr')),
+            );
+          }
+        }
+        final confirmData = paymentConfirm['data'] is Map
+            ? Map<String, dynamic>.from(paymentConfirm['data'] as Map)
+            : paymentConfirm;
+        final requiresClientAction = confirmData['requiresClientAction'] == true;
+        final checkoutRedirectUrl = confirmData['checkoutRedirectUrl']?.toString();
+        if (requiresClientAction && checkoutRedirectUrl != null && checkoutRedirectUrl.isNotEmpty && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Complete gateway authorization in browser: $checkoutRedirectUrl')),
+          );
+        }
         widget.onBookingCreated?.({
           ...res,
           'bookingId': bookingId,
@@ -91,6 +108,9 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
           'customerAddress': address,
           'basePrice': widget.selectedPackagePrice ?? widget.service.price,
           'diagnosticFee': _isEmergencySurge ? 49.00 : 20.00,
+          'requiresClientAction': requiresClientAction,
+          if (checkoutRedirectUrl != null && checkoutRedirectUrl.isNotEmpty)
+            'checkoutRedirectUrl': checkoutRedirectUrl,
         });
         if (mounted) widget.onBookingConfirmed();
       } else if (mounted) {
@@ -173,9 +193,17 @@ class _BookingWizardScreenState extends State<BookingWizardScreen> {
 
               const SizedBox(height: 20),
 
-              // Step Content
+              // Step Content with Smooth Animated Transition
               Expanded(
-                child: _buildStepContent(surfaceColor, textPrimary, textSecondary, primaryBrand, isDark),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 260),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  child: KeyedSubtree(
+                    key: ValueKey<int>(_currentStep),
+                    child: _buildStepContent(surfaceColor, textPrimary, textSecondary, primaryBrand, isDark),
+                  ),
+                ),
               ),
 
               // Bottom Navigation

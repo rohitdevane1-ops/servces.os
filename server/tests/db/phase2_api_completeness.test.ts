@@ -835,7 +835,7 @@ describe('Phase 2 Gate: API Completeness, Geofence, URL Validation, Arabic Slugs
     });
     assert.equal(compWithSigned.statusCode, 200, compWithSigned.body);
 
-    // Migration 015 down/up round-trip on real Postgres
+    // Migration 015 down/up round-trip on real Postgres (verify data-loss guard rejects first)
     const down015 = fs.readFileSync(
       path.join(MIGRATIONS_DIR, '015_phase2_auth_resets_and_encrypted_integrations.down.sql'),
       'utf8'
@@ -844,6 +844,9 @@ describe('Phase 2 Gate: API Completeness, Geofence, URL Validation, Arabic Slugs
       path.join(MIGRATIONS_DIR, '015_phase2_auth_resets_and_encrypted_integrations.sql'),
       'utf8'
     );
+    await assert.rejects(() => db.pool.query(down015), /MIGRATION 015 ROLLBACK ABORTED/);
+    await db.pool.query(`UPDATE integration_configs SET encrypted_secrets = '{}'::jsonb`);
+    await db.pool.query(`DELETE FROM provider_locations WHERE location IS NULL`);
     await db.pool.query(down015);
     const tblAfterDown = await db.pool.query(`SELECT to_regclass('public.password_reset_tokens') AS t`);
     assert.equal(tblAfterDown.rows[0].t, null);

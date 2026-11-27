@@ -137,6 +137,12 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
     const tenantId = request.tenantId;
     const userId = request.user!.id;
 
+    if (request.user?.role !== 'TECHNICIAN') {
+      return reply.status(403).send(
+        errorResponse('FORBIDDEN', 'Only technicians can view pending dispatch broadcast offers.', requestId)
+      );
+    }
+
     const result = await tenantQuery(
       `SELECT 
         b.id as "broadcastId",
@@ -223,6 +229,12 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
     const requestId = request.id || `req_${Date.now()}`;
     const tenantId = request.tenantId;
     const userId = request.user!.id;
+
+    if (request.user?.role !== 'TECHNICIAN') {
+      return reply.status(403).send(
+        errorResponse('FORBIDDEN', 'Only technicians can accept dispatch broadcast offers.', requestId)
+      );
+    }
 
     const parsed = broadcastAcceptSchema.safeParse(request.body);
     if (!parsed.success || (!parsed.data.broadcastId && !parsed.data.bookingId)) {
@@ -404,6 +416,12 @@ export async function dispatchRoutes(fastify: FastifyInstance) {
     const requestId = request.id || `req_${Date.now()}`;
     const tenantId = request.tenantId;
     const userId = request.user!.id;
+
+    if (request.user?.role !== 'TECHNICIAN') {
+      return reply.status(403).send(
+        errorResponse('FORBIDDEN', 'Only technicians can decline dispatch broadcast offers.', requestId)
+      );
+    }
 
     const parsed = broadcastDeclineSchema.safeParse(request.body);
     if (!parsed.success) {

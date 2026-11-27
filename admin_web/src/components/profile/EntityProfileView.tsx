@@ -132,12 +132,12 @@ export const EntityProfileView: React.FC<EntityProfileViewProps> = ({
 
   const displaySubtitle =
     resolvedType === 'customer'
-      ? `${customer?.city || 'Service Area'} â€¢ ${customer?.status || 'Active'}`
+      ? `${customer?.city || 'Service Area'} • ${customer?.status || 'Active'}`
       : resolvedType === 'technician'
-      ? `${technician?.specialization || 'Field Specialist'} â€¢ ${technician?.status || 'Available'}`
+      ? `${technician?.specialization || 'Field Specialist'} • ${technician?.status || 'Available'}`
       : resolvedType === 'staff'
-      ? `${staff?.role || 'Operations Coordinator'} â€¢ ${staff?.department || 'Dispatch Hub'}`
-      : `${userProfile.title} â€¢ ${userProfile.department}`;
+      ? `${staff?.role || 'Operations Coordinator'} • ${staff?.department || 'Dispatch Hub'}`
+      : `${userProfile.title} • ${userProfile.department}`;
 
   const avatarUrl =
     resolvedType === 'customer'
@@ -359,7 +359,7 @@ export const EntityProfileView: React.FC<EntityProfileViewProps> = ({
                   </div>
                   <div className="px-3.5 py-2 bg-slate-50 rounded-xl border border-slate-200/80 text-center">
                     <span className="text-[10px] font-bold text-slate-400 uppercase block">Rating</span>
-                    <span className="text-sm font-black text-amber-600">â˜… {customer.rating}</span>
+                    <span className="text-sm font-black text-amber-600">★ {customer.rating}</span>
                   </div>
                 </>
               )}
@@ -376,7 +376,7 @@ export const EntityProfileView: React.FC<EntityProfileViewProps> = ({
                   </div>
                   <div className="px-3.5 py-2 bg-slate-50 rounded-xl border border-slate-200/80 text-center">
                     <span className="text-[10px] font-bold text-slate-400 uppercase block">Rating</span>
-                    <span className="text-sm font-black text-amber-600">â˜… {technician.rating}</span>
+                    <span className="text-sm font-black text-amber-600">★ {technician.rating}</span>
                   </div>
                 </>
               )}
@@ -451,7 +451,7 @@ export const EntityProfileView: React.FC<EntityProfileViewProps> = ({
                     <div>
                       <span className="text-[10px] text-slate-400 block">Trade License &amp; Hourly Rate</span>
                       <span className="font-bold text-slate-800">
-                        {technician.licenseNumber || 'Verified Trade Credential'} â€¢ {formatCurrency(technician.hourlyRate || 85)}/hr
+                        {technician.licenseNumber || 'Verified Trade Credential'} • {formatCurrency(technician.hourlyRate || 85)}/hr
                       </span>
                     </div>
                   </div>
@@ -488,9 +488,9 @@ export const EntityProfileView: React.FC<EntityProfileViewProps> = ({
                     className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between text-xs"
                   >
                     <div>
-                      <div className="font-bold text-slate-900">{b.jobNo} â€¢ {b.serviceName}</div>
+                      <div className="font-bold text-slate-900">{b.jobNo} • {b.serviceName}</div>
                       <div className="text-[11px] text-slate-500 mt-0.5">
-                        Customer: {b.customerName} â€¢ Tech: {b.technicianName} â€¢ {b.scheduleDate} {b.scheduleTime}
+                        Customer: {b.customerName} • Tech: {b.technicianName} • {b.scheduleDate} {b.scheduleTime}
                       </div>
                     </div>
                     <div className="text-right">
@@ -535,9 +535,9 @@ export const EntityProfileView: React.FC<EntityProfileViewProps> = ({
               {scopedBookings.map(b => (
                 <div key={b.id} className="py-3 flex items-center justify-between text-xs">
                   <div>
-                    <div className="font-bold text-slate-900">{b.jobNo} â€” {b.serviceName}</div>
+                    <div className="font-bold text-slate-900">{b.jobNo} — {b.serviceName}</div>
                     <div className="text-slate-500 text-[11px]">
-                      {b.customerAddress} â€¢ {b.scheduleDate} at {b.scheduleTime}
+                      {b.customerAddress} • {b.scheduleDate} at {b.scheduleTime}
                     </div>
                   </div>
                   <div className="text-right">
@@ -564,9 +564,9 @@ export const EntityProfileView: React.FC<EntityProfileViewProps> = ({
               {scopedInvoices.map(inv => (
                 <div key={inv.id} className="py-3 flex items-center justify-between text-xs">
                   <div>
-                    <div className="font-bold text-slate-900">{inv.invoiceNo || inv.id} â€¢ {inv.serviceName}</div>
+                    <div className="font-bold text-slate-900">{inv.invoiceNo || inv.id} • {inv.serviceName}</div>
                     <div className="text-slate-500 text-[11px]">
-                      Issued: {inv.date} {inv.bookingReference ? `â€¢ Ref: ${inv.bookingReference}` : ''}
+                      Issued: {inv.date} {inv.bookingReference ? `• Ref: ${inv.bookingReference}` : ''}
                     </div>
                   </div>
                   <div className="text-right">
@@ -594,12 +594,12 @@ export const EntityProfileView: React.FC<EntityProfileViewProps> = ({
                 <div key={rev.id} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 text-xs space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-slate-900">
-                      {rev.customerName} {rev.providerName ? `â†’ ${rev.providerName}` : ''}
+                      {rev.customerName} {rev.providerName ? `→ ${rev.providerName}` : ''}
                     </span>
-                    <span className="font-black text-amber-600">â˜… {rev.rating}</span>
+                    <span className="font-black text-amber-600">★ {rev.rating}</span>
                   </div>
                   <p className="text-slate-700">{rev.comment}</p>
-                  <div className="text-[10px] text-slate-400">{rev.serviceName} â€¢ {rev.date}</div>
+                  <div className="text-[10px] text-slate-400">{rev.serviceName} • {rev.date}</div>
                 </div>
               ))}
             </div>

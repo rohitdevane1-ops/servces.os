@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/network/api_client.dart';
+import '../../../../core/widgets/motion_primitives.dart';
 
 class TechDashboardScreen extends StatefulWidget {
   final VoidCallback onSimulateBroadcast;
@@ -119,13 +120,10 @@ class _TechDashboardScreenState extends State<TechDashboardScreen> {
                   children: [
                     Row(
                       children: [
-                        Container(
-                          width: 12,
-                          height: 12,
-                          decoration: BoxDecoration(
-                            color: _isOnline ? const Color(0xFF10B981) : Colors.grey,
-                            shape: BoxShape.circle,
-                          ),
+                        PulsingStatusDot(
+                          color: _isOnline ? const Color(0xFF10B981) : Colors.grey,
+                          size: 10,
+                          isActive: _isOnline,
                         ),
                         const SizedBox(width: 10),
                         Column(

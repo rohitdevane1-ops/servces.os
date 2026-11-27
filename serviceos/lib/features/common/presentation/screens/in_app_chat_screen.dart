@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import '../../../../core/network/api_client.dart';
 import '../../../../core/theme/app_theme.dart';
 
 /// Screen X06, X07, X08, P28, P29: In-App Chat, Media Viewer & Masked VoIP Calling
@@ -7,6 +9,7 @@ class InAppChatScreen extends StatefulWidget {
   final String peerRole;
   final String peerAvatar;
   final String bookingRef;
+  final String? bookingId;
   final VoidCallback? onBack;
 
   const InAppChatScreen({
@@ -15,6 +18,7 @@ class InAppChatScreen extends StatefulWidget {
     this.peerRole = 'Field Service Professional',
     this.peerAvatar = 'assets/images/banner_woman.png',
     this.bookingRef = '',
+    this.bookingId,
     this.onBack,
   });
 
@@ -25,35 +29,166 @@ class InAppChatScreen extends StatefulWidget {
 class _InAppChatScreenState extends State<InAppChatScreen> {
   final TextEditingController _msgController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final ImagePicker _imagePicker = ImagePicker();
   bool _isCalling = false;
   int _callSeconds = 0;
+  bool _isSending = false;
+  String? _resolvedBookingId;
 
   final List<Map<String, dynamic>> _messages = [];
 
-  void _sendMessage() {
-    final text = _msgController.text.trim();
-    if (text.isEmpty) return;
+  static final RegExp _uuidPattern = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+  );
 
-    setState(() {
-      _messages.add({
-        'id': DateTime.now().millisecondsSinceEpoch.toString(),
-        'isMe': true,
-        'text': text,
-        'time': 'Just now',
-        'isImage': false,
+  @override
+  void initState() {
+    super.initState();
+    _loadMessages();
+  }
+
+  Future<String?> _resolveBookingId() async {
+    if (_resolvedBookingId != null && _uuidPattern.hasMatch(_resolvedBookingId!)) {
+      return _resolvedBookingId;
+    }
+    final candidate = widget.bookingId?.trim();
+    if (candidate != null && _uuidPattern.hasMatch(candidate)) {
+      _resolvedBookingId = candidate;
+      return candidate;
+    }
+    try {
+      final bookings = await ApiClient.instance.fetchBookings(limit: 10);
+      if (bookings.isNotEmpty) {
+        for (final b in bookings) {
+          final map = Map<String, dynamic>.from(b as Map);
+          final ref = map['bookingReference']?.toString() ?? '';
+          final id = map['id']?.toString() ?? '';
+          if (widget.bookingRef.isNotEmpty && ref == widget.bookingRef && _uuidPattern.hasMatch(id)) {
+            _resolvedBookingId = id;
+            return id;
+          }
+        }
+        final firstId = (bookings.first as Map)['id']?.toString();
+        if (firstId != null && _uuidPattern.hasMatch(firstId)) {
+          _resolvedBookingId = firstId;
+          return firstId;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> _loadMessages() async {
+    final token = await ApiClient.instance.getAccessToken();
+    if (token == null || token.trim().isEmpty) return;
+
+    final myRole = (await ApiClient.instance.getUserRole() ?? 'CUSTOMER').toUpperCase();
+    final bid = await _resolveBookingId();
+    if (bid == null) return;
+
+    try {
+      final rows = await ApiClient.instance.getBookingMessages(bid);
+      if (!mounted) return;
+      setState(() {
+        _messages
+          ..clear()
+          ..addAll(rows.map((raw) {
+            final m = Map<String, dynamic>.from(raw as Map);
+            final attachments = m['attachmentsUrls'] as List<dynamic>? ?? const [];
+            final firstUrl = attachments.isNotEmpty ? attachments.first.toString() : '';
+            final senderRole = (m['senderRole'] ?? '').toString().toUpperCase();
+            final created = (m['createdAt'] ?? '').toString();
+            return {
+              'id': m['id']?.toString() ?? DateTime.now().millisecondsSinceEpoch.toString(),
+              'isMe': senderRole == myRole,
+              'text': (m['messageBody'] ?? m['message_body'] ?? '').toString(),
+              'time': created.length >= 16 ? created.substring(11, 16) : 'Synced',
+              'isImage': firstUrl.isNotEmpty,
+              'imageUrl': firstUrl,
+            };
+          }));
       });
-      _msgController.clear();
-    });
+    } catch (_) {}
+  }
 
-    Future.delayed(const Duration(milliseconds: 100), () {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
+  Future<void> _sendMessage({List<String> attachmentsUrls = const [], String? overrideBody}) async {
+    if (_isSending) return;
+    final text = (overrideBody ?? _msgController.text).trim();
+    if (text.isEmpty && attachmentsUrls.isEmpty) return;
+
+    setState(() => _isSending = true);
+    try {
+      final bid = await _resolveBookingId();
+      if (bid != null) {
+        await ApiClient.instance.sendBookingMessage(
+          bid,
+          text.isNotEmpty ? text : 'Photo attachment',
+          attachmentsUrls: attachmentsUrls,
+        );
+        if (overrideBody == null) _msgController.clear();
+        await _loadMessages();
+      } else {
+        await ApiClient.instance.openSupportTicket(
+          subject: widget.bookingRef.isNotEmpty
+              ? 'Dispatch Chat: ${widget.bookingRef}'
+              : 'Live Dispatch Inquiry',
+          initialMessage: text.isNotEmpty ? text : 'Photo attachment',
+          category: 'Dispatch Chat',
+        );
+        if (overrideBody == null) _msgController.clear();
+        if (mounted) {
+          setState(() {
+            _messages.add({
+              'id': DateTime.now().millisecondsSinceEpoch.toString(),
+              'isMe': true,
+              'text': text,
+              'time': 'Sent',
+              'isImage': false,
+            });
+          });
+        }
+      }
+
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Unable to send message: $e')),
         );
       }
-    });
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
+  }
+
+  Future<void> _pickAndSendPhoto() async {
+    try {
+      final picked = await _imagePicker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+      if (picked == null) return;
+      final bytes = await picked.readAsBytes();
+      final url = await ApiClient.instance.uploadMediaBytes(bytes, picked.name);
+      if (url != null && url.isNotEmpty) {
+        await _sendMessage(attachmentsUrls: [url], overrideBody: 'Shared photo');
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Photo upload failed. Please try again.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Image upload error: $e')),
+        );
+      }
+    }
   }
 
   void _startVoIPCall() {
@@ -218,19 +353,7 @@ class _InAppChatScreenState extends State<InAppChatScreen> {
                 children: [
                   IconButton(
                     icon: Icon(Icons.camera_alt_outlined, color: textSecondary),
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Camera picker opened')),
-                      );
-                    },
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.mic_none_outlined, color: textSecondary),
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Hold to record voice memo')),
-                      );
-                    },
+                    onPressed: _isSending ? null : _pickAndSendPhoto,
                   ),
                   Expanded(
                     child: Container(

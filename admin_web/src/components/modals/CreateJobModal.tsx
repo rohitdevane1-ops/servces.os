@@ -155,7 +155,7 @@ export const CreateJobModal: React.FC = () => {
         </div>
 
         <div>
-          <label className="font-bold text-slate-700 block mb-1">Assign Pro (Optional â€” or leave for Auto-Dispatch)</label>
+          <label className="font-bold text-slate-700 block mb-1">Assign Pro (Optional — or leave for Auto-Dispatch)</label>
           <select
             value={technicianId}
             onChange={(e) => setTechnicianId(e.target.value)}
@@ -163,7 +163,7 @@ export const CreateJobModal: React.FC = () => {
           >
             <option value="">Leave Unassigned (Auto-Dispatch Queue)</option>
             {technicians.map(t => (
-              <option key={t.id} value={t.id}>{t.name} â€¢ {t.specialization} ({t.status})</option>
+              <option key={t.id} value={t.id}>{t.name} • {t.specialization} ({t.status})</option>
             ))}
           </select>
         </div>

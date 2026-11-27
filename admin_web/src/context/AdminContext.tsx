@@ -38,7 +38,9 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [currentStaffPageId, setCurrentStaffPageId] = useState<number>(101);
   const [activeStaffModuleId, setActiveStaffModuleId] = useState<number>(1);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 1024 : false
+  );
 
   const navigateToPage = useCallback((pageId: number) => {
     if (pageId === 37) {
@@ -340,7 +342,9 @@ export const AdminProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         setActiveProfileTarget,
         navigateToFacebookProfile,
         agencyName: auth.tenantConfig.name,
-        agencyTagline: auth.isDemoMode ? 'Interactive Sandbox' : 'Enterprise Field Operations',
+        agencyTagline:
+          auth.tenantConfig.tagline ||
+          (auth.isDemoMode ? 'Interactive Sandbox' : 'Enterprise Field Operations'),
         updateAgencyBranding: auth.updateAgencyBranding,
         selectedCustomerId,
         setSelectedCustomerId,

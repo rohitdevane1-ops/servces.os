@@ -11,10 +11,19 @@ import { getTenantPaymentGateway } from '../../services/paymentGateway.js';
 import { outboxWorker } from '../../workers/outbox.worker.js';
 import { broadcastBookingToNearbyProviders } from '../dispatch/dispatch.service.js';
 import { safeMediaUrlSchema } from '../../utils/urlValidator.js';
+import {
+  normalizeStoredMediaUrl,
+  normalizeStoredMediaUrls,
+  signStoredMediaUrl,
+  signStoredMediaUrls,
+} from '../../utils/mediaSigning.js';
+import { computeTaxAndCommissionSplit } from '../finances/ledgerMath.js';
 
 const createBookingSchema = z.object({
   serviceId: z.string().uuid(),
   customerId: z.string().uuid().optional(),
+  customerName: z.string().min(1).max(255).optional(),
+  customerPhone: z.string().max(40).optional(),
   addressText: z.string().min(5),
   city: z.string().default(''),
   state: z.string().default(''),
@@ -63,7 +72,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { serviceId, customerId, addressText, city, state, postalCode, latitude, longitude, accessInstructions, scheduledStart, priority, paymentMethodId } = parsed.data;
+    const { serviceId, customerId, customerName, customerPhone, addressText, city, state, postalCode, latitude, longitude, accessInstructions, scheduledStart, priority, paymentMethodId } = parsed.data;
     const callerRole = request.user!.role;
     if (callerRole === 'TECHNICIAN') {
       return reply.status(403).send(
@@ -118,14 +127,28 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         [userId, tenantId]
       );
       if (custRes.rows.length === 0) {
+        const resolvedName = (customerName && customerName.trim()) || targetCustomerEmail.split('@')[0];
         await client.query(
-          `INSERT INTO customer_profiles (user_id, tenant_id, full_name, default_address_text)
-           VALUES ($1, $2, $3, $4)`,
-          [userId, tenantId, targetCustomerEmail.split('@')[0], addressText]
+          `INSERT INTO customer_profiles (user_id, tenant_id, full_name, phone_number, default_address_text)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [userId, tenantId, resolvedName, customerPhone?.trim() || null, addressText]
+        );
+      } else if ((callerRole === 'ADMIN' || callerRole === 'STAFF') && (customerName || customerPhone)) {
+        await client.query(
+          `UPDATE customer_profiles
+           SET full_name = COALESCE($3, full_name),
+               phone_number = COALESCE($4, phone_number),
+               updated_at = NOW()
+           WHERE user_id = $1 AND tenant_id = $2`,
+          [userId, tenantId, customerName?.trim() || null, customerPhone?.trim() || null]
         );
       }
 
-      // B. Create customer address with PostGIS Point
+      // B. Create customer address with PostGIS Point (clear previous default first)
+      await client.query(
+        `UPDATE customer_addresses SET is_default = FALSE WHERE customer_id = $1 AND tenant_id = $2 AND is_default = TRUE`,
+        [userId, tenantId]
+      );
       const addrRes = await client.query(
         `INSERT INTO customer_addresses (
           customer_id, tenant_id, address_line1, city, state_province, postal_code,
@@ -138,9 +161,12 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
       const addressId = addrRes.rows[0].id;
 
-      // C. Query active service pricing
+      // C. Query active service pricing (require both service and parent category active)
       const srvRes = await client.query(
-        'SELECT id, name, base_price_cents FROM services WHERE id = $1 AND tenant_id = $2 AND is_active = TRUE',
+        `SELECT s.id, s.name, s.base_price_cents
+         FROM services s
+         JOIN service_categories sc ON sc.id = s.category_id AND sc.tenant_id = s.tenant_id AND sc.is_active = TRUE
+         WHERE s.id = $1 AND s.tenant_id = $2 AND s.is_active = TRUE`,
         [serviceId, tenantId]
       );
       if (srvRes.rows.length === 0) {
@@ -182,13 +208,14 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       const currencySymbol = request.tenant?.currencySymbol || 'AED ';
       const invoiceNo = `INV-${new Date().getFullYear()}-${randomSuffix}`;
 
+      const commissionBpsSnapshot = Number(request.tenant?.commissionBps ?? 1500);
       const invRes = await client.query(
         `INSERT INTO invoices (
           tenant_id, booking_id, invoice_number, labor_subtotal_cents,
-          diagnostic_fee_cents, tax_rate_bps, tax_total_cents, total_amount_cents, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT')
+          diagnostic_fee_cents, tax_rate_bps, tax_total_cents, total_amount_cents, commission_bps_snapshot, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'DRAFT')
         RETURNING id`,
-        [tenantId, booking.id, invoiceNo, laborCents, diagnosticCents, taxRateBps, taxTotalCents, totalAmountCents]
+        [tenantId, booking.id, invoiceNo, laborCents, diagnosticCents, taxRateBps, taxTotalCents, totalAmountCents, commissionBpsSnapshot]
       );
       const invoiceId = invRes.rows[0].id;
 
@@ -303,7 +330,8 @@ export async function bookingRoutes(fastify: FastifyInstance) {
 
     const res = await tenantQuery(
       `SELECT b.id as booking_id, b.customer_id,
-              pt.id as tx_id, pt.stripe_payment_intent_id, pt.status as tx_status, pt.authorized_amount_cents,
+              pt.id as tx_id, pt.stripe_payment_intent_id, pt.checkout_redirect_url,
+              pt.status as tx_status, pt.authorized_amount_cents,
               oo.status as outbox_status, oo.last_error as outbox_error
        FROM bookings b
        JOIN invoices i ON i.booking_id = b.id AND i.tenant_id = $2
@@ -363,6 +391,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         paymentTransactionId: row.tx_id,
         paymentIntentId: row.stripe_payment_intent_id,
         clientSecret: null,
+        redirectUrl: row.checkout_redirect_url ?? null,
         status: row.tx_status,
         amountCents: Number(row.authorized_amount_cents),
       }, requestId)
@@ -459,8 +488,25 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       activeGateway !== 'stripe' &&
       !row.stripe_payment_intent_id.startsWith('pi_sandbox_')
     ) {
-      targetTxStatus = 'REQUIRES_CAPTURE';
-      targetInvoiceStatus = 'AUTHORIZED';
+      let gwCheck;
+      try {
+        gwCheck = await tenantGateway.gateway.verifyPreAuth(row.stripe_payment_intent_id);
+      } catch (gwErr: any) {
+        return reply.status(502).send(
+          errorResponse('PAYMENT_GATEWAY_VERIFY_FAILED', `Failed to verify pre-authorization with ${activeGateway}: ${gwErr.message}`, requestId)
+        );
+      }
+      if (gwCheck.status === 'succeeded') {
+        targetTxStatus = 'SUCCEEDED';
+        targetInvoiceStatus = 'PAID';
+      } else if (gwCheck.status === 'requires_capture') {
+        targetTxStatus = 'REQUIRES_CAPTURE';
+        targetInvoiceStatus = 'AUTHORIZED';
+      } else {
+        return reply.status(409).send(
+          errorResponse('PAYMENT_NOT_AUTHORIZED', `${activeGateway} transaction status is ${gwCheck.rawStatus || gwCheck.status}; payment is not authorized.`, requestId)
+        );
+      }
     } else if (process.env.NODE_ENV === 'production') {
       return reply.status(422).send(
         errorResponse('PAYMENT_GATEWAY_NOT_CONFIGURED', 'Live Stripe gateway is not configured on this server.', requestId)
@@ -723,11 +769,21 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       items = itemsRes.rows;
     }
 
+    const rawProof = pfRes.rows[0] || null;
+    const proofs = rawProof
+      ? {
+          ...rawProof,
+          before_photos_urls: signStoredMediaUrls(rawProof.before_photos_urls, tenantId),
+          after_photos_urls: signStoredMediaUrls(rawProof.after_photos_urls, tenantId),
+          customer_signature_url: signStoredMediaUrl(rawProof.customer_signature_url, tenantId),
+        }
+      : null;
+
     return reply.status(200).send(
       successResponse({
         booking,
         timeline: tlRes.rows,
-        proofs: pfRes.rows[0] || null,
+        proofs,
         invoiceItems: items
       }, requestId)
     );
@@ -803,9 +859,12 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         };
       }
 
-      // PostGIS Geofence enforcement for field technicians (skip zeroed synthetic test coordinates)
+      // PostGIS Geofence enforcement for field technicians (skip zeroed synthetic coordinates ONLY in test env)
       let distanceMeters: number | null = null;
-      const isZeroSyntheticAddr = Number(booking.addr_lat) === 0 && Number(booking.addr_lng) === 0;
+      const isZeroSyntheticAddr =
+        process.env.NODE_ENV === 'test' &&
+        Number(booking.addr_lat) === 0 &&
+        Number(booking.addr_lng) === 0;
       if (userRole === 'TECHNICIAN' && !isZeroSyntheticAddr) {
         let distRes;
         if (latitude !== undefined && longitude !== undefined) {
@@ -903,17 +962,26 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         [id]
       );
 
-      // Update live provider coordinates & ON_JOB status when coordinates were supplied
-      if (userRole === 'TECHNICIAN' && latitude !== undefined && longitude !== undefined) {
-        await client.query(
-          `INSERT INTO provider_locations (provider_id, tenant_id, location, duty_status, last_ping_at)
-           VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, 'ON_JOB', NOW())
-           ON CONFLICT (provider_id) DO UPDATE SET
-             location = EXCLUDED.location,
-             duty_status = 'ON_JOB',
-             last_ping_at = NOW()`,
-          [userId, tenantId, longitude, latitude]
-        );
+      // Update live provider coordinates & ON_JOB status on arrival
+      if (userRole === 'TECHNICIAN') {
+        if (latitude !== undefined && longitude !== undefined) {
+          await client.query(
+            `INSERT INTO provider_locations (provider_id, tenant_id, location, duty_status, last_ping_at)
+             VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, 'ON_JOB', NOW())
+             ON CONFLICT (provider_id) DO UPDATE SET
+               location = EXCLUDED.location,
+               duty_status = 'ON_JOB',
+               last_ping_at = NOW()`,
+            [userId, tenantId, longitude, latitude]
+          );
+        } else {
+          await client.query(
+            `UPDATE provider_locations
+             SET duty_status = 'ON_JOB', last_ping_at = NOW()
+             WHERE provider_id = $1 AND tenant_id = $2`,
+            [userId, tenantId]
+          );
+        }
       }
 
       // Record Timeline Audit Event
@@ -978,6 +1046,8 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       const bRes = await readClient.query(
         `SELECT b.id, b.status, b.assigned_provider_id,
                 i.id as invoice_id, i.total_amount_cents, COALESCE(i.tax_total_cents, 0) AS tax_total_cents,
+                COALESCE(i.refunded_amount_cents, 0) AS refunded_amount_cents,
+                i.commission_bps_snapshot,
                 t.default_platform_commission_bps
          FROM bookings b
          JOIN tenants t ON t.id = b.tenant_id
@@ -1154,7 +1224,10 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         );
       }
 
-      // A. Save Work Order Proofs & Signatures (using canonical column name work_summary_notes)
+      // A. Save Work Order Proofs & Signatures (normalize signed URLs to stable paths)
+      const normalizedBefore = normalizeStoredMediaUrls(beforePhotos);
+      const normalizedAfter = normalizeStoredMediaUrls(afterPhotos);
+      const normalizedSignature = normalizeStoredMediaUrl(customerSignatureUrl);
       await settleClient.query(
         `INSERT INTO work_order_proofs (
           booking_id, before_photos_urls, after_photos_urls, customer_signature_url, work_summary_notes
@@ -1164,7 +1237,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           after_photos_urls = EXCLUDED.after_photos_urls,
           customer_signature_url = EXCLUDED.customer_signature_url,
           work_summary_notes = EXCLUDED.work_summary_notes`,
-        [id, JSON.stringify(beforePhotos), JSON.stringify(afterPhotos), customerSignatureUrl || null, workSummaryNotes || null]
+        [id, JSON.stringify(normalizedBefore), JSON.stringify(normalizedAfter), normalizedSignature || null, workSummaryNotes || null]
       );
 
       // B. Advance Booking Status to COMPLETED
@@ -1173,18 +1246,20 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         [id]
       );
 
-      // C. Capture Invoice Payment & Release Escrow Hold Idempotently
+      // C. Capture Invoice Payment & Release Escrow Hold Idempotently (never overwrite refunded statuses)
       if (booking.invoice_id) {
         await settleClient.query(
-          `UPDATE invoices SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW() WHERE id = $1`,
+          `UPDATE invoices
+           SET status = 'PAID', paid_at = COALESCE(paid_at, NOW()), updated_at = NOW()
+           WHERE id = $1 AND status IN ('DRAFT', 'AUTHORIZED')`,
           [booking.invoice_id]
         );
 
-        // Update Payment Transaction (conditional on non-succeeded status)
+        // Update Payment Transaction (conditional on non-terminal status)
         await settleClient.query(
           `UPDATE payment_transactions 
            SET captured_amount_cents = authorized_amount_cents, status = 'SUCCEEDED', updated_at = NOW()
-           WHERE invoice_id = $1 AND status != 'SUCCEEDED'`,
+           WHERE invoice_id = $1 AND status NOT IN ('SUCCEEDED', 'REFUNDED', 'VOIDED')`,
           [booking.invoice_id]
         );
 
@@ -1201,12 +1276,18 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         let taxPayableAcc = accounts.find(a => a.account_number === '2030')?.id;
         const platformRevAcc = accounts.find(a => a.account_number === '4010')?.id;
 
-        const totalCents = Number(booking.total_amount_cents ?? 0);
-        const taxCents = Math.min(totalCents, Math.max(0, Number(booking.tax_total_cents ?? 0)));
-        const preTaxCents = Math.max(0, totalCents - taxCents);
-        const commissionBps = Number(booking.default_platform_commission_bps ?? 1500);
-        const platformFeeCents = Math.round(preTaxCents * (commissionBps / 10000));
-        const netTechPayoutCents = preTaxCents - platformFeeCents;
+        const grossTotalCents = Number(booking.total_amount_cents ?? 0);
+        const refundedCents = Math.min(grossTotalCents, Math.max(0, Number(booking.refunded_amount_cents ?? 0)));
+        const netCapturedCents = Math.max(0, grossTotalCents - refundedCents);
+        const grossTaxCents = Math.min(grossTotalCents, Math.max(0, Number(booking.tax_total_cents ?? 0)));
+        const proportionalTaxCents = grossTotalCents > 0
+          ? Math.round((grossTaxCents * netCapturedCents) / grossTotalCents)
+          : 0;
+        const commissionBps = Number(booking.commission_bps_snapshot ?? booking.default_platform_commission_bps ?? 1500);
+        const split = computeTaxAndCommissionSplit(netCapturedCents, proportionalTaxCents, commissionBps);
+        const taxCents = split.taxCents;
+        const platformFeeCents = split.platformFeeCents;
+        const netTechPayoutCents = split.techPayoutCents;
 
         if (taxCents > 0 && !taxPayableAcc) {
           const insTaxAcc = await settleClient.query<{ id: string }>(
@@ -1219,7 +1300,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           taxPayableAcc = insTaxAcc.rows[0]?.id;
         }
 
-        if (paymentTx?.id && escrowClearingAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && totalCents > 0) {
+        if (paymentTx?.id && escrowClearingAcc && escrowLiabilityAcc && techPayableAcc && platformRevAcc && grossTotalCents > 0) {
           // Record Escrow Capture idempotently (Dr 1020 Stripe Holding Escrow / Cr 2010 Customer Escrow Deposits)
           await settleClient.query(
             `INSERT INTO ledger_entries (tenant_id, transaction_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
@@ -1230,7 +1311,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
               paymentTx.id,
               escrowClearingAcc,
               escrowLiabilityAcc,
-              totalCents,
+              grossTotalCents,
               `Escrow captured on work order completion for #${id}`
             ]
           );
@@ -1409,9 +1490,10 @@ export async function bookingRoutes(fastify: FastifyInstance) {
       );
     }
 
-    // PHASE 2: Cancel Stripe PaymentIntent Authorization Outside Any Open Transaction
+    // PHASE 2: Cancel External Payment Pre-Authorization Outside Any Open Transaction
     const cancelGateway = booking.invoice_id ? await getTenantPaymentGateway(tenantId) : null;
     const cancelStripeKey = cancelGateway?.secrets.stripeSecretKey;
+    const cancelActiveGateway = env.PAYMENT_GATEWAY || 'stripe';
     if (
       booking.invoice_id &&
       hasStripeConfigured(cancelStripeKey) &&
@@ -1442,6 +1524,22 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           );
         }
         request.log.warn({ err: stripeErr }, 'Stripe PaymentIntent was already voided/canceled');
+      }
+    } else if (
+      booking.invoice_id &&
+      cancelActiveGateway !== 'stripe' &&
+      cancelGateway?.isConfigured &&
+      booking.stripe_payment_intent_id &&
+      !booking.stripe_payment_intent_id.startsWith('pi_') &&
+      !booking.stripe_payment_intent_id.startsWith('pi_sandbox_') &&
+      ['REQUIRES_CAPTURE', 'PENDING'].includes(booking.tx_status)
+    ) {
+      try {
+        await cancelGateway.gateway.cancelPreAuth(booking.stripe_payment_intent_id);
+      } catch (gwErr: any) {
+        return reply.status(502).send(
+          errorResponse('GATEWAY_CANCELLATION_FAILED', `Failed to release pre-authorization hold with ${cancelActiveGateway}: ${gwErr.message}`, requestId)
+        );
       }
     }
 
@@ -1634,6 +1732,15 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         return { ok: false, status: 403, code: 'FORBIDDEN', message: 'You do not have permission to reschedule this booking.' };
       }
 
+      if (userRole === 'CUSTOMER' && bk.status === 'EN_ROUTE') {
+        return {
+          ok: false,
+          status: 409,
+          code: 'RESCHEDULE_WINDOW_CLOSED',
+          message: 'Technician is already en route; please contact support to modify this appointment.',
+        };
+      }
+
       if (!['REQUESTED', 'BROADCASTING', 'ASSIGNED', 'EN_ROUTE'].includes(bk.status)) {
         return {
           ok: false,
@@ -1808,7 +1915,10 @@ export async function bookingRoutes(fastify: FastifyInstance) {
         `UPDATE bookings
          SET assigned_provider_id = $1,
              status = 'ASSIGNED',
-             customer_safety_pin = COALESCE(customer_safety_pin, $2),
+             customer_safety_pin = CASE
+               WHEN assigned_provider_id IS NOT NULL AND assigned_provider_id <> $1 THEN $2
+               ELSE COALESCE(customer_safety_pin, $2)
+             END,
              pin_verified_at = NULL,
              geofence_arrival_at = NULL,
              safety_pin_failed_attempts = 0,
@@ -1872,7 +1982,7 @@ export async function bookingRoutes(fastify: FastifyInstance) {
           assignedProviderId: providerId,
           providerName: target.full_name,
           status: 'ASSIGNED',
-          safetyPin: updRes.rows[0].customer_safety_pin,
+          ...(request.user!.role === 'ADMIN' ? { safetyPin: updRes.rows[0].customer_safety_pin } : {}),
         },
       };
     });
@@ -1882,5 +1992,130 @@ export async function bookingRoutes(fastify: FastifyInstance) {
     }
 
     return reply.status(200).send(successResponse(outcome.payload, requestId));
+  });
+
+  // 10. Read In-App Booking Chat Messages
+  fastify.get('/:id/messages', {
+    schema: {
+      tags: ['Bookings & Dispatch'],
+      summary: 'List chat messages for a booking thread',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const { id } = request.params as { id: string };
+    const tenantId = request.tenantId;
+    const callerId = request.user!.id;
+    const callerRole = request.user!.role;
+
+    const bkRes = await tenantQuery<{ id: string; customer_id: string; assigned_provider_id: string | null }>(
+      `SELECT id, customer_id, assigned_provider_id FROM bookings WHERE id = $1 AND tenant_id = $2`,
+      [id, tenantId],
+      tenantId
+    );
+    if (bkRes.rows.length === 0) {
+      return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking not found.', requestId));
+    }
+    const bk = bkRes.rows[0];
+    const allowed =
+      callerRole === 'ADMIN' ||
+      callerRole === 'STAFF' ||
+      (callerRole === 'CUSTOMER' && bk.customer_id === callerId) ||
+      (callerRole === 'TECHNICIAN' && bk.assigned_provider_id === callerId);
+    if (!allowed) {
+      return reply.status(403).send(errorResponse('FORBIDDEN', 'Not authorized to view messages for this booking.', requestId));
+    }
+
+    const msgRes = await tenantQuery(
+      `SELECT m.id, m.booking_id AS "bookingId", m.sender_id AS "senderId", m.sender_role AS "senderRole",
+              m.message_body AS "messageText", m.attachments_urls AS "attachmentsUrls", m.created_at AS "createdAt",
+              COALESCE(cp.full_name, pp.full_name, ap.full_name, sp.full_name, u.email) AS "senderName"
+       FROM booking_messages m
+       JOIN users u ON u.id = m.sender_id
+       LEFT JOIN customer_profiles cp ON cp.user_id = m.sender_id AND cp.tenant_id = m.tenant_id
+       LEFT JOIN provider_profiles pp ON pp.user_id = m.sender_id AND pp.tenant_id = m.tenant_id
+       LEFT JOIN admin_profiles ap ON ap.user_id = m.sender_id AND ap.tenant_id = m.tenant_id
+       LEFT JOIN staff_profiles sp ON sp.user_id = m.sender_id AND sp.tenant_id = m.tenant_id
+       WHERE m.booking_id = $1 AND m.tenant_id = $2
+       ORDER BY m.created_at ASC
+       LIMIT 200`,
+      [id, tenantId],
+      tenantId
+    );
+
+    const messages = msgRes.rows.map((row: any) => {
+      const signedUrls = signStoredMediaUrls(row.attachmentsUrls, tenantId);
+      return {
+        ...row,
+        attachmentsUrls: signedUrls,
+        attachmentUrl: signedUrls[0] ?? null,
+      };
+    });
+
+    return reply.status(200).send(successResponse({ bookingId: id, messages }, requestId));
+  });
+
+  // 11. Post In-App Booking Chat Message
+  fastify.post('/:id/messages', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    schema: {
+      tags: ['Bookings & Dispatch'],
+      summary: 'Send an in-app message within a booking thread',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const { id } = request.params as { id: string };
+    const tenantId = request.tenantId;
+    const callerId = request.user!.id;
+    const callerRole = request.user!.role;
+
+    const parsed = z.object({
+      messageText: z.string().trim().min(1).max(2000),
+      attachmentUrl: safeMediaUrlSchema.nullable().optional(),
+    }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Message text (1-2000 chars) is required.', requestId));
+    }
+
+    const bkRes = await tenantQuery<{ id: string; customer_id: string; assigned_provider_id: string | null }>(
+      `SELECT id, customer_id, assigned_provider_id FROM bookings WHERE id = $1 AND tenant_id = $2`,
+      [id, tenantId],
+      tenantId
+    );
+    if (bkRes.rows.length === 0) {
+      return reply.status(404).send(errorResponse('BOOKING_NOT_FOUND', 'Booking not found.', requestId));
+    }
+    const bk = bkRes.rows[0];
+    const allowed =
+      callerRole === 'ADMIN' ||
+      callerRole === 'STAFF' ||
+      (callerRole === 'CUSTOMER' && bk.customer_id === callerId) ||
+      (callerRole === 'TECHNICIAN' && bk.assigned_provider_id === callerId);
+    if (!allowed) {
+      return reply.status(403).send(errorResponse('FORBIDDEN', 'Not authorized to post messages in this booking.', requestId));
+    }
+
+    const storedAttachment = normalizeStoredMediaUrl(parsed.data.attachmentUrl ?? null);
+    const attachmentsJson = JSON.stringify(storedAttachment ? [storedAttachment] : []);
+    const inserted = await withTenantTransaction(tenantId, async (client) => {
+      const insRes = await client.query(
+        `INSERT INTO booking_messages (tenant_id, booking_id, sender_id, sender_role, message_body, attachments_urls)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+         RETURNING id, booking_id AS "bookingId", sender_id AS "senderId", sender_role AS "senderRole",
+                   message_body AS "messageText", attachments_urls AS "attachmentsUrls", created_at AS "createdAt"`,
+        [tenantId, id, callerId, callerRole, parsed.data.messageText, attachmentsJson]
+      );
+      return insRes.rows[0];
+    });
+
+    const signedUrls = signStoredMediaUrls(inserted.attachmentsUrls, tenantId);
+    return reply.status(201).send(
+      successResponse({
+        ...inserted,
+        attachmentsUrls: signedUrls,
+        attachmentUrl: signedUrls[0] ?? null,
+      }, requestId)
+    );
   });
 }

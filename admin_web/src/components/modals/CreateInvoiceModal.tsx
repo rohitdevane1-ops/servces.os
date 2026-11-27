@@ -9,6 +9,7 @@ export const CreateInvoiceModal: React.FC = () => {
     isCreateInvoiceModalOpen,
     setIsCreateInvoiceModalOpen,
     addInvoice,
+    bookings,
     customers,
     services,
     currentRole,
@@ -16,7 +17,8 @@ export const CreateInvoiceModal: React.FC = () => {
     formatCurrency,
   } = useAdmin();
 
-  const [customerName, setCustomerName] = useState(customers[0]?.name || '');
+  const [selectedBookingId, setSelectedBookingId] = useState(bookings[0]?.id || '');
+  const [customerName, setCustomerName] = useState(bookings[0]?.customerName || customers[0]?.name || '');
   const [serviceName, setServiceName] = useState(services[0]?.name || 'Custom Home Service');
   const [amount, setAmount] = useState<number>(services[0]?.basePrice || 150);
   const [status, setStatus] = useState<'Paid' | 'Pending' | 'Overdue'>('Pending');
@@ -30,6 +32,7 @@ export const CreateInvoiceModal: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const res = await addInvoice({
+      bookingId: selectedBookingId || undefined,
       customerName: customerName.trim() || customers[0]?.name || 'Valued Customer',
       serviceName,
       subtotalAmount: taxBreakdown.subtotal,
@@ -69,6 +72,32 @@ export const CreateInvoiceModal: React.FC = () => {
       </div>
 
       <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <div>
+          <label className="block text-xs font-bold text-slate-700 mb-1">Attach to Booking</label>
+          <select
+            value={selectedBookingId}
+            onChange={(e) => {
+              const id = e.target.value;
+              setSelectedBookingId(id);
+              const found = bookings.find((b) => b.id === id);
+              if (found) {
+                setCustomerName(found.customerName);
+                setServiceName(found.serviceName);
+                if (found.estimate > 0) setAmount(found.estimate);
+              }
+            }}
+            required={bookings.length > 0}
+            className="w-full text-xs px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-emerald-500 focus:outline-none font-medium"
+          >
+            <option value="">Select existing booking...</option>
+            {bookings.map((b) => (
+              <option key={b.id} value={b.id}>
+                #{b.jobNo} — {b.customerName} ({b.serviceName})
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div>
           <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
             <User className="w-3.5 h-3.5 text-slate-400" />

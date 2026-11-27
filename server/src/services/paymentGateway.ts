@@ -29,6 +29,7 @@ export async function resolveTenantIntegrationSecrets(
   tenantId?: string,
   targetPool: pg.Pool = pool
 ): Promise<DecryptedTenantIntegrations> {
+  const hasEnvTwilio = Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_PHONE);
   const result: DecryptedTenantIntegrations = {
     stripeSecretKey: env.STRIPE_SECRET_KEY && !env.STRIPE_SECRET_KEY.includes('your_stripe') ? env.STRIPE_SECRET_KEY : undefined,
     paytabsProfileId: env.PAYTABS_PROFILE_ID || undefined,
@@ -36,7 +37,10 @@ export async function resolveTenantIntegrationSecrets(
     paytabsRegion: env.PAYTABS_REGION || 'ARE',
     telrStoreId: env.TELR_STORE_ID || undefined,
     telrAuthKey: env.TELR_AUTH_KEY || undefined,
-    twilioEnabled: false,
+    twilioAccountSid: env.TWILIO_ACCOUNT_SID || undefined,
+    twilioAuthToken: env.TWILIO_AUTH_TOKEN || undefined,
+    twilioFromNumber: env.TWILIO_FROM_PHONE || undefined,
+    twilioEnabled: hasEnvTwilio,
     awsSesEnabled: false,
     fcmPushEnabled: false,
   };
@@ -64,7 +68,10 @@ export async function resolveTenantIntegrationSecrets(
     const row = res.rows[0];
     if (!row) return result;
 
-    result.twilioEnabled = Boolean(row.twilio_enabled);
+    result.twilioEnabled = Boolean(
+      row.twilio_enabled ||
+      (result.twilioAccountSid && result.twilioAuthToken && result.twilioFromNumber)
+    );
     result.awsSesEnabled = Boolean(row.aws_ses_enabled);
     result.fcmPushEnabled = Boolean(row.fcm_push_enabled);
 
@@ -100,9 +107,9 @@ export async function resolveTenantIntegrationSecrets(
     }
 
     if (enc.twilio && typeof enc.twilio === 'object') {
-      result.twilioAccountSid = decryptField(enc.twilio.accountSid) || (typeof pub.twilioSid === 'string' ? pub.twilioSid : undefined);
-      result.twilioAuthToken = decryptField(enc.twilio.authToken);
-      result.twilioFromNumber = decryptField(enc.twilio.fromNumber) || (typeof pub.twilioFrom === 'string' ? pub.twilioFrom : undefined);
+      result.twilioAccountSid = decryptField(enc.twilio.accountSid) || (typeof pub.twilioSid === 'string' ? pub.twilioSid : undefined) || result.twilioAccountSid;
+      result.twilioAuthToken = decryptField(enc.twilio.authToken) || result.twilioAuthToken;
+      result.twilioFromNumber = decryptField(enc.twilio.fromNumber) || (typeof pub.twilioFrom === 'string' ? pub.twilioFrom : undefined) || result.twilioFromNumber;
     }
 
     if (enc.smtp && typeof enc.smtp === 'object') {
@@ -172,10 +179,20 @@ export interface RefundResult {
   status: string;
 }
 
+export interface VerifyPreAuthResult {
+  gateway: SupportedPaymentGateway;
+  providerReferenceId: string;
+  authorized: boolean;
+  status: 'requires_capture' | 'succeeded' | 'pending' | 'failed';
+  rawStatus?: string;
+}
+
 export interface PaymentGatewayAdapter {
   readonly name: SupportedPaymentGateway;
   isConfigured(): boolean;
   createPreAuth(req: PreAuthRequest): Promise<PreAuthResult>;
+  verifyPreAuth(providerReferenceId: string): Promise<VerifyPreAuthResult>;
+  cancelPreAuth(providerReferenceId: string): Promise<void>;
   capture(providerReferenceId: string, amountCents?: number): Promise<CaptureResult>;
   refund(req: RefundRequest): Promise<RefundResult>;
 }
@@ -213,6 +230,31 @@ class StripeGatewayAdapter implements PaymentGatewayAdapter {
       redirectUrl: null,
       status: pi.status,
     };
+  }
+
+  async verifyPreAuth(providerReferenceId: string): Promise<VerifyPreAuthResult> {
+    const stripe = getStripe(this.key);
+    const pi = await stripe.paymentIntents.retrieve(providerReferenceId);
+    const status =
+      pi.status === 'succeeded'
+        ? 'succeeded'
+        : pi.status === 'requires_capture'
+          ? 'requires_capture'
+          : pi.status === 'canceled'
+            ? 'failed'
+            : 'pending';
+    return {
+      gateway: 'stripe',
+      providerReferenceId: pi.id,
+      authorized: status === 'succeeded' || status === 'requires_capture',
+      status,
+      rawStatus: pi.status,
+    };
+  }
+
+  async cancelPreAuth(providerReferenceId: string): Promise<void> {
+    const stripe = getStripe(this.key);
+    await stripe.paymentIntents.cancel(providerReferenceId);
   }
 
   async capture(providerReferenceId: string, amountCents?: number): Promise<CaptureResult> {
@@ -320,6 +362,66 @@ class PayTabsGatewayAdapter implements PaymentGatewayAdapter {
       redirectUrl: data.redirect_url || null,
       status: 'requires_action',
     };
+  }
+
+  async verifyPreAuth(providerReferenceId: string): Promise<VerifyPreAuthResult> {
+    if (!this.isConfigured()) {
+      throw new Error('PayTabs UAE credentials (PAYTABS_PROFILE_ID, PAYTABS_SERVER_KEY) are not configured.');
+    }
+    const res = await fetch(`${this.endpointBase}/payment/query`, {
+      method: 'POST',
+      headers: {
+        Authorization: this.serverKey!,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        profile_id: Number(this.profileId),
+        tran_ref: providerReferenceId,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const data: any = await res.json();
+    if (!res.ok) {
+      throw new Error(`PayTabs query failed with HTTP ${res.status}`);
+    }
+    const responseStatus = String(data?.payment_result?.response_status || '').toUpperCase();
+    const tranType = String(data?.tran_type || '').toLowerCase();
+    if (responseStatus === 'A') {
+      const mapped = tranType === 'sale' ? 'succeeded' : 'requires_capture';
+      return {
+        gateway: 'paytabs',
+        providerReferenceId: String(data.tran_ref || providerReferenceId),
+        authorized: true,
+        status: mapped,
+        rawStatus: `${tranType}:${responseStatus}`,
+      };
+    }
+    const failed = ['D', 'E', 'V', 'C'].includes(responseStatus);
+    return {
+      gateway: 'paytabs',
+      providerReferenceId,
+      authorized: false,
+      status: failed ? 'failed' : 'pending',
+      rawStatus: `${tranType}:${responseStatus || 'UNKNOWN'}`,
+    };
+  }
+
+  async cancelPreAuth(providerReferenceId: string): Promise<void> {
+    if (!this.isConfigured()) return;
+    await fetch(`${this.endpointBase}/payment/request`, {
+      method: 'POST',
+      headers: {
+        Authorization: this.serverKey!,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        profile_id: Number(this.profileId),
+        tran_type: 'void',
+        tran_class: 'ecom',
+        tran_ref: providerReferenceId,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
   }
 
   async capture(providerReferenceId: string, amountCents?: number): Promise<CaptureResult> {
@@ -445,6 +547,49 @@ class TelrGatewayAdapter implements PaymentGatewayAdapter {
       redirectUrl: data.order.url || null,
       status: 'requires_action',
     };
+  }
+
+  async verifyPreAuth(providerReferenceId: string): Promise<VerifyPreAuthResult> {
+    if (!this.isConfigured()) {
+      throw new Error('Telr UAE credentials (TELR_STORE_ID, TELR_AUTH_KEY) are not configured.');
+    }
+    const res = await fetch('https://secure.telr.com/gateway/order.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        method: 'check',
+        store: Number(this.storeId),
+        authkey: this.authKey,
+        order: { ref: providerReferenceId },
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const data: any = await res.json();
+    if (!res.ok) {
+      throw new Error(`Telr order check failed with HTTP ${res.status}`);
+    }
+    const statusCode = Number(data?.order?.status?.code ?? 0);
+    // Telr status codes: 2 = Authorised, 3 = Paid/Captured; negative/4/5/6 = Cancelled/Expired/Declined
+    if (statusCode === 3 || statusCode === 2) {
+      return {
+        gateway: 'telr',
+        providerReferenceId: String(data?.order?.ref || providerReferenceId),
+        authorized: true,
+        status: statusCode === 3 ? 'succeeded' : 'requires_capture',
+        rawStatus: String(data?.order?.status?.text || statusCode),
+      };
+    }
+    return {
+      gateway: 'telr',
+      providerReferenceId,
+      authorized: false,
+      status: statusCode < 0 || statusCode >= 4 ? 'failed' : 'pending',
+      rawStatus: String(data?.order?.status?.text || statusCode),
+    };
+  }
+
+  async cancelPreAuth(_providerReferenceId: string): Promise<void> {
+    // Telr hosted checkouts expire automatically when uncaptured; no server void API needed.
   }
 
   async capture(_providerReferenceId: string, _amountCents?: number): Promise<CaptureResult> {

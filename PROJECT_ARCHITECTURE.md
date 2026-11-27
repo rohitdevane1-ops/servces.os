@@ -59,9 +59,9 @@ flowchart TD
 
 ---
 
-## 2. Database Migration Architecture (15 Paired Up/Down Migrations)
+## 2. Database Migration Architecture (16 Paired Up/Down Migrations)
 
-The PostgreSQL 16 + PostGIS schema is partitioned into **15 forward migrations (`001`–`015`)** with **15 matching `.down.sql` rollback scripts** in `server/src/database/migrations/`:
+The PostgreSQL 16 + PostGIS schema is partitioned into **16 forward migrations (`001`–`016`)** with **16 matching `.down.sql` rollback scripts** in `server/src/database/migrations/`:
 
 1. **`001_tenants_and_auth.sql`**:
    - `tenants`: Multi-tenant boundary with subdomain `slug`, `custom_domain`, branding, currency, commission basis points (`default_platform_commission_bps`), and active flags.
@@ -96,6 +96,8 @@ The PostgreSQL 16 + PostGIS schema is partitioned into **15 forward migrations (
     - Adds `payment_refunds` table with durable state machine (`PROCESSING` -> `SUCCEEDED` / `FAILED`), `refunded_amount_cents` tracking, and `SECURITY DEFINER` RLS auth helpers (`app_auth_login_lookup`, `app_auth_session_lookup`, `app_resolve_booking_tenant`).
 15. **`015_phase2_auth_resets_and_encrypted_integrations.sql`**:
     - Adds `password_reset_tokens` (SHA-256 token hashes with `SECURITY DEFINER` anti-enumeration lifecycle helpers) and expands `integration_configs` with AES-256-GCM encrypted third-party credential vault columns plus `public_settings` JSONB.
+16. **`016_full_stack_recovery_and_hardening.sql`**:
+    - Adds `provider_bonuses`, `provider_onboarding_submissions`, `staff_daily_reports`, `booking_messages`, `tenants.tagline`, `user_sessions.locked_at`, `bookings.commission_bps_snapshot`, `support_tickets.incident_category`, `webhook_events.tenant_id`, and `FORCE ROW LEVEL SECURITY` policies plus `SECURITY DEFINER` webhook resolution helpers.
 
 ---
 

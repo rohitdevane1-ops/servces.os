@@ -136,7 +136,7 @@ export async function startTestDb(opts: { migrateUpTo?: string | null } = {}): P
       user: 'postgres',
       password: 'postgres',
       port,
-      persistent: false,
+      persistent: true,
       initdbFlags: ['--encoding=UTF8', '--locale=C'],
       onLog: () => {},
       onError: () => {},
@@ -146,7 +146,11 @@ export async function startTestDb(opts: { migrateUpTo?: string | null } = {}): P
     await server.createDatabase('serviceos_test');
     url = `postgresql://postgres:postgres@127.0.0.1:${port}/serviceos_test`;
     stopFn = async () => {
-      await server.stop();
+      try {
+        await server.stop();
+      } catch {
+        // Ignore transient Windows file lock on embedded-postgres shutdown
+      }
       try {
         fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       } catch {
@@ -256,4 +260,38 @@ export async function seedBooking(
      VALUES ($1,$2,$3,$4,$5,'PRE_AUTH',$6) RETURNING id`,
     [w.tenantId, inv, piId, `idem_${b}`, total, o.txStatus ?? 'REQUIRES_CAPTURE'])).rows[0].id as string;
   return { bookingId: b, invoiceId: inv, txId: tx, piId, totalCents: total };
+}
+
+/**
+ * Creates an ephemeral NOSUPERUSER NOBYPASSRLS login role & pool to prove FORCE RLS policies
+ * truly isolate tenants even when non-owner application credentials are used.
+ */
+export async function createEphemeralAppRole(adminPool: pg.Pool, adminUrl: string) {
+  const roleName = `app_rls_${crypto.randomBytes(4).toString('hex')}`;
+  const password = crypto.randomBytes(16).toString('hex');
+  await adminPool.query(`CREATE ROLE "${roleName}" WITH LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`);
+  await adminPool.query(`GRANT USAGE ON SCHEMA public TO "${roleName}"`);
+  await adminPool.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "${roleName}"`);
+  await adminPool.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "${roleName}"`);
+  await adminPool.query(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO "${roleName}"`);
+  await adminPool.query(`GRANT serviceos_rls_runtime TO "${roleName}"`).catch(() => {});
+
+  const u = new URL(adminUrl);
+  u.username = roleName;
+  u.password = password;
+  const appPool = new pg.Pool({ connectionString: u.toString(), max: 5 });
+
+  return {
+    roleName,
+    url: u.toString(),
+    pool: appPool,
+    cleanup: async () => {
+      await appPool.end();
+      await adminPool.query(`REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM "${roleName}"`).catch(() => {});
+      await adminPool.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM "${roleName}"`).catch(() => {});
+      await adminPool.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM "${roleName}"`).catch(() => {});
+      await adminPool.query(`REVOKE USAGE ON SCHEMA public FROM "${roleName}"`).catch(() => {});
+      await adminPool.query(`DROP ROLE IF EXISTS "${roleName}"`).catch(() => {});
+    },
+  };
 }

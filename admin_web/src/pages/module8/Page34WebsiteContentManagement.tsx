@@ -168,7 +168,7 @@ export const Page34WebsiteContentManagement: React.FC = () => {
                 onClick={() => navigateToPage(13)}
                 className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs cursor-pointer transition-colors"
               >
-                Explore Services â†’
+                Explore Services →
               </button>
             </div>
           </div>

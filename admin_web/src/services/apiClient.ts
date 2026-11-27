@@ -8,7 +8,10 @@ import type {
   CmsConfigData,
   IntegrationConfigResponse,
   PricingConfig,
+  ProviderBonus,
+  StaffDailyReport,
   SystemRuntimeConfig,
+  TechnicianOnboardingSubmission,
   TenantConfig,
 } from '../types';
 
@@ -42,6 +45,7 @@ class ApiClient {
     user: { id: string; email: string; role: string; tenantId: string };
     permissions: string[];
   } | null = null;
+  private lastRefreshLocked: { locked: true; email?: string; role?: string } | null = null;
 
   constructor() {
     const envBase = (import.meta as any).env?.VITE_API_BASE_URL;
@@ -105,6 +109,11 @@ class ApiClient {
   public clearSession() {
     this.accessToken = null;
     this.lastRefreshPayload = null;
+    this.lastRefreshLocked = null;
+  }
+
+  public getLockedSessionHint(): { locked: true; email?: string; role?: string } | null {
+    return this.lastRefreshLocked;
   }
 
   public clearTokens() {
@@ -134,8 +143,18 @@ class ApiClient {
                 this.tenantId = String(refreshData.data.user.tenantId);
               }
               this.lastRefreshPayload = refreshData.data;
+              this.lastRefreshLocked = null;
               return this.accessToken;
             }
+          } else if (refreshRes.status === 423) {
+            const errJson = await refreshRes.json().catch(() => null);
+            const details: Array<{ field?: string; issue?: string }> = errJson?.error?.details || [];
+            const emailHint = details.find((d) => d.field === 'email')?.issue;
+            const roleHint = details.find((d) => d.field === 'role')?.issue;
+            this.accessToken = null;
+            this.lastRefreshPayload = null;
+            this.lastRefreshLocked = { locked: true, email: emailHint, role: roleHint };
+            return null;
           }
           this.clearSession();
           return null;
@@ -259,7 +278,8 @@ class ApiClient {
     email: string,
     password: string,
     role?: 'ADMIN' | 'STAFF' | 'TECHNICIAN' | 'CUSTOMER',
-    captchaToken?: string
+    captchaToken?: string,
+    rememberMe?: boolean
   ) {
     const headers: Record<string, string> = {};
     if (captchaToken) {
@@ -270,7 +290,13 @@ class ApiClient {
     const res = await this.request<any>('/auth/login', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ email, password, ...(role ? { role } : {}), ...(captchaToken ? { captchaToken } : {}) }),
+      body: JSON.stringify({
+        email,
+        password,
+        ...(role ? { role } : {}),
+        ...(captchaToken ? { captchaToken } : {}),
+        ...(rememberMe !== undefined ? { rememberMe } : {}),
+      }),
     });
     if (res.success && res.data?.accessToken) {
       this.accessToken = String(res.data.accessToken);
@@ -368,10 +394,37 @@ class ApiClient {
     });
   }
 
+  public async lockSession() {
+    return this.request<{ locked: boolean; lockedAt: string }>('/auth/lock', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  }
+
   public async reauthenticate(password: string) {
-    return this.request<{ verified: boolean; verifiedAt: string }>('/auth/reauthenticate', {
+    return this.request<{
+      verified: boolean;
+      verifiedAt: string;
+      accessToken?: string;
+      user?: { id: string; email: string; role: string; tenantId: string };
+    }>('/auth/reauthenticate', {
       method: 'POST',
       body: JSON.stringify({ password }),
+    });
+  }
+
+  public async updateMe(payload: {
+    fullName?: string;
+    phone?: string | null;
+    department?: string | null;
+    assignedTerritory?: string | null;
+    defaultAddress?: string | null;
+    avatarUrl?: string | null;
+    coverUrl?: string | null;
+  }) {
+    return this.request<{ updated: boolean; avatarUrl?: string | null; coverUrl?: string | null }>('/auth/me', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
     });
   }
 
@@ -410,6 +463,7 @@ class ApiClient {
 
   public async updateSystemConfig(payload: {
     name?: string;
+    tagline?: string | null;
     primaryColor?: string;
     currencyCode?: string;
     currencySymbol?: string;
@@ -1141,6 +1195,167 @@ class ApiClient {
     if (params?.action) qs.set('action', params.action);
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return this.request<any[]>(`/system/audit-logs${suffix}`);
+  }
+
+  public async getBonuses(providerId?: string) {
+    const suffix = providerId ? `?providerId=${encodeURIComponent(providerId)}` : '';
+    return this.request<ProviderBonus[]>(`/finances/bonuses${suffix}`);
+  }
+
+  public async awardBonus(payload: {
+    providerId: string;
+    amountCents: number;
+    reason: string;
+    category?: 'PERFORMANCE' | 'QUALITY' | 'EMERGENCY' | 'REFERRAL' | 'ADJUSTMENT';
+  }) {
+    return this.request<ProviderBonus>('/finances/bonuses', {
+      method: 'POST',
+      headers: {
+        'idempotency-key': `bonus_${payload.providerId}_${Date.now()}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async updateTechnicianDutyStatus(
+    techId: string,
+    dutyStatus: 'ONLINE' | 'OFFLINE' | 'ON_JOB' | 'EN_ROUTE'
+  ) {
+    return this.request<{ providerId: string; dutyStatus: string; hasLocation: boolean }>(
+      `/crm/technicians/${techId}/duty-status`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ dutyStatus }),
+      }
+    );
+  }
+
+  public async getStaff() {
+    return this.request<any[]>('/crm/staff');
+  }
+
+  public async createStaff(payload: {
+    email: string;
+    password?: string;
+    fullName: string;
+    phone?: string;
+    department?: string;
+    assignedTerritory?: string;
+    shiftHours?: string;
+  }) {
+    return this.request<any>('/crm/staff', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async updateStaff(
+    id: string,
+    payload: {
+      fullName?: string;
+      phone?: string | null;
+      department?: string | null;
+      assignedTerritory?: string | null;
+      shiftHours?: string | null;
+      isActive?: boolean;
+    }
+  ) {
+    return this.request<any>(`/crm/staff/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async getOnboardingSubmissions(status?: string) {
+    const suffix = status ? `?status=${encodeURIComponent(status)}` : '';
+    return this.request<TechnicianOnboardingSubmission[]>(`/crm/technicians/onboarding${suffix}`);
+  }
+
+  public async reviewOnboardingSubmission(
+    id: string,
+    payload: { status: 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED'; reviewerNotes?: string }
+  ) {
+    return this.request<{
+      id: string;
+      providerId: string;
+      status: string;
+      reviewerNotes?: string | null;
+      reviewedAt?: string;
+    }>(`/crm/technicians/onboarding/${id}/review`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async getSmsStatus() {
+    return this.request<{
+      provider: string;
+      configured: boolean;
+      demoMode: boolean;
+      fromNumberMasked: string | null;
+      recentLogs: Array<{
+        id: string;
+        destination: string;
+        status: string;
+        providerMessageId?: string | null;
+        errorMessage?: string | null;
+        createdAt: string;
+      }>;
+    }>('/support/sms/status');
+  }
+
+  public async getCustomerCommunications(customerId: string) {
+    return this.request<{
+      customerId: string;
+      customerName: string;
+      email: string;
+      phone: string | null;
+      notifications: Array<{
+        id: string;
+        channel: string;
+        templateType?: string;
+        destination: string;
+        status: string;
+        errorMessage?: string | null;
+        createdAt: string;
+      }>;
+      tickets: Array<{
+        id: string;
+        ticketNumber: string;
+        subject: string;
+        category: string;
+        priority: string;
+        status: string;
+        createdAt: string;
+      }>;
+      bookingMessages: Array<{
+        id: string;
+        bookingId: string;
+        bookingReference: string;
+        senderRole: string;
+        messageText: string;
+        createdAt: string;
+      }>;
+    }>(`/support/communications/${customerId}`);
+  }
+
+  public async getDailyReports() {
+    return this.request<StaffDailyReport[]>('/support/daily-reports');
+  }
+
+  public async submitDailyReport(payload: {
+    reportDate?: string;
+    shiftWindow?: string;
+    jobsCompleted: number;
+    ticketsResolved: number;
+    escalationsCount: number;
+    highlights: string;
+    blockers?: string | null;
+  }) {
+    return this.request<StaffDailyReport>('/support/daily-reports', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   }
 }
 

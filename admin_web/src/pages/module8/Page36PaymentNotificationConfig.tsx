@@ -182,7 +182,7 @@ export const Page36PaymentNotificationConfig: React.FC = () => {
             Payment, SMS &amp; Notification Integrations
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Server-side AES-256-GCM encrypted credential vault (`integration_configs`) â€” zero secrets stored in browser storage
+            Server-side AES-256-GCM encrypted credential vault (`integration_configs`) — zero secrets stored in browser storage
           </p>
         </div>
 

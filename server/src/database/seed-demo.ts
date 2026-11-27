@@ -129,6 +129,7 @@ export async function runDemoSeed(targetPool?: pg.Pool): Promise<{
         ['2030', 'Tax / VAT / GST Payable', 'LIABILITY'],
         ['4010', 'Platform Commission Revenue', 'REVENUE'],
         ['5010', 'Gateway Processing Expense', 'EXPENSE'],
+        ['5020', 'Promotional Bonus & Incentive Expense', 'EXPENSE'],
       ];
       const accountIds: Record<string, string> = {};
       for (const [no, name, type] of coa) {
@@ -332,8 +333,8 @@ export async function runDemoSeed(targetPool?: pg.Pool): Promise<{
           const invRes = await client.query<{ id: string }>(
             `INSERT INTO invoices (
               tenant_id, booking_id, invoice_number, labor_subtotal_cents, diagnostic_fee_cents,
-              tax_rate_bps, tax_total_cents, total_amount_cents, status, issued_at, paid_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+              tax_rate_bps, tax_total_cents, total_amount_cents, commission_bps_snapshot, status, issued_at, paid_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1500, $9, $10, $11)
             RETURNING id`,
             [
               tenantId,
@@ -429,6 +430,36 @@ export async function runDemoSeed(targetPool?: pg.Pool): Promise<{
           }
 
           bookingsSeeded++;
+        }
+      }
+
+      // 8. Seed Promotional Bonuses in Dubai Sandbox
+      const existingBonuses = await client.query<{ cnt: string }>(
+        `SELECT COUNT(*)::text AS cnt FROM provider_bonuses WHERE tenant_id = $1`,
+        [tenantId]
+      );
+      if (parseInt(existingBonuses.rows[0].cnt, 10) === 0 && techIds.length >= 3) {
+        const bonusSeeds = [
+          { key: 'demo_bonus_ramadan_sla_1', providerId: techIds[0], amountCents: 25000, category: 'PERFORMANCE', reason: '5-Star Ramadan SLA Excellence Award' },
+          { key: 'demo_bonus_zero_resched_2', providerId: techIds[1], amountCents: 15000, category: 'QUALITY', reason: 'Zero-Reschedule Weekly Target' },
+          { key: 'demo_bonus_emergency_speed_3', providerId: techIds[2], amountCents: 20000, category: 'EMERGENCY', reason: 'Emergency Response Speed Bonus' },
+        ];
+        for (const b of bonusSeeds) {
+          const bIns = await client.query<{ id: string }>(
+            `INSERT INTO provider_bonuses (tenant_id, provider_id, awarded_by, amount_cents, currency, category, reason, idempotency_key, status)
+             VALUES ($1, $2, $3, $4, 'AED', $5, $6, $7, 'APPROVED')
+             ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+             RETURNING id`,
+            [tenantId, b.providerId, adminId, b.amountCents, b.category, b.reason, b.key]
+          );
+          if (bIns.rows.length > 0) {
+            await client.query(
+              `INSERT INTO ledger_entries (tenant_id, bonus_id, posting_type, debit_account_id, credit_account_id, amount_cents, description)
+               VALUES ($1, $2, 'BONUS_AWARD', $3, $4, $5, $6)
+               ON CONFLICT DO NOTHING`,
+              [tenantId, bIns.rows[0].id, accountIds['5020'], accountIds['2020'], b.amountCents, `Demo Bonus: ${b.reason}`]
+            );
+          }
         }
       }
 

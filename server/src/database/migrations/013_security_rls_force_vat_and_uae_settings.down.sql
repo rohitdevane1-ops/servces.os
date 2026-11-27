@@ -74,7 +74,7 @@ ALTER TABLE audit_logs
 
 CREATE INDEX IF NOT EXISTS idx_payment_transactions_stripe ON payment_transactions(stripe_payment_intent_id);
 CREATE INDEX IF NOT EXISTS idx_users_tenant_email ON users(tenant_id, email);
-CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain);
+CREATE INDEX IF NOT EXISTS idx_tenants_custom_domain ON tenants(custom_domain) WHERE custom_domain IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tenants_slug ON tenants(slug);
 
 ALTER TABLE tenants DROP CONSTRAINT IF EXISTS chk_tenants_default_locale;

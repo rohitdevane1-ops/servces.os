@@ -138,7 +138,7 @@ export class OutboxWorker {
       }
 
       const secrets = await resolveTenantIntegrationSecrets(job.tenant_id, this.pool);
-      let pi: { id: string; status: string };
+      let pi: { id: string; status: string; redirectUrl?: string | null };
       const useExternalNonStripe = env.PAYMENT_GATEWAY === 'paytabs' || env.PAYMENT_GATEWAY === 'telr';
 
       if (useExternalNonStripe) {
@@ -156,7 +156,7 @@ export class OutboxWorker {
             transactionId: payload.transactionId,
           },
         });
-        pi = { id: preAuth.providerReferenceId, status: preAuth.status };
+        pi = { id: preAuth.providerReferenceId, status: preAuth.status, redirectUrl: preAuth.redirectUrl ?? null };
       } else {
         const stripe = getStripe(secrets.stripeSecretKey ?? env.STRIPE_SECRET_KEY);
         const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
@@ -230,13 +230,14 @@ export class OutboxWorker {
           await client.query(
             `UPDATE payment_transactions
              SET stripe_payment_intent_id = COALESCE(stripe_payment_intent_id, $1),
+                 checkout_redirect_url = COALESCE($5, checkout_redirect_url),
                  status = CASE
                    WHEN status = 'PENDING' AND $2 = 'requires_capture' THEN 'REQUIRES_CAPTURE'
                    ELSE status
                  END,
                  updated_at = NOW()
              WHERE id = $3 AND tenant_id = $4`,
-            [pi.id, pi.status, payload.transactionId, payload.tenantId]
+            [pi.id, pi.status, payload.transactionId, payload.tenantId, pi.redirectUrl ?? null]
           );
 
           if (pi.status === 'requires_capture') {
@@ -246,7 +247,13 @@ export class OutboxWorker {
                WHERE id = $1 AND tenant_id = $2 AND status = 'DRAFT'`,
               [payload.invoiceId, payload.tenantId]
             );
-            await broadcastBookingToNearbyProviders(client, payload.tenantId, payload.bookingId);
+            await client.query('SAVEPOINT sp_outbox_broadcast');
+            try {
+              await broadcastBookingToNearbyProviders(client, payload.tenantId, payload.bookingId);
+              await client.query('RELEASE SAVEPOINT sp_outbox_broadcast');
+            } catch {
+              await client.query('ROLLBACK TO SAVEPOINT sp_outbox_broadcast');
+            }
           }
 
           return 'COMPLETED';

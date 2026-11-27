@@ -1,5 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import {
+  computeTaxAndCommissionSplit,
+  computeProportionalRefundSplit,
+} from '../src/modules/finances/ledgerMath.js';
 
 describe('Double-Entry Ledger & Financial Engine Suite', () => {
   it('Double-entry journal entries must balance debits and credits to the exact cent', () => {
@@ -56,5 +60,23 @@ describe('Double-Entry Ledger & Financial Engine Suite', () => {
 
     const isInvalid = accountA === accountA;
     assert.equal(isInvalid, true);
+  });
+
+  it('Shared computeTaxAndCommissionSplit & computeProportionalRefundSplit conserve cents cleanly', () => {
+    const split = computeTaxAndCommissionSplit(10500, 500, 1500);
+    assert.equal(split.taxCents, 500);
+    assert.equal(split.preTaxNetCents, 10000);
+    assert.equal(split.platformFeeCents, 1500);
+    assert.equal(split.techPayoutCents, 8500);
+    assert.equal(split.taxCents + split.platformFeeCents + split.techPayoutCents, 10500);
+
+    const ref = computeProportionalRefundSplit(5250, 10500, 500, 1500);
+    assert.equal(ref.taxReversalCents, 250);
+    assert.equal(ref.platformFeeReversalCents, 750);
+    assert.equal(ref.techPayableReversalCents, 4250);
+    assert.equal(
+      ref.taxReversalCents + ref.platformFeeReversalCents + ref.techPayableReversalCents,
+      5250
+    );
   });
 });

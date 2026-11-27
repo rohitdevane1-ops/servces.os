@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
+import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { tenantQuery, withTenantTransaction } from '../../database/pool.js';
 import { AuthService } from './auth.service.js';
@@ -7,6 +8,10 @@ import { authenticate } from '../../middleware/rbac.js';
 import { verifyCaptcha } from '../../middleware/captcha.js';
 import { blockInDemoMode, isDemoModeEnabled } from '../../middleware/demoGuard.js';
 import { env } from '../../config/env.js';
+import { safeMediaUrlSchema } from '../../utils/urlValidator.js';
+import { normalizeStoredMediaUrl, signStoredMediaUrl } from '../../utils/mediaSigning.js';
+
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync('serviceos_constant_time_padding_2026!', 12);
 
 function isLocalDevOrigin(origin: string): boolean {
   try {
@@ -39,6 +44,7 @@ const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   role: z.enum(['ADMIN', 'STAFF', 'TECHNICIAN', 'CUSTOMER']).optional(),
+  rememberMe: z.boolean().optional(),
 });
 
 const mfaVerifySchema = z.object({
@@ -93,7 +99,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const { email, password, role } = parsed.data;
+    const { email, password, role, rememberMe } = parsed.data;
     const tenantId = request.tenantId;
 
     // Query user in current tenant
@@ -108,12 +114,42 @@ export async function authRoutes(fastify: FastifyInstance) {
     const userRes = await tenantQuery(queryText, params, tenantId);
 
     if (userRes.rows.length === 0) {
+      // Constant-time padding to prevent timing-based email enumeration
+      await AuthService.verifyPassword(password, DUMMY_PASSWORD_HASH);
       return reply.status(401).send(
         errorResponse('INVALID_CREDENTIALS', 'Invalid email or password.', requestId)
       );
     }
 
     const user = userRes.rows[0];
+
+    // Verify password BEFORE disclosing account inactive/locked state (anti-enumeration)
+    const valid = await AuthService.verifyPassword(password, user.password_hash);
+
+    if (!valid) {
+      if (user.is_active) {
+        await tenantQuery(
+          `UPDATE users
+           SET failed_login_attempts = CASE
+                 WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1
+                 ELSE COALESCE(failed_login_attempts, 0) + 1
+               END,
+               locked_until = CASE
+                 WHEN (CASE WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1 ELSE COALESCE(failed_login_attempts, 0) + 1 END) >= 5
+                 THEN NOW() + INTERVAL '15 minutes'
+                 ELSE NULL
+               END,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [user.id],
+          tenantId
+        );
+      }
+
+      return reply.status(401).send(
+        errorResponse('INVALID_CREDENTIALS', 'Invalid email or password.', requestId)
+      );
+    }
 
     // Check account active state
     if (!user.is_active) {
@@ -126,32 +162,6 @@ export async function authRoutes(fastify: FastifyInstance) {
     if (user.locked_until && new Date(user.locked_until) > new Date()) {
       return reply.status(423).send(
         errorResponse('ACCOUNT_LOCKED', 'Account temporarily locked due to multiple failed attempts. Try again later.', requestId)
-      );
-    }
-
-    // Verify password
-    const valid = await AuthService.verifyPassword(password, user.password_hash);
-
-    if (!valid) {
-      await tenantQuery(
-        `UPDATE users
-         SET failed_login_attempts = CASE
-               WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1
-               ELSE COALESCE(failed_login_attempts, 0) + 1
-             END,
-             locked_until = CASE
-               WHEN (CASE WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1 ELSE COALESCE(failed_login_attempts, 0) + 1 END) >= 5
-               THEN NOW() + INTERVAL '15 minutes'
-               ELSE NULL
-             END,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [user.id],
-        tenantId
-      );
-
-      return reply.status(401).send(
-        errorResponse('INVALID_CREDENTIALS', 'Invalid email or password.', requestId)
       );
     }
 
@@ -183,25 +193,26 @@ export async function authRoutes(fastify: FastifyInstance) {
       );
     }
 
+    const ipAddress = request.ip;
+    const userAgent = request.headers['user-agent'];
+    const sessionMeta = await AuthService.createSessionWithMeta(user.id, user.tenant_id, ipAddress, userAgent);
+
     // Issue tokens
     const accessToken = AuthService.generateAccessToken({
       id: user.id,
       role: user.role,
       tenantId: user.tenant_id,
       email: user.email,
+      sessionId: sessionMeta.sessionId,
     });
 
-    const ipAddress = request.ip;
-    const userAgent = request.headers['user-agent'];
-    const refreshToken = await AuthService.createSession(user.id, user.tenant_id, ipAddress, userAgent);
-
     // Set refresh token in HTTP-only cookie (Web clients)
-    reply.setCookie('refresh_token', refreshToken, {
+    reply.setCookie('refresh_token', sessionMeta.refreshToken, {
       path: '/api/v1/auth',
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge: 30 * 24 * 60 * 60, // 30 days
+      ...(rememberMe === false ? {} : { maxAge: 30 * 24 * 60 * 60 }),
     });
 
     const permissions = await AuthService.getUserPermissions(user.role);
@@ -210,12 +221,14 @@ export async function authRoutes(fastify: FastifyInstance) {
     return reply.status(200).send(
       successResponse({
         accessToken,
-        ...(mobileClient ? { refreshToken } : {}),
+        ...(mobileClient ? { refreshToken: sessionMeta.refreshToken } : {}),
+        sessionCreatedAt: sessionMeta.sessionCreatedAt,
         user: {
           id: user.id,
           email: user.email,
           role: user.role,
           tenantId: user.tenant_id,
+          mfaEnabled: false,
         },
         permissions
       }, requestId)
@@ -246,112 +259,117 @@ export async function authRoutes(fastify: FastifyInstance) {
 
     const { mfaSessionToken, totpCode } = parsed.data;
 
+    let payload: { sub: string; role: string; tenantId: string; email: string };
     try {
-      const payload = AuthService.verifyMfaChallengeToken(mfaSessionToken);
-      if (request.tenantId && payload.tenantId !== request.tenantId) {
-        return reply.status(403).send(
-          errorResponse('CROSS_TENANT_FORBIDDEN', 'MFA challenge token belongs to another organization.', requestId)
-        );
-      }
-
-      // Verify user is active and check lockout status (BACK-10)
-      const userRes = await tenantQuery(
-        'SELECT is_active, failed_login_attempts, locked_until FROM users WHERE id = $1 AND tenant_id = $2',
-        [payload.sub, payload.tenantId],
-        payload.tenantId
-      );
-      if (userRes.rows.length === 0 || !userRes.rows[0].is_active) {
-        return reply.status(403).send(
-          errorResponse('ACCOUNT_INACTIVE', 'This account has been deactivated.', requestId)
-        );
-      }
-
-      const userRow = userRes.rows[0];
-      if (userRow.locked_until && new Date(userRow.locked_until) > new Date()) {
-        return reply.status(429).send(
-          errorResponse('ACCOUNT_LOCKED', 'Account is temporarily locked due to multiple failed MFA attempts. Please try again later.', requestId)
-        );
-      }
-
-      const valid = await AuthService.verifyTotpCode(payload.sub, totpCode, payload.tenantId);
-
-      if (!valid) {
-        const failRes = await tenantQuery<{ failed_login_attempts: number; locked_until: Date | null }>(
-          `UPDATE users
-           SET failed_login_attempts = CASE
-                 WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1
-                 ELSE COALESCE(failed_login_attempts, 0) + 1
-               END,
-               locked_until = CASE
-                 WHEN (CASE WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1 ELSE COALESCE(failed_login_attempts, 0) + 1 END) >= 5
-                 THEN NOW() + INTERVAL '15 minutes'
-                 ELSE NULL
-               END,
-               updated_at = NOW()
-           WHERE id = $1
-           RETURNING failed_login_attempts, locked_until`,
-          [payload.sub],
-          payload.tenantId
-        );
-        const attempts = failRes.rows[0]?.failed_login_attempts ?? 1;
-        const willLock = attempts >= 5;
-
-        if (willLock) {
-          return reply.status(429).send(
-            errorResponse('ACCOUNT_LOCKED', 'Too many failed MFA verification attempts. Account locked for 15 minutes.', requestId)
-          );
-        }
-
-        return reply.status(401).send(
-          errorResponse('INVALID_TOTP_CODE', `The 6-digit verification code is invalid. ${Math.max(0, 5 - attempts)} attempts remaining before temporary lockout.`, requestId)
-        );
-      }
-
-      // Reset failure counter on successful verification
-      await tenantQuery(
-        `UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
-        [payload.sub],
-        payload.tenantId
-      );
-
-      const accessToken = AuthService.generateAccessToken({
-        id: payload.sub,
-        role: payload.role,
-        tenantId: payload.tenantId,
-        email: payload.email,
-      });
-
-      const refreshToken = await AuthService.createSession(payload.sub, payload.tenantId, request.ip, request.headers['user-agent']);
-
-      reply.setCookie('refresh_token', refreshToken, {
-        path: '/api/v1/auth',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 30 * 24 * 60 * 60,
-      });
-
-      const permissions = await AuthService.getUserPermissions(payload.role);
-      const mobileClient = isMobile(request.headers['x-client-platform']);
-
-      return reply.status(200).send(
-        successResponse({
-          accessToken,
-          ...(mobileClient ? { refreshToken } : {}),
-          user: {
-            id: payload.sub,
-            email: payload.email,
-            role: payload.role,
-            tenantId: payload.tenantId,
-          },
-          permissions
-        }, requestId)
-      );
+      payload = AuthService.verifyMfaChallengeToken(mfaSessionToken);
     } catch {
       return reply.status(401).send(
         errorResponse('MFA_SESSION_EXPIRED', 'MFA session token expired or invalid. Please log in again.', requestId)
       );
     }
+
+    if (request.tenantId && payload.tenantId !== request.tenantId) {
+      return reply.status(403).send(
+        errorResponse('CROSS_TENANT_FORBIDDEN', 'MFA challenge token belongs to another organization.', requestId)
+      );
+    }
+
+    // Verify user is active and check lockout status (BACK-10)
+    const userRes = await tenantQuery(
+      'SELECT is_active, failed_login_attempts, locked_until FROM users WHERE id = $1 AND tenant_id = $2',
+      [payload.sub, payload.tenantId],
+      payload.tenantId
+    );
+    if (userRes.rows.length === 0 || !userRes.rows[0].is_active) {
+      return reply.status(403).send(
+        errorResponse('ACCOUNT_INACTIVE', 'This account has been deactivated.', requestId)
+      );
+    }
+
+    const userRow = userRes.rows[0];
+    if (userRow.locked_until && new Date(userRow.locked_until) > new Date()) {
+      return reply.status(423).send(
+        errorResponse('ACCOUNT_LOCKED', 'Account is temporarily locked due to multiple failed MFA attempts. Please try again later.', requestId)
+      );
+    }
+
+    const valid = await AuthService.verifyTotpCode(payload.sub, totpCode, payload.tenantId);
+
+    if (!valid) {
+      const failRes = await tenantQuery<{ failed_login_attempts: number; locked_until: Date | null }>(
+        `UPDATE users
+         SET failed_login_attempts = CASE
+               WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1
+               ELSE COALESCE(failed_login_attempts, 0) + 1
+             END,
+             locked_until = CASE
+               WHEN (CASE WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1 ELSE COALESCE(failed_login_attempts, 0) + 1 END) >= 5
+               THEN NOW() + INTERVAL '15 minutes'
+               ELSE NULL
+             END,
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING failed_login_attempts, locked_until`,
+        [payload.sub],
+        payload.tenantId
+      );
+      const attempts = failRes.rows[0]?.failed_login_attempts ?? 1;
+      const willLock = attempts >= 5;
+
+      if (willLock) {
+        return reply.status(423).send(
+          errorResponse('ACCOUNT_LOCKED', 'Too many failed MFA verification attempts. Account locked for 15 minutes.', requestId)
+        );
+      }
+
+      return reply.status(401).send(
+        errorResponse('INVALID_TOTP_CODE', `The 6-digit verification code is invalid. ${Math.max(0, 5 - attempts)} attempts remaining before temporary lockout.`, requestId)
+      );
+    }
+
+    // Reset failure counter on successful verification
+    await tenantQuery(
+      `UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
+      [payload.sub],
+      payload.tenantId
+    );
+
+    const sessionMeta = await AuthService.createSessionWithMeta(payload.sub, payload.tenantId, request.ip, request.headers['user-agent']);
+
+    const accessToken = AuthService.generateAccessToken({
+      id: payload.sub,
+      role: payload.role,
+      tenantId: payload.tenantId,
+      email: payload.email,
+      sessionId: sessionMeta.sessionId,
+    });
+
+    reply.setCookie('refresh_token', sessionMeta.refreshToken, {
+      path: '/api/v1/auth',
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 30 * 24 * 60 * 60,
+    });
+
+    const permissions = await AuthService.getUserPermissions(payload.role);
+    const mobileClient = isMobile(request.headers['x-client-platform']);
+
+    return reply.status(200).send(
+      successResponse({
+        accessToken,
+        ...(mobileClient ? { refreshToken: sessionMeta.refreshToken } : {}),
+        sessionCreatedAt: sessionMeta.sessionCreatedAt,
+        user: {
+          id: payload.sub,
+          email: payload.email,
+          role: payload.role,
+          tenantId: payload.tenantId,
+          mfaEnabled: true,
+        },
+        permissions
+      }, requestId)
+    );
   });
 
   // 3. MFA Setup (Initiates 2FA setup, generates secret & QR code URI)
@@ -466,117 +484,123 @@ export async function authRoutes(fastify: FastifyInstance) {
 
     const { mfaSessionToken, backupCode } = parsed.data;
 
+    let payload: { sub: string; role: string; tenantId: string; email: string };
     try {
-      const payload = AuthService.verifyMfaChallengeToken(mfaSessionToken);
-      if (request.tenantId && payload.tenantId !== request.tenantId) {
-        return reply.status(403).send(
-          errorResponse('CROSS_TENANT_FORBIDDEN', 'MFA challenge token belongs to another organization.', requestId)
-        );
-      }
-
-      // Verify user is active and check lockout status (BACK-10)
-      const userRes = await tenantQuery(
-        'SELECT is_active, failed_login_attempts, locked_until FROM users WHERE id = $1 AND tenant_id = $2',
-        [payload.sub, payload.tenantId],
-        payload.tenantId
-      );
-      if (userRes.rows.length === 0 || !userRes.rows[0].is_active) {
-        return reply.status(403).send(
-          errorResponse('ACCOUNT_INACTIVE', 'This account has been deactivated.', requestId)
-        );
-      }
-
-      const userRow = userRes.rows[0];
-      if (userRow.locked_until && new Date(userRow.locked_until) > new Date()) {
-        return reply.status(429).send(
-          errorResponse('ACCOUNT_LOCKED', 'Account is temporarily locked due to multiple failed MFA attempts. Please try again later.', requestId)
-        );
-      }
-
-      const valid = await AuthService.verifyMfaRecovery(payload.sub, backupCode, payload.tenantId);
-
-      if (!valid) {
-        const failRes = await tenantQuery<{ failed_login_attempts: number; locked_until: Date | null }>(
-          `UPDATE users
-           SET failed_login_attempts = CASE
-                 WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1
-                 ELSE COALESCE(failed_login_attempts, 0) + 1
-               END,
-               locked_until = CASE
-                 WHEN (CASE WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1 ELSE COALESCE(failed_login_attempts, 0) + 1 END) >= 5
-                 THEN NOW() + INTERVAL '15 minutes'
-                 ELSE NULL
-               END,
-               updated_at = NOW()
-           WHERE id = $1
-           RETURNING failed_login_attempts, locked_until`,
-          [payload.sub],
-          payload.tenantId
-        );
-        const attempts = failRes.rows[0]?.failed_login_attempts ?? 1;
-        const willLock = attempts >= 5;
-
-        if (willLock) {
-          return reply.status(429).send(
-            errorResponse('ACCOUNT_LOCKED', 'Too many failed emergency recovery attempts. Account locked for 15 minutes.', requestId)
-          );
-        }
-
-        return reply.status(401).send(
-          errorResponse('INVALID_BACKUP_CODE', `Emergency backup code is invalid or has already been used. ${Math.max(0, 5 - attempts)} attempts remaining before temporary lockout.`, requestId)
-        );
-      }
-
-      // Reset failure counter on successful recovery
-      await tenantQuery(
-        `UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
-        [payload.sub],
-        payload.tenantId
-      );
-
-      const accessToken = AuthService.generateAccessToken({
-        id: payload.sub,
-        role: payload.role,
-        tenantId: payload.tenantId,
-        email: payload.email,
-      });
-
-      const refreshToken = await AuthService.createSession(payload.sub, payload.tenantId, request.ip, request.headers['user-agent']);
-
-      reply.setCookie('refresh_token', refreshToken, {
-        path: '/api/v1/auth',
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 30 * 24 * 60 * 60,
-      });
-
-      const permissions = await AuthService.getUserPermissions(payload.role);
-      const mobileClient = isMobile(request.headers['x-client-platform']);
-
-      return reply.status(200).send(
-        successResponse({
-          accessToken,
-          ...(mobileClient ? { refreshToken } : {}),
-          user: {
-            id: payload.sub,
-            email: payload.email,
-            role: payload.role,
-            tenantId: payload.tenantId,
-          },
-          permissions,
-          recovered: true
-        }, requestId)
-      );
+      payload = AuthService.verifyMfaChallengeToken(mfaSessionToken);
     } catch {
       return reply.status(401).send(
         errorResponse('MFA_SESSION_EXPIRED', 'MFA session token expired or invalid. Please log in again.', requestId)
       );
     }
+
+    if (request.tenantId && payload.tenantId !== request.tenantId) {
+      return reply.status(403).send(
+        errorResponse('CROSS_TENANT_FORBIDDEN', 'MFA challenge token belongs to another organization.', requestId)
+      );
+    }
+
+    // Verify user is active and check lockout status (BACK-10)
+    const userRes = await tenantQuery(
+      'SELECT is_active, failed_login_attempts, locked_until FROM users WHERE id = $1 AND tenant_id = $2',
+      [payload.sub, payload.tenantId],
+      payload.tenantId
+    );
+    if (userRes.rows.length === 0 || !userRes.rows[0].is_active) {
+      return reply.status(403).send(
+        errorResponse('ACCOUNT_INACTIVE', 'This account has been deactivated.', requestId)
+      );
+    }
+
+    const userRow = userRes.rows[0];
+    if (userRow.locked_until && new Date(userRow.locked_until) > new Date()) {
+      return reply.status(423).send(
+        errorResponse('ACCOUNT_LOCKED', 'Account is temporarily locked due to multiple failed MFA attempts. Please try again later.', requestId)
+      );
+    }
+
+    const valid = await AuthService.verifyMfaRecovery(payload.sub, backupCode, payload.tenantId);
+
+    if (!valid) {
+      const failRes = await tenantQuery<{ failed_login_attempts: number; locked_until: Date | null }>(
+        `UPDATE users
+         SET failed_login_attempts = CASE
+               WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1
+               ELSE COALESCE(failed_login_attempts, 0) + 1
+             END,
+             locked_until = CASE
+               WHEN (CASE WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1 ELSE COALESCE(failed_login_attempts, 0) + 1 END) >= 5
+               THEN NOW() + INTERVAL '15 minutes'
+               ELSE NULL
+             END,
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING failed_login_attempts, locked_until`,
+        [payload.sub],
+        payload.tenantId
+      );
+      const attempts = failRes.rows[0]?.failed_login_attempts ?? 1;
+      const willLock = attempts >= 5;
+
+      if (willLock) {
+        return reply.status(423).send(
+          errorResponse('ACCOUNT_LOCKED', 'Too many failed emergency recovery attempts. Account locked for 15 minutes.', requestId)
+        );
+      }
+
+      return reply.status(401).send(
+        errorResponse('INVALID_BACKUP_CODE', `Emergency backup code is invalid or has already been used. ${Math.max(0, 5 - attempts)} attempts remaining before temporary lockout.`, requestId)
+      );
+    }
+
+    // Reset failure counter on successful recovery
+    await tenantQuery(
+      `UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
+      [payload.sub],
+      payload.tenantId
+    );
+
+    const sessionMeta = await AuthService.createSessionWithMeta(payload.sub, payload.tenantId, request.ip, request.headers['user-agent']);
+
+    const accessToken = AuthService.generateAccessToken({
+      id: payload.sub,
+      role: payload.role,
+      tenantId: payload.tenantId,
+      email: payload.email,
+      sessionId: sessionMeta.sessionId,
+    });
+
+    reply.setCookie('refresh_token', sessionMeta.refreshToken, {
+      path: '/api/v1/auth',
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 30 * 24 * 60 * 60,
+    });
+
+    const permissions = await AuthService.getUserPermissions(payload.role);
+    const mobileClient = isMobile(request.headers['x-client-platform']);
+
+    return reply.status(200).send(
+      successResponse({
+        accessToken,
+        ...(mobileClient ? { refreshToken: sessionMeta.refreshToken } : {}),
+        sessionCreatedAt: sessionMeta.sessionCreatedAt,
+        user: {
+          id: payload.sub,
+          email: payload.email,
+          role: payload.role,
+          tenantId: payload.tenantId,
+          mfaEnabled: true,
+        },
+        permissions,
+        recovered: true
+      }, requestId)
+    );
   });
 
   // 6. Refresh Token Session Rotation Route
   fastify.post('/refresh', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
     schema: {
       tags: ['Authentication'],
       summary: 'Rotate session tokens',
@@ -609,6 +633,15 @@ export async function authRoutes(fastify: FastifyInstance) {
       );
     }
 
+    if (rotated.locked) {
+      return reply.status(423).send(
+        errorResponse('SESSION_LOCKED', 'Session is locked. Re-authenticate with your password to resume.', requestId, [
+          { field: 'email', issue: rotated.user.email },
+          { field: 'role', issue: rotated.user.role },
+        ])
+      );
+    }
+
     reply.setCookie('refresh_token', rotated.newRefreshToken, {
       path: '/api/v1/auth',
       httpOnly: true,
@@ -624,6 +657,7 @@ export async function authRoutes(fastify: FastifyInstance) {
       successResponse({
         accessToken: rotated.accessToken,
         ...(mobileClient ? { refreshToken: rotated.newRefreshToken } : {}),
+        sessionCreatedAt: rotated.sessionCreatedAt,
         user: rotated.user,
         permissions
       }, requestId)
@@ -671,18 +705,29 @@ export async function authRoutes(fastify: FastifyInstance) {
   }, async (request, reply) => {
     const requestId = request.id || `req_${Date.now()}`;
     const userId = request.user!.id;
+    const tenantId = request.user!.tenantId;
 
     const userRes = await tenantQuery(
       `SELECT u.id, u.email, u.phone, u.role, u.tenant_id, u.created_at,
-              COALESCE(ap.full_name, sp.full_name, cp.full_name, pp.full_name, 'User') as full_name
+              COALESCE(ap.full_name, sp.full_name, cp.full_name, pp.full_name, 'User') AS full_name,
+              COALESCE(ap.avatar_url, sp.avatar_url, cp.avatar_url, pp.avatar_url) AS avatar_url,
+              COALESCE(ap.cover_url, sp.cover_url, cp.cover_url, pp.cover_url) AS cover_url,
+              sp.department,
+              sp.assigned_territory,
+              sp.shift_hours,
+              cp.default_address_text,
+              COALESCE(mfa.is_enabled, FALSE) AS mfa_enabled,
+              t.tagline AS tenant_tagline
        FROM users u
+       JOIN tenants t ON t.id = u.tenant_id
        LEFT JOIN admin_profiles ap ON ap.user_id = u.id
        LEFT JOIN staff_profiles sp ON sp.user_id = u.id
        LEFT JOIN customer_profiles cp ON cp.user_id = u.id
        LEFT JOIN provider_profiles pp ON pp.user_id = u.id
+       LEFT JOIN user_mfa_credentials mfa ON mfa.user_id = u.id
        WHERE u.id = $1`,
       [userId],
-      request.user!.tenantId
+      tenantId
     );
 
     if (userRes.rows.length === 0) {
@@ -694,8 +739,32 @@ export async function authRoutes(fastify: FastifyInstance) {
     const user = userRes.rows[0];
     const permissions = await AuthService.getUserPermissions(user.role);
 
+    let sessionCreatedAt: string | null = null;
+    const cookieToken = request.cookies.refresh_token;
+    if (cookieToken) {
+      const sessRes = await tenantQuery<{ created_at: string }>(
+        `SELECT created_at FROM user_sessions WHERE user_id = $1 AND refresh_token_hash = $2 AND revoked_at IS NULL LIMIT 1`,
+        [userId, AuthService.hashToken(cookieToken)],
+        tenantId
+      );
+      if (sessRes.rows[0]?.created_at) {
+        sessionCreatedAt = new Date(sessRes.rows[0].created_at).toISOString();
+      }
+    }
+    if (!sessionCreatedAt) {
+      const latestSessRes = await tenantQuery<{ created_at: string }>(
+        `SELECT created_at FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+        [userId],
+        tenantId
+      );
+      if (latestSessRes.rows[0]?.created_at) {
+        sessionCreatedAt = new Date(latestSessRes.rows[0].created_at).toISOString();
+      }
+    }
+
     return reply.status(200).send(
       successResponse({
+        sessionCreatedAt,
         user: {
           id: user.id,
           email: user.email,
@@ -703,13 +772,117 @@ export async function authRoutes(fastify: FastifyInstance) {
           fullName: user.full_name,
           role: user.role,
           tenantId: user.tenant_id,
+          mfaEnabled: Boolean(user.mfa_enabled),
+          avatarUrl: signStoredMediaUrl(user.avatar_url ?? null, tenantId),
+          coverUrl: signStoredMediaUrl(user.cover_url ?? null, tenantId),
+          department: user.department ?? null,
+          assignedTerritory: user.assigned_territory ?? null,
+          shiftHours: user.shift_hours ?? null,
+          defaultAddress: user.default_address_text ?? null,
           createdAt: user.created_at
         },
-        tenant: request.tenant,
+        tenant: request.tenant ? { ...request.tenant, tagline: user.tenant_tagline ?? null } : request.tenant,
         permissions
       }, requestId)
     );
   });
+
+  // 8B. Self-Profile Update (Authenticated User)
+  const updateSelfProfileHandler = async (request: FastifyRequest, reply: any) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const userId = request.user!.id;
+    const tenantId = request.user!.tenantId;
+    const role = request.user!.role;
+
+    const updateMeSchema = z.object({
+      fullName: z.string().trim().min(2).max(150).optional(),
+      phone: z.string().trim().min(3).max(40).nullable().optional(),
+      avatarUrl: safeMediaUrlSchema.nullable().optional(),
+      coverUrl: safeMediaUrlSchema.nullable().optional(),
+      defaultAddress: z.string().trim().max(500).nullable().optional(),
+      department: z.string().trim().max(100).nullable().optional(),
+      assignedTerritory: z.string().trim().max(150).nullable().optional(),
+    });
+    const parsed = updateMeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(
+        errorResponse('VALIDATION_ERROR', parsed.error.issues[0]?.message || 'Invalid profile update payload.', requestId)
+      );
+    }
+
+    const d = parsed.data;
+    const normAvatar = d.avatarUrl === undefined ? undefined : normalizeStoredMediaUrl(d.avatarUrl);
+    const normCover = d.coverUrl === undefined ? undefined : normalizeStoredMediaUrl(d.coverUrl);
+
+    await withTenantTransaction(tenantId, async (client) => {
+      if (d.phone !== undefined) {
+        await client.query(`UPDATE users SET phone = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`, [d.phone, userId, tenantId]);
+      }
+
+      if (role === 'ADMIN') {
+        await client.query(
+          `UPDATE admin_profiles
+           SET full_name = COALESCE($1, full_name),
+               avatar_url = CASE WHEN $2::boolean THEN $3 ELSE avatar_url END,
+               cover_url = CASE WHEN $4::boolean THEN $5 ELSE cover_url END,
+               updated_at = NOW()
+           WHERE user_id = $6 AND tenant_id = $7`,
+          [d.fullName ?? null, normAvatar !== undefined, normAvatar ?? null, normCover !== undefined, normCover ?? null, userId, tenantId]
+        );
+      } else if (role === 'STAFF') {
+        await client.query(
+          `UPDATE staff_profiles
+           SET full_name = COALESCE($1, full_name),
+               department = COALESCE($2, department),
+               assigned_territory = COALESCE($3, assigned_territory),
+               avatar_url = CASE WHEN $4::boolean THEN $5 ELSE avatar_url END,
+               cover_url = CASE WHEN $6::boolean THEN $7 ELSE cover_url END,
+               updated_at = NOW()
+           WHERE user_id = $8 AND tenant_id = $9`,
+          [d.fullName ?? null, d.department ?? null, d.assignedTerritory ?? null, normAvatar !== undefined, normAvatar ?? null, normCover !== undefined, normCover ?? null, userId, tenantId]
+        );
+      } else if (role === 'CUSTOMER') {
+        await client.query(
+          `UPDATE customer_profiles
+           SET full_name = COALESCE($1, full_name),
+               default_address_text = COALESCE($2, default_address_text),
+               avatar_url = CASE WHEN $3::boolean THEN $4 ELSE avatar_url END,
+               cover_url = CASE WHEN $5::boolean THEN $6 ELSE cover_url END,
+               updated_at = NOW()
+           WHERE user_id = $7 AND tenant_id = $8`,
+          [d.fullName ?? null, d.defaultAddress ?? null, normAvatar !== undefined, normAvatar ?? null, normCover !== undefined, normCover ?? null, userId, tenantId]
+        );
+      } else if (role === 'TECHNICIAN') {
+        await client.query(
+          `UPDATE provider_profiles
+           SET full_name = COALESCE($1, full_name),
+               avatar_url = CASE WHEN $2::boolean THEN $3 ELSE avatar_url END,
+               cover_url = CASE WHEN $4::boolean THEN $5 ELSE cover_url END,
+               updated_at = NOW()
+           WHERE user_id = $6 AND tenant_id = $7`,
+          [d.fullName ?? null, normAvatar !== undefined, normAvatar ?? null, normCover !== undefined, normCover ?? null, userId, tenantId]
+        );
+      }
+    });
+
+    return reply.status(200).send(
+      successResponse({
+        updated: true,
+        avatarUrl: normAvatar !== undefined ? signStoredMediaUrl(normAvatar, tenantId) : undefined,
+        coverUrl: normCover !== undefined ? signStoredMediaUrl(normCover, tenantId) : undefined,
+      }, requestId)
+    );
+  };
+
+  fastify.put('/me', {
+    preHandler: [authenticate, blockInDemoMode('Updating account profile')],
+    schema: { tags: ['Authentication'], summary: 'Update current user profile', security: [{ bearerAuth: [] }] },
+  }, updateSelfProfileHandler);
+
+  fastify.patch('/me', {
+    preHandler: [authenticate, blockInDemoMode('Updating account profile')],
+    schema: { tags: ['Authentication'], summary: 'Partially update current user profile', security: [{ bearerAuth: [] }] },
+  }, updateSelfProfileHandler);
 
   // 9. One-Click Demo Sandbox Login (Strictly disabled unless APP_DEMO_MODE=true)
   fastify.post('/demo-login', {
@@ -1053,13 +1226,46 @@ export async function authRoutes(fastify: FastifyInstance) {
     );
   });
 
-  // 15. Re-authenticate Current User (Server-Backed Lock Screen Unlock)
-  fastify.post('/reauthenticate', {
-    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  // 15. Server-Backed Session Lock
+  fastify.post('/lock', {
+    config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
     preHandler: [authenticate],
     schema: {
       tags: ['Authentication'],
-      summary: 'Re-verify password for active session lock-screen unlock',
+      summary: 'Lock current browser/app session on server until password reauthentication',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.user!.tenantId;
+    const userId = request.user!.id;
+    const cookieToken = request.cookies.refresh_token;
+
+    if (cookieToken) {
+      await tenantQuery(
+        `UPDATE user_sessions SET locked_at = NOW() WHERE user_id = $1 AND refresh_token_hash = $2 AND revoked_at IS NULL`,
+        [userId, AuthService.hashToken(cookieToken)],
+        tenantId
+      );
+    } else {
+      await tenantQuery(
+        `UPDATE user_sessions SET locked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
+        [userId],
+        tenantId
+      );
+    }
+
+    return reply.status(200).send(
+      successResponse({ locked: true, lockedAt: new Date().toISOString() }, requestId)
+    );
+  });
+
+  // 16. Re-authenticate Current User (Server-Backed Lock Screen Unlock with Lockout Protection)
+  fastify.post('/reauthenticate', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    schema: {
+      tags: ['Authentication'],
+      summary: 'Re-verify password for active or locked session unlock',
       security: [{ bearerAuth: [] }],
     },
   }, async (request, reply) => {
@@ -1072,10 +1278,59 @@ export async function authRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const userRes = await tenantQuery<{ password_hash: string; is_active: boolean }>(
-      'SELECT password_hash, is_active FROM users WHERE id = $1 AND tenant_id = $2',
-      [request.user!.id, request.tenantId],
-      request.tenantId
+    // Resolve identity from Bearer JWT OR HttpOnly refresh_token cookie (when UI wiped in-memory JWT on lock)
+    let userId: string | null = null;
+    let tenantId: string = request.tenantId;
+    let sessionIdToUnlock: string | null = null;
+
+    if (request.headers.authorization?.startsWith('Bearer ')) {
+      try {
+        const decoded = AuthService.verifyAccessToken(request.headers.authorization.slice(7).trim());
+        userId = decoded.sub;
+        tenantId = decoded.tenantId;
+        sessionIdToUnlock = decoded.sid ?? null;
+      } catch {
+        // Fall through to cookie check
+      }
+    }
+
+    const cookieToken = request.cookies.refresh_token;
+    if (!userId && cookieToken) {
+      if (!isOriginAllowedForCookie(request)) {
+        return reply.status(403).send(
+          errorResponse('CSRF_ORIGIN_MISMATCH', 'Cross-origin cookie reauthentication rejected.', requestId)
+        );
+      }
+      const sessRes = await tenantQuery<{ id: string; user_id: string; expires_at: Date; revoked_at: Date | null }>(
+        `SELECT id, user_id, expires_at, revoked_at FROM user_sessions WHERE refresh_token_hash = $1 LIMIT 1`,
+        [AuthService.hashToken(cookieToken)],
+        tenantId
+      );
+      const sess = sessRes.rows[0];
+      if (sess && !sess.revoked_at && new Date(sess.expires_at) > new Date()) {
+        userId = sess.user_id;
+        sessionIdToUnlock = sess.id;
+      }
+    }
+
+    if (!userId) {
+      return reply.status(401).send(
+        errorResponse('UNAUTHORIZED', 'Valid session token required to re-authenticate.', requestId)
+      );
+    }
+
+    const userRes = await tenantQuery<{
+      id: string;
+      email: string;
+      role: string;
+      tenant_id: string;
+      password_hash: string;
+      is_active: boolean;
+      locked_until: Date | null;
+    }>(
+      'SELECT id, email, role, tenant_id, password_hash, is_active, locked_until FROM users WHERE id = $1 AND tenant_id = $2',
+      [userId, tenantId],
+      tenantId
     );
     if (userRes.rows.length === 0 || !userRes.rows[0].is_active) {
       return reply.status(401).send(
@@ -1083,15 +1338,72 @@ export async function authRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const valid = await AuthService.verifyPassword(parsed.data.password, userRes.rows[0].password_hash);
+    const u = userRes.rows[0];
+    if (u.locked_until && new Date(u.locked_until) > new Date()) {
+      return reply.status(423).send(
+        errorResponse('ACCOUNT_LOCKED', 'Account is temporarily locked due to multiple failed attempts.', requestId)
+      );
+    }
+
+    const valid = await AuthService.verifyPassword(parsed.data.password, u.password_hash);
     if (!valid) {
+      const failRes = await tenantQuery<{ failed_login_attempts: number }>(
+        `UPDATE users
+         SET failed_login_attempts = CASE
+               WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1
+               ELSE COALESCE(failed_login_attempts, 0) + 1
+             END,
+             locked_until = CASE
+               WHEN (CASE WHEN locked_until IS NOT NULL AND locked_until <= NOW() THEN 1 ELSE COALESCE(failed_login_attempts, 0) + 1 END) >= 5
+               THEN NOW() + INTERVAL '15 minutes'
+               ELSE NULL
+             END,
+             updated_at = NOW()
+         WHERE id = $1
+         RETURNING failed_login_attempts`,
+        [userId],
+        tenantId
+      );
+      if ((failRes.rows[0]?.failed_login_attempts ?? 0) >= 5) {
+        return reply.status(423).send(
+          errorResponse('ACCOUNT_LOCKED', 'Too many failed attempts. Account locked for 15 minutes.', requestId)
+        );
+      }
       return reply.status(401).send(
         errorResponse('INVALID_CREDENTIALS', 'Password verification failed.', requestId)
       );
     }
 
+    await tenantQuery(
+      `UPDATE users SET failed_login_attempts = 0, locked_until = NULL, updated_at = NOW() WHERE id = $1`,
+      [userId],
+      tenantId
+    );
+
+    if (sessionIdToUnlock) {
+      await tenantQuery(
+        `UPDATE user_sessions SET locked_at = NULL WHERE id = $1`,
+        [sessionIdToUnlock],
+        tenantId
+      );
+    } else if (cookieToken) {
+      await tenantQuery(
+        `UPDATE user_sessions SET locked_at = NULL WHERE user_id = $1 AND refresh_token_hash = $2`,
+        [userId, AuthService.hashToken(cookieToken)],
+        tenantId
+      );
+    }
+
+    const accessToken = AuthService.generateAccessToken({
+      id: u.id,
+      role: u.role,
+      tenantId: u.tenant_id,
+      email: u.email,
+      ...(sessionIdToUnlock ? { sessionId: sessionIdToUnlock } : {}),
+    });
+
     return reply.status(200).send(
-      successResponse({ verified: true, verifiedAt: new Date().toISOString() }, requestId)
+      successResponse({ verified: true, verifiedAt: new Date().toISOString(), accessToken }, requestId)
     );
   });
 }

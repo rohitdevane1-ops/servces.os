@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAdmin } from '../../context/adminContextCore';
 import { downloadCSV } from '../../utils/exportUtils';
+import { RevealSection } from '../../components/common/MotionPrimitives';
 import {
   Search,
   Download,
@@ -44,8 +45,8 @@ export const Page06AllBookings: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header matching Screenshot 02 Top Right */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* Header */}
+      <RevealSection className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">All Bookings</h1>
@@ -81,13 +82,13 @@ export const Page06AllBookings: React.FC = () => {
 
           <button
             onClick={() => setIsCreateJobModalOpen(true)}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+            className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" />
             New Booking
           </button>
         </div>
-      </div>
+      </RevealSection>
 
       {/* Status Filter Tabs */}
       <div className="flex items-center justify-between border-b border-slate-200 gap-2 overflow-x-auto pb-1">

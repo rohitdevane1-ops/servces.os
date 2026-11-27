@@ -2,6 +2,7 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { pool, setActiveTenantId } from '../database/pool.js';
 import { errorResponse } from '../types/envelope.js';
 import { AuthService } from '../modules/auth/auth.service.js';
+import { signStoredMediaUrl } from '../utils/mediaSigning.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -75,7 +76,7 @@ function mapTenantRow(row: any) {
     supportPhone: row.support_phone ?? null,
     supportWhatsapp: row.support_whatsapp ?? null,
     emergencyPhone: row.emergency_phone ?? null,
-    logoUrl: row.logo_url ?? row.brand_logo_url ?? null,
+    logoUrl: signStoredMediaUrl(row.logo_url ?? row.brand_logo_url ?? null, row.id),
     defaultLocale: row.default_locale || 'en',
     defaultMapLat: Number(row.default_map_lat ?? 25.2048),
     defaultMapLng: Number(row.default_map_lng ?? 55.2708),
@@ -109,6 +110,7 @@ export async function tenantResolver(request: FastifyRequest, reply: FastifyRepl
   // 1. Resolve candidate tenant identifier from header, token, or host
   const headerTenantId = request.headers['x-tenant-id'] as string | undefined;
   let tokenTenantId: string | undefined = (request.user as any)?.tenantId;
+  let invalidBearerToken = false;
 
   // Extract from Authorization header if present and request.user is not yet populated (onRequest hook)
   // BACK-08: Only resolve tokenTenantId for tenant scoping; DO NOT populate request.user here.
@@ -121,7 +123,7 @@ export async function tenantResolver(request: FastifyRequest, reply: FastifyRepl
         tokenTenantId = decoded.tenantId;
       }
     } catch {
-      // Handled by subsequent auth preHandler
+      invalidBearerToken = true;
     }
   }
 
@@ -207,6 +209,12 @@ export async function tenantResolver(request: FastifyRequest, reply: FastifyRepl
       request.tenant = mapTenantRow(row);
       setActiveTenantId(row.id);
       return;
+    }
+
+    if (invalidBearerToken) {
+      return reply.status(401).send(
+        errorResponse('TOKEN_EXPIRED_OR_INVALID', 'Invalid or expired access token.', requestId)
+      );
     }
 
     // Multi-tenant deployment without tenant identifier

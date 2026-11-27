@@ -41,6 +41,30 @@ const ServiceItemModel _defaultFallbackService = ServiceItemModel(
 /// Central GoRouter configuration mapping mobile views with strict 2-persona role enforcement.
 /// GEMINI.md Rule 1: Customer and Technician are the ONLY two user types in the mobile apps.
 class AppRouter {
+  static CustomTransitionPage<void> _motionPage(LocalKey key, Widget child) {
+    return CustomTransitionPage<void>(
+      key: key,
+      transitionDuration: const Duration(milliseconds: 260),
+      reverseTransitionDuration: const Duration(milliseconds: 220),
+      child: child,
+      transitionsBuilder: (context, animation, secondaryAnimation, childWidget) {
+        final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+        if (reduceMotion) return childWidget;
+        final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.03),
+              end: Offset.zero,
+            ).animate(curved),
+            child: childWidget,
+          ),
+        );
+      },
+    );
+  }
+
   static final GoRouter router = createRouter(
     onThemeToggle: () {},
     isDarkModeGetter: () => false,
@@ -160,43 +184,55 @@ class AppRouter {
         // Customer Suite
         GoRoute(
           path: '/customer/home',
-          builder: (context, state) => CustomerDiscoverScreen(
-            onThemeToggle: onThemeToggle,
-            isDarkMode: isDarkModeGetter(),
+          pageBuilder: (context, state) => _motionPage(
+            state.pageKey,
+            CustomerDiscoverScreen(
+              onThemeToggle: onThemeToggle,
+              isDarkMode: isDarkModeGetter(),
+            ),
           ),
         ),
         GoRoute(
           path: '/customer/search',
-          builder: (context, state) => GlobalSearchScreen(
-            onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
-            onSelectService: (svc) => context.push('/customer/service-detail', extra: svc),
+          pageBuilder: (context, state) => _motionPage(
+            state.pageKey,
+            GlobalSearchScreen(
+              onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
+              onSelectService: (svc) => context.push('/customer/service-detail', extra: svc),
+            ),
           ),
         ),
         GoRoute(
           path: '/customer/categories',
-          builder: (context, state) => CategoryFeedScreen(
-            categorySlug: state.uri.queryParameters['slug'] ?? 'all',
-            onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
-            onSelectService: (svc) => context.push('/customer/service-detail', extra: svc),
+          pageBuilder: (context, state) => _motionPage(
+            state.pageKey,
+            CategoryFeedScreen(
+              categorySlug: state.uri.queryParameters['slug'] ?? 'all',
+              onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
+              onSelectService: (svc) => context.push('/customer/service-detail', extra: svc),
+            ),
           ),
         ),
         GoRoute(
           path: '/customer/service-detail',
-          builder: (context, state) {
+          pageBuilder: (context, state) {
             final svc = state.extra is ServiceItemModel
                 ? state.extra as ServiceItemModel
                 : _defaultFallbackService;
-            return ServiceDetailScreen(
-              service: svc,
-              onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
-              onProceedToBooking: () => context.push('/customer/booking-wizard', extra: svc),
-              onConfigureBooking: (totalPrice, tierTitle) => context.push(
-                '/customer/booking-wizard',
-                extra: <String, dynamic>{
-                  'service': svc,
-                  'tierPrice': totalPrice,
-                  'tierTitle': tierTitle,
-                },
+            return _motionPage(
+              state.pageKey,
+              ServiceDetailScreen(
+                service: svc,
+                onBack: () => context.canPop() ? context.pop() : context.go('/customer/home'),
+                onProceedToBooking: () => context.push('/customer/booking-wizard', extra: svc),
+                onConfigureBooking: (totalPrice, tierTitle) => context.push(
+                  '/customer/booking-wizard',
+                  extra: <String, dynamic>{
+                    'service': svc,
+                    'tierPrice': totalPrice,
+                    'tierTitle': tierTitle,
+                  },
+                ),
               ),
             );
           },

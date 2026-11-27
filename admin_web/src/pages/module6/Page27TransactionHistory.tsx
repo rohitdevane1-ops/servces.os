@@ -221,7 +221,7 @@ export const Page27TransactionHistory: React.FC = () => {
                 filtered.map((entry) => (
                   <tr key={entry.id} className="hover:bg-slate-50/70 transition-colors">
                     <td className="py-3.5 px-4 font-mono text-[11px] text-slate-600 whitespace-nowrap">
-                      {entry.postedAt ? new Date(entry.postedAt).toLocaleString() : 'â€”'}
+                      {entry.postedAt ? new Date(entry.postedAt).toLocaleString() : '—'}
                     </td>
                     <td className="py-3.5 px-4">
                       <div className="flex items-center gap-1.5">

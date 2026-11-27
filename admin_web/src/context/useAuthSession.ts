@@ -114,10 +114,11 @@ export function useAuthSession(
       phone: u.phone || '',
       role: serverRole,
       title: serverRole === 'ADMIN' ? 'Platform Administrator' : 'Operations Coordinator',
-      avatar: '',
-      territory: meRes.data.tenant?.countryCode || '',
-      department: serverRole === 'ADMIN' ? 'Executive Administration' : 'Field Operations',
-      twoFactorEnabled: true,
+      avatar: u.avatarUrl || '',
+      territory: u.assignedTerritory || meRes.data.tenant?.countryCode || '',
+      department:
+        u.department || (serverRole === 'ADMIN' ? 'Executive Administration' : 'Field Operations'),
+      twoFactorEnabled: Boolean(u.mfaEnabled),
       bio: '',
     };
     if (serverRole === 'ADMIN') {
@@ -168,6 +169,35 @@ export function useAuthSession(
           } else {
             apiClient.clearSession();
           }
+        } else {
+          const lockedHint = apiClient.getLockedSessionHint();
+          if (lockedHint?.locked && active) {
+            const lockedRole: UserRole =
+              String(lockedHint.role || '').toUpperCase() === 'STAFF' ? 'STAFF' : 'ADMIN';
+            const lockedEmail = lockedHint.email || '';
+            const shellProfile: UserProfile = {
+              ...buildEmptyProfile(lockedRole),
+              email: lockedEmail,
+              name: lockedEmail ? lockedEmail.split('@')[0] : lockedRole,
+            };
+            if (lockedRole === 'ADMIN') {
+              setAdminProfile(shellProfile);
+            } else {
+              setStaffProfile(shellProfile);
+            }
+            setSession({
+              user: shellProfile,
+              role: lockedRole,
+              token: '',
+              loginTime: new Date().toISOString(),
+            });
+            setIsSessionLocked(true);
+            try {
+              sessionStorage.setItem(LOCK_STORAGE_KEY, '1');
+            } catch {
+              // ignore
+            }
+          }
         }
       } finally {
         if (active) {
@@ -211,7 +241,7 @@ export function useAuthSession(
         email: normalizedEmail || baseProfile.email,
         name: verifiedSession.fullName || baseProfile.name || (authoritativeRole === 'ADMIN' ? 'Administrator' : 'Dispatcher'),
         role: authoritativeRole,
-        twoFactorEnabled: true,
+        twoFactorEnabled: false,
       };
 
       if (authoritativeRole === 'ADMIN') {
@@ -256,6 +286,8 @@ export function useAuthSession(
     } catch {
       // ignore
     }
+    void apiClient.lockSession().catch(() => {});
+    apiClient.setToken(null);
     recordSecurityEvent(
       'SESSION_LOCKED',
       session?.user?.email || 'authenticated-user',
@@ -277,6 +309,17 @@ export function useAuthSession(
 
       const res = await apiClient.reauthenticate(candidate);
       if (res.success && res.data?.verified) {
+        if (res.data.accessToken) {
+          apiClient.setToken(String(res.data.accessToken));
+          const unlockedRole = (String(res.data.user?.role || currentRole).toUpperCase() === 'STAFF'
+            ? 'STAFF'
+            : 'ADMIN') as UserRole;
+          await hydrateUserFromMe(
+            res.data.user?.email || session?.user?.email || '',
+            unlockedRole,
+            String(res.data.accessToken)
+          );
+        }
         setIsSessionLocked(false);
         lastActivityRef.current = Date.now();
         try {
@@ -306,7 +349,7 @@ export function useAuthSession(
       addToast(errMsg, 'error');
       return { ok: false, error: errMsg };
     },
-    [addToast, session?.user?.email, currentRole]
+    [addToast, hydrateUserFromMe, session?.user?.email, currentRole]
   );
 
   const logout = useCallback(() => {
@@ -324,13 +367,39 @@ export function useAuthSession(
   }, [addToast]);
 
   const updateUserProfile = useCallback(
-    (updates: Partial<UserProfile>) => {
+    async (updates: Partial<UserProfile>): Promise<MutationResult> => {
+      const hasPersistedFields =
+        updates.name !== undefined ||
+        updates.phone !== undefined ||
+        updates.department !== undefined ||
+        updates.territory !== undefined ||
+        updates.avatar !== undefined;
+
+      if (hasPersistedFields) {
+        const res = await apiClient.updateMe({
+          ...(updates.name !== undefined && updates.name.trim() ? { fullName: updates.name.trim() } : {}),
+          ...(updates.phone !== undefined ? { phone: updates.phone.trim() || null } : {}),
+          ...(updates.department !== undefined ? { department: updates.department.trim() || null } : {}),
+          ...(updates.territory !== undefined ? { assignedTerritory: updates.territory.trim() || null } : {}),
+          ...(updates.avatar !== undefined ? { avatarUrl: updates.avatar.trim() || null } : {}),
+        });
+        if (!res.success) {
+          const msg = res.error?.message || 'Failed to save profile changes to PostgreSQL.';
+          addToast(msg, 'error');
+          return { ok: false, error: msg };
+        }
+      }
+
       if (currentRole === 'ADMIN') {
         setAdminProfile((prev) => ({ ...prev, ...updates }));
       } else {
         setStaffProfile((prev) => ({ ...prev, ...updates }));
       }
-      addToast('Profile details updated for active session.', 'success');
+      setSession((prev) => (prev ? { ...prev, user: { ...prev.user, ...updates } } : prev));
+      if (hasPersistedFields) {
+        addToast('Profile details persisted to PostgreSQL.', 'success');
+      }
+      return { ok: true };
     },
     [currentRole, addToast]
   );
@@ -374,10 +443,13 @@ export function useAuthSession(
   );
 
   const updateAgencyBranding = useCallback(
-    async (name: string, _tagline?: string) => {
+    async (name: string, tagline?: string) => {
       const finalName = name.trim();
       if (!finalName) return;
-      await updateSystemConfig({ name: finalName });
+      await updateSystemConfig({
+        name: finalName,
+        ...(tagline !== undefined ? { tagline: tagline.trim() || null } : {}),
+      });
     },
     [updateSystemConfig]
   );

@@ -6,7 +6,7 @@ import { migrateUp } from '../../database/migrate.js';
 import { AuthService } from '../auth/auth.service.js';
 import { successResponse, errorResponse } from '../../types/envelope.js';
 import { env } from '../../config/env.js';
-import { blockInDemoMode } from '../../middleware/demoGuard.js';
+import { blockInDemoMode, isDemoModeEnabled } from '../../middleware/demoGuard.js';
 
 function constantTimeEquals(a: string, b: string): boolean {
   const bufA = Buffer.from(a, 'utf8');
@@ -14,10 +14,6 @@ function constantTimeEquals(a: string, b: string): boolean {
   if (bufA.length !== bufB.length) return false;
   return crypto.timingSafeEqual(bufA, bufB);
 }
-
-const testDbSchema = z.object({
-  databaseUrl: z.string().optional(),
-});
 
 const provisionSchema = z.object({
   provisioningToken: z.string().min(8).optional(),
@@ -62,11 +58,25 @@ export async function installerRoutes(fastify: FastifyInstance) {
          LIMIT 1`
       );
       const row = res.rows[0];
+      let migrations: Array<{ id: number; filename: string; appliedAt: string }> = [];
+      try {
+        const migRes = await pool.query<{ id: number; filename: string; applied_at: Date }>(
+          'SELECT id, filename, applied_at FROM _schema_migrations ORDER BY id ASC'
+        );
+        migrations = migRes.rows.map((m) => ({
+          id: Number(m.id),
+          filename: m.filename,
+          appliedAt: m.applied_at instanceof Date ? m.applied_at.toISOString() : String(m.applied_at),
+        }));
+      } catch {
+        migrations = [];
+      }
       return reply.status(200).send(
         successResponse({
           provisioned: Boolean(row),
           installerLocked: Boolean(row?.installer_completed_at),
-          demoMode: env.APP_DEMO_MODE,
+          demoMode: isDemoModeEnabled(),
+          migrations,
           tenant: row
             ? {
                 id: row.id,
@@ -86,7 +96,8 @@ export async function installerRoutes(fastify: FastifyInstance) {
         successResponse({
           provisioned: false,
           installerLocked: false,
-          demoMode: env.APP_DEMO_MODE,
+          demoMode: isDemoModeEnabled(),
+          migrations: [],
           tenant: null,
         }, requestId)
       );
@@ -95,6 +106,7 @@ export async function installerRoutes(fastify: FastifyInstance) {
 
   // 1. Test Database Connectivity
   fastify.post('/test-db', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
     schema: {
       tags: ['Turnkey Installer'],
       summary: 'Test PostgreSQL and PostGIS connectivity during setup',
@@ -133,6 +145,7 @@ export async function installerRoutes(fastify: FastifyInstance) {
 
   // 2. Turnkey Setup Wizard & First Administrator Provisioning
   fastify.post('/provision', {
+    config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
     preHandler: [blockInDemoMode('Turnkey installation provisioning')],
     schema: {
       tags: ['Turnkey Installer'],
@@ -257,6 +270,7 @@ export async function installerRoutes(fastify: FastifyInstance) {
         { no: '2030', name: 'Tax / VAT / GST Payable', type: 'LIABILITY' },
         { no: '4010', name: 'Platform Commission Revenue', type: 'REVENUE' },
         { no: '5010', name: 'Stripe Merchant Processing Expense', type: 'EXPENSE' },
+        { no: '5020', name: 'Promotional Bonus & Incentive Expense', type: 'EXPENSE' },
       ];
 
       for (const acc of defaultAccounts) {

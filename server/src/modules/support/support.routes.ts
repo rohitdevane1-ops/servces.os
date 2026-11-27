@@ -880,6 +880,7 @@ export async function supportRoutes(fastify: FastifyInstance) {
       `SELECT st.id,
               st.ticket_number AS "ticketNumber",
               st.subject,
+              st.incident_category AS "incidentCategory",
               st.priority,
               st.status,
               st.booking_id AS "bookingId",
@@ -915,6 +916,7 @@ export async function supportRoutes(fastify: FastifyInstance) {
     subject: z.string().trim().min(3).max(255),
     description: z.string().trim().min(3).max(2000),
     severity: z.enum(['LOW', 'MEDIUM', 'NORMAL', 'HIGH', 'URGENT', 'CRITICAL']).default('HIGH'),
+    incidentCategory: z.string().trim().max(100).optional(),
     bookingId: z.string().uuid().optional(),
     customerId: z.string().uuid().optional(),
   });
@@ -961,29 +963,15 @@ export async function supportRoutes(fastify: FastifyInstance) {
           if (cRes.rowCount === 0) {
             return { ok: false, status: 404, code: 'CUSTOMER_NOT_FOUND', message: 'Referenced customer profile not found.' };
           }
-        } else {
-          const fallbackRes = await client.query<{ user_id: string }>(
-            'SELECT user_id FROM customer_profiles WHERE tenant_id = $1 ORDER BY created_at ASC LIMIT 1',
-            [tenantId]
-          );
-          targetCustomerId = fallbackRes.rows[0]?.user_id || null;
         }
 
-        if (!targetCustomerId) {
-          return {
-            ok: false,
-            status: 400,
-            code: 'CUSTOMER_REQUIRED',
-            message: 'bookingId or customerId is required to log an incident when no customer profile exists yet.',
-          };
-        }
-
+        const incidentCategory = String((parsed.data as any).incidentCategory || 'Safety').slice(0, 30);
         const tRes = await client.query(
           `INSERT INTO support_tickets (
-            tenant_id, ticket_number, customer_id, booking_id, subject, category, priority, status
-          ) VALUES ($1, $2, $3, $4, $5, 'INCIDENT', $6, 'OPEN')
-          RETURNING id, ticket_number AS "ticketNumber", subject, priority, status, booking_id AS "bookingId", created_at AS "createdAt"`,
-          [tenantId, ticketNumber, targetCustomerId, bookingId || null, subject, dbPriority]
+            tenant_id, ticket_number, customer_id, booking_id, subject, category, incident_category, priority, status
+          ) VALUES ($1, $2, $3, $4, $5, 'INCIDENT', $6, $7, 'OPEN')
+          RETURNING id, ticket_number AS "ticketNumber", subject, incident_category AS "incidentCategory", priority, status, booking_id AS "bookingId", customer_id AS "customerId", created_at AS "createdAt"`,
+          [tenantId, ticketNumber, targetCustomerId, bookingId || null, subject, incidentCategory, dbPriority]
         );
         const ticket = tRes.rows[0];
 
@@ -1075,6 +1063,205 @@ export async function supportRoutes(fastify: FastifyInstance) {
     }
 
     return reply.status(200).send(successResponse({ resolved: true, ...updated }, requestId));
+  });
+
+  // 13. SMS Gateway Status & Recent Deliveries
+  fastify.get('/sms/status', {
+    preHandler: [requirePermission('support:manage')],
+    schema: {
+      tags: ['Support & Communications'],
+      summary: 'Get Twilio SMS configuration status and recent SMS delivery logs',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const secrets = await resolveTenantIntegrationSecrets(tenantId);
+    const configured = Boolean(
+      secrets.twilioEnabled &&
+      secrets.twilioAccountSid &&
+      secrets.twilioAuthToken &&
+      secrets.twilioFromNumber
+    );
+    const logsRes = await tenantQuery(
+      `SELECT id, destination, status, provider_response_id AS "providerMessageId",
+              error_message AS "errorMessage", created_at AS "createdAt"
+       FROM notification_logs
+       WHERE tenant_id = $1 AND channel = 'SMS'
+       ORDER BY created_at DESC
+       LIMIT 30`,
+      [tenantId],
+      tenantId
+    );
+    const maskedFrom = secrets.twilioFromNumber
+      ? `•••${secrets.twilioFromNumber.slice(-4)}`
+      : null;
+    return reply.status(200).send(
+      successResponse({
+        provider: 'twilio',
+        configured,
+        demoMode: env.APP_DEMO_MODE === 'true',
+        fromNumberMasked: maskedFrom,
+        recentLogs: logsRes.rows,
+      }, requestId)
+    );
+  });
+
+  // 14. Customer Communications History (SMS + Tickets + Booking Chat)
+  fastify.get('/communications/:customerId', {
+    preHandler: [requirePermission('support:manage')],
+    schema: {
+      tags: ['Support & Communications'],
+      summary: 'Get unified customer communication timeline across SMS logs, tickets, and booking chat',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const { customerId } = request.params as { customerId: string };
+    if (!z.string().uuid().safeParse(customerId).success) {
+      return reply.status(400).send(errorResponse('VALIDATION_ERROR', 'Valid customer UUID is required.', requestId));
+    }
+
+    const custRes = await tenantQuery<{ full_name: string; email: string; phone: string | null }>(
+      `SELECT cp.full_name, u.email, u.phone
+       FROM customer_profiles cp
+       JOIN users u ON u.id = cp.user_id
+       WHERE cp.user_id = $1 AND cp.tenant_id = $2`,
+      [customerId, tenantId],
+      tenantId
+    );
+    if (custRes.rows.length === 0) {
+      return reply.status(404).send(errorResponse('CUSTOMER_NOT_FOUND', 'Customer not found.', requestId));
+    }
+    const cust = custRes.rows[0];
+
+    const [smsRes, ticketsRes, messagesRes] = await Promise.all([
+      tenantQuery(
+        `SELECT id, channel, template_type AS "templateType", destination, status, error_message AS "errorMessage", created_at AS "createdAt"
+         FROM notification_logs
+         WHERE tenant_id = $1 AND (recipient_user_id = $2 OR ($3::text IS NOT NULL AND destination = $3))
+         ORDER BY created_at DESC LIMIT 30`,
+        [tenantId, customerId, cust.phone || null],
+        tenantId
+      ),
+      tenantQuery(
+        `SELECT id, ticket_number AS "ticketNumber", subject, category, priority, status, created_at AS "createdAt"
+         FROM support_tickets
+         WHERE tenant_id = $1 AND customer_id = $2
+         ORDER BY created_at DESC LIMIT 20`,
+        [tenantId, customerId],
+        tenantId
+      ),
+      tenantQuery(
+        `SELECT m.id, m.booking_id AS "bookingId", b.booking_reference AS "bookingReference",
+                m.sender_role AS "senderRole", m.message_body AS "messageText", m.created_at AS "createdAt"
+         FROM booking_messages m
+         JOIN bookings b ON b.id = m.booking_id
+         WHERE m.tenant_id = $1 AND b.customer_id = $2
+         ORDER BY m.created_at DESC LIMIT 50`,
+        [tenantId, customerId],
+        tenantId
+      ),
+    ]);
+
+    return reply.status(200).send(
+      successResponse({
+        customerId,
+        customerName: cust.full_name,
+        email: cust.email,
+        phone: cust.phone,
+        notifications: smsRes.rows,
+        tickets: ticketsRes.rows,
+        bookingMessages: messagesRes.rows,
+      }, requestId)
+    );
+  });
+
+  // 15. Staff Daily Operations Handover Reports
+  fastify.get('/daily-reports', {
+    preHandler: [requirePermission('support:manage')],
+    schema: {
+      tags: ['Support & Communications'],
+      summary: 'List staff daily shift handover reports',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const res = await tenantQuery(
+      `SELECT r.id, r.staff_user_id AS "staffUserId", r.report_date AS "reportDate",
+              r.reference_code AS "referenceCode",
+              r.shift_label AS "shiftWindow", r.bookings_handled_count AS "jobsCompleted",
+              r.tickets_resolved_count AS "ticketsResolved", r.incidents_escalated_count AS "escalationsCount",
+              r.summary_notes AS "highlights", r.handover_notes AS "blockers", r.status,
+              r.created_at AS "createdAt",
+              COALESCE(sp.full_name, ap.full_name, u.email) AS "authorName"
+       FROM staff_daily_reports r
+       JOIN users u ON u.id = r.staff_user_id
+       LEFT JOIN staff_profiles sp ON sp.user_id = r.staff_user_id AND sp.tenant_id = r.tenant_id
+       LEFT JOIN admin_profiles ap ON ap.user_id = r.staff_user_id AND ap.tenant_id = r.tenant_id
+       WHERE r.tenant_id = $1
+       ORDER BY r.report_date DESC, r.created_at DESC
+       LIMIT 60`,
+      [tenantId],
+      tenantId
+    );
+    return reply.status(200).send(successResponse(res.rows, requestId));
+  });
+
+  fastify.post('/daily-reports', {
+    preHandler: [requirePermission('support:manage'), blockInDemoMode('Submit daily staff handover report')],
+    schema: {
+      tags: ['Support & Communications'],
+      summary: 'Submit a daily operations shift handover report',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const requestId = request.id || `req_${Date.now()}`;
+    const tenantId = request.tenantId;
+    const parsed = z.object({
+      reportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      shiftWindow: z.string().trim().min(1).max(40).default('FULL_DAY'),
+      jobsCompleted: z.number().int().min(0).default(0),
+      ticketsResolved: z.number().int().min(0).default(0),
+      escalationsCount: z.number().int().min(0).default(0),
+      highlights: z.string().trim().min(3).max(4000),
+      blockers: z.string().trim().max(2000).nullable().optional(),
+    }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send(
+        errorResponse('VALIDATION_ERROR', parsed.error.issues[0]?.message || 'Invalid daily report payload.', requestId)
+      );
+    }
+
+    const d = parsed.data;
+    const reportDate = d.reportDate || new Date().toISOString().slice(0, 10);
+    const refCode = `DR-${reportDate.replace(/-/g, '')}-${String(request.user!.id).slice(0, 6).toUpperCase()}`;
+    const created = await withTenantTransaction(tenantId, async (client) => {
+      const ins = await client.query(
+        `INSERT INTO staff_daily_reports (
+          tenant_id, staff_user_id, report_date, reference_code, shift_label,
+          bookings_handled_count, tickets_resolved_count, incidents_escalated_count, summary_notes, handover_notes
+        ) VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (tenant_id, staff_user_id, report_date) DO UPDATE SET
+          shift_label = EXCLUDED.shift_label,
+          bookings_handled_count = EXCLUDED.bookings_handled_count,
+          tickets_resolved_count = EXCLUDED.tickets_resolved_count,
+          incidents_escalated_count = EXCLUDED.incidents_escalated_count,
+          summary_notes = EXCLUDED.summary_notes,
+          handover_notes = EXCLUDED.handover_notes,
+          updated_at = NOW()
+        RETURNING id, report_date AS "reportDate", reference_code AS "referenceCode", shift_label AS "shiftWindow",
+                  bookings_handled_count AS "jobsCompleted", tickets_resolved_count AS "ticketsResolved",
+                  incidents_escalated_count AS "escalationsCount", summary_notes AS "highlights",
+                  handover_notes AS "blockers", created_at AS "createdAt"`,
+        [tenantId, request.user!.id, reportDate, refCode, d.shiftWindow, d.jobsCompleted, d.ticketsResolved, d.escalationsCount, d.highlights, d.blockers ?? null]
+      );
+      return ins.rows[0];
+    });
+
+    return reply.status(201).send(successResponse(created, requestId));
   });
   });
 }
