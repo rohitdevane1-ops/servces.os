@@ -81,22 +81,22 @@ export const StaffDashboard: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Top Welcome / Operations Header */}
-      <div className="bg-gradient-to-r from-[#0C3832] to-[#124e45] rounded-2xl p-5 text-white shadow-xs relative overflow-hidden">
+      <div className="bg-gradient-to-br from-[#0F172A] via-[#1E1B4B] to-[#312E81] rounded-3xl p-6 text-white shadow-md relative overflow-hidden border border-indigo-500/20">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
           <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-emerald-400 text-slate-950 tracking-wider">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-indigo-500/25 text-indigo-200 border border-indigo-400/30 tracking-wider">
                 Staff Operations Hub
               </span>
-              <span className="text-emerald-300 text-xs font-semibold flex items-center gap-1">
+              <span className="text-emerald-300 text-xs font-semibold flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 Live Dispatch Console
               </span>
             </div>
-            <h1 className="text-xl lg:text-2xl font-extrabold tracking-tight text-white">
+            <h1 className="text-xl lg:text-2xl font-black tracking-tight text-white">
               Order Dispatch &amp; Operations Desk
             </h1>
-            <p className="text-emerald-100/80 text-xs mt-0.5 max-w-2xl">
+            <p className="text-slate-300 text-xs mt-1 max-w-2xl">
               Handle incoming customer requests, assign verified technicians based on spatial distance and trade category, and supervise active field execution.
             </p>
           </div>
@@ -104,16 +104,16 @@ export const StaffDashboard: React.FC = () => {
           <div className="flex items-center gap-2.5 shrink-0">
             <button
               onClick={() => navigateToStaffPage(104)}
-              className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-white font-bold text-xs shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
+              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
             >
               <UserCheck className="w-3.5 h-3.5 text-white" />
               <span>Assign Orders ({pendingBookings.length})</span>
             </button>
             <button
               onClick={() => navigateToStaffPage(107)}
-              className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer"
+              className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-bold text-xs border border-white/15 transition-all flex items-center gap-1.5 cursor-pointer"
             >
-              <ArrowRightLeft className="w-3.5 h-3.5 text-emerald-300" />
+              <ArrowRightLeft className="w-3.5 h-3.5 text-indigo-300" />
               <span>Emergency Handover</span>
             </button>
           </div>
@@ -124,108 +124,108 @@ export const StaffDashboard: React.FC = () => {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div
           onClick={() => navigateToStaffPage(102)}
-          className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:border-amber-400 transition-all cursor-pointer group"
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs hover:border-indigo-300 serviceos-card-glow transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Unassigned Queue</span>
-            <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
-              <Inbox className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-amber-50 text-amber-600 border border-amber-200/70 flex items-center justify-center">
+              <Inbox className="w-4 h-4" />
             </div>
           </div>
           <div className="flex items-baseline gap-2">
-            <div className="text-2xl font-black text-slate-900">{String(pendingBookings.length).padStart(2, '0')}</div>
-            <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+            <div className="text-2xl font-black text-slate-900 tabular-nums">{String(pendingBookings.length).padStart(2, '0')}</div>
+            <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200/70">
               Needs Assignment
             </span>
           </div>
           <div className="text-[10px] text-slate-500 mt-2 flex items-center justify-between font-medium">
             <span>{pendingBookings.length > 0 ? `${pendingBookings.length} awaiting pro` : 'Queue clear'}</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
+            <ArrowRight className="w-3 h-3 text-slate-400 group-hover:text-indigo-600 transition-colors" />
           </div>
         </div>
 
         <div
           onClick={() => navigateToStaffPage(109)}
-          className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:border-emerald-500 transition-all cursor-pointer group"
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs hover:border-indigo-300 serviceos-card-glow transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Dispatched Orders</span>
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
-              <Calendar className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-200/70 flex items-center justify-center">
+              <Calendar className="w-4 h-4" />
             </div>
           </div>
           <div className="flex items-baseline gap-2">
-            <div className="text-2xl font-black text-slate-900">
+            <div className="text-2xl font-black text-slate-900 tabular-nums">
               {String(scheduledBookings.length).padStart(2, '0')}
             </div>
-            <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+            <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200/70">
               Techs Assigned
             </span>
           </div>
           <div className="text-[10px] text-slate-500 mt-2 flex items-center justify-between font-medium">
             <span>{scheduledBookings.length} scheduled visits</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
+            <ArrowRight className="w-3 h-3 text-slate-400 group-hover:text-indigo-600 transition-colors" />
           </div>
         </div>
 
         <div
           onClick={() => navigateToStaffPage(108)}
-          className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:border-sky-500 transition-all cursor-pointer group"
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs hover:border-indigo-300 serviceos-card-glow transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">On-Site Working</span>
-            <div className="w-9 h-9 rounded-xl bg-sky-500/10 text-sky-600 flex items-center justify-center">
-              <Clock className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-violet-50 text-violet-600 border border-violet-200/70 flex items-center justify-center">
+              <Clock className="w-4 h-4" />
             </div>
           </div>
           <div className="flex items-baseline gap-2">
-            <div className="text-2xl font-black text-slate-900">
+            <div className="text-2xl font-black text-slate-900 tabular-nums">
               {String(inProgressBookings.length).padStart(2, '0')}
             </div>
-            <span className="text-[10px] font-bold text-sky-600 bg-sky-50 px-2 py-0.5 rounded-full border border-sky-200">
+            <span className="text-[10px] font-bold text-violet-700 bg-violet-50 px-2 py-0.5 rounded-full border border-violet-200/70">
               Live Field Work
             </span>
           </div>
           <div className="text-[10px] text-slate-500 mt-2 flex items-center justify-between font-medium">
             <span>PIN Verified &amp; Active</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
+            <ArrowRight className="w-3 h-3 text-slate-400 group-hover:text-indigo-600 transition-colors" />
           </div>
         </div>
 
         <div
           onClick={() => navigateToStaffPage(111)}
-          className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs hover:border-emerald-600 transition-all cursor-pointer group"
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs hover:border-indigo-300 serviceos-card-glow transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between mb-2.5">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Completed Orders</span>
-            <div className="w-9 h-9 rounded-xl bg-teal-500/10 text-teal-600 flex items-center justify-center">
-              <CheckCircle2 className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200/70 flex items-center justify-center">
+              <CheckCircle2 className="w-4 h-4" />
             </div>
           </div>
           <div className="flex items-baseline gap-2">
-            <div className="text-2xl font-black text-slate-900">
+            <div className="text-2xl font-black text-slate-900 tabular-nums">
               {String(completedBookings.length).padStart(2, '0')}
             </div>
-            <span className="text-[10px] font-bold text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full border border-teal-200">
+            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200/70">
               Proofs Logged
             </span>
           </div>
           <div className="text-[10px] text-slate-500 mt-2 flex items-center justify-between font-medium">
             <span>{avgCsat}</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
+            <ArrowRight className="w-3 h-3 text-slate-400 group-hover:text-indigo-600 transition-colors" />
           </div>
         </div>
       </div>
 
       {/* Live Dispatch Velocity Chart */}
-      <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs space-y-4">
+      <div className="bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/90 shadow-2xs space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-base font-extrabold text-slate-900 tracking-tight">
                 Dispatch Velocity &amp; Order Distribution
               </h2>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/70">
                 Live Bookings Feed
               </span>
             </div>
@@ -237,7 +237,7 @@ export const StaffDashboard: React.FC = () => {
 
         <div className="h-56 w-full pt-1">
           {hourlyDispatchSeries.length === 0 ? (
-            <div className="h-full w-full flex flex-col items-center justify-center p-6 text-center border-2 border-dashed border-slate-100 rounded-2xl bg-slate-50/50">
+            <div className="h-full w-full flex flex-col items-center justify-center p-6 text-center border-2 border-dashed border-slate-200/80 rounded-2xl bg-slate-50/50">
               <TrendingUp className="w-6 h-6 text-slate-300 mb-2" />
               <div className="text-xs font-bold text-slate-700">No Active Orders Recorded</div>
               <p className="text-[11px] text-slate-400 mt-0.5">
@@ -247,12 +247,22 @@ export const StaffDashboard: React.FC = () => {
           ) : (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={hourlyDispatchSeries} margin={{ top: 10, right: 15, left: -15, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                <defs>
+                  <linearGradient id="staffIncomingGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#4F46E5" stopOpacity={0.28} />
+                    <stop offset="95%" stopColor="#4F46E5" stopOpacity={0.02} />
+                  </linearGradient>
+                  <linearGradient id="staffCompletedGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10B981" stopOpacity={0.32} />
+                    <stop offset="95%" stopColor="#10B981" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" strokeOpacity={0.6} />
                 <XAxis dataKey="time" stroke="#94A3B8" fontSize={11} fontWeight={600} tickLine={false} />
-                <YAxis stroke="#94A3B8" fontSize={11} fontWeight={600} tickLine={false} axisLine={false} />
+                <YAxis stroke="#94A3B8" fontSize={11} fontWeight={600} tickLine={false} axisLine={false} allowDecimals={false} />
                 <Tooltip />
-                <Area type="monotone" dataKey="incoming" stroke="#3B82F6" strokeWidth={2.5} fill="#DBEAFE" />
-                <Area type="monotone" dataKey="completed" stroke="#10B981" strokeWidth={3} fill="#D1FAE5" />
+                <Area type="monotone" dataKey="incoming" stroke="#4F46E5" strokeWidth={2.5} fill="url(#staffIncomingGrad)" />
+                <Area type="monotone" dataKey="completed" stroke="#10B981" strokeWidth={3} fill="url(#staffCompletedGrad)" />
               </AreaChart>
             </ResponsiveContainer>
           )}
@@ -261,7 +271,7 @@ export const StaffDashboard: React.FC = () => {
 
       {/* Unassigned Orders + Technician Roster */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
+        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden">
           <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
             <div>
               <h2 className="text-sm font-extrabold text-slate-900">Incoming Orders Awaiting Assignment</h2>
@@ -269,7 +279,7 @@ export const StaffDashboard: React.FC = () => {
             </div>
             <button
               onClick={() => navigateToStaffPage(104)}
-              className="text-xs font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 cursor-pointer"
+              className="text-xs font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-1 cursor-pointer"
             >
               <span>Open Assignment Desk</span>
               <ArrowRight className="w-3.5 h-3.5" />
@@ -311,10 +321,12 @@ export const StaffDashboard: React.FC = () => {
                         <MapPin className="w-3.5 h-3.5 text-slate-400" />
                         <span className="truncate max-w-[200px]">{order.customerAddress}</span>
                       </span>
-                      <span className="flex items-center gap-1">
-                        <Phone className="w-3.5 h-3.5 text-slate-400" />
-                        <span>{order.customerPhone}</span>
-                      </span>
+                      {order.customerPhone && (
+                        <span className="flex items-center gap-1">
+                          <Phone className="w-3.5 h-3.5 text-slate-400" />
+                          <span>{order.customerPhone}</span>
+                        </span>
+                      )}
                       <span className="font-bold text-slate-700">{formatCurrency(order.estimate)}</span>
                     </div>
                   </div>
@@ -322,9 +334,9 @@ export const StaffDashboard: React.FC = () => {
                   <div className="flex items-center gap-2 shrink-0">
                     <button
                       onClick={() => openAssignModal(order)}
-                      className="px-3.5 py-1.5 rounded-xl bg-[#0C3832] hover:bg-[#124e45] text-white font-bold text-xs transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                      className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
                     >
-                      <UserCheck className="w-3.5 h-3.5 text-amber-300" />
+                      <UserCheck className="w-3.5 h-3.5 text-white" />
                       <span>Assign Pro</span>
                     </button>
                     <button
@@ -347,11 +359,11 @@ export const StaffDashboard: React.FC = () => {
         </div>
 
         {/* Technician Roster */}
-        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden flex flex-col justify-between">
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-2xs overflow-hidden flex flex-col justify-between">
           <div className="p-4 border-b border-slate-100 bg-slate-50/50">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-extrabold text-slate-900">Technician Roster</h2>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70">
                 {availableTechs.length} Available
               </span>
             </div>
@@ -365,7 +377,7 @@ export const StaffDashboard: React.FC = () => {
                 className="p-3 hover:bg-slate-50 rounded-2xl transition-colors flex items-center justify-between gap-3"
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-xs shrink-0">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200/70 font-bold flex items-center justify-center text-xs shrink-0">
                     {tech.name.charAt(0)}
                   </div>
                   <div className="min-w-0">
@@ -396,7 +408,7 @@ export const StaffDashboard: React.FC = () => {
           <div className="p-4 border-t border-slate-100 bg-slate-50/50">
             <button
               onClick={() => navigateToStaffPage(106)}
-              className="w-full py-2 rounded-xl bg-white border border-slate-200 hover:border-emerald-500 text-xs font-bold text-slate-700 hover:text-emerald-700 shadow-2xs transition-all flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-2 rounded-xl bg-white border border-slate-200 hover:border-indigo-400 text-xs font-bold text-slate-700 hover:text-indigo-700 shadow-2xs transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
               <span>Manage Shift Availability</span>
               <ArrowRight className="w-3.5 h-3.5" />

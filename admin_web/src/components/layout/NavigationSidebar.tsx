@@ -95,34 +95,34 @@ export const NavigationSidebar: React.FC = () => {
         className={`shrink-0 h-full select-none flex-col justify-between transition-all duration-300 servicepro-sidebar border-r border-slate-800/80 ${
           isSidebarCollapsed
             ? 'hidden lg:flex lg:w-20'
-            : 'fixed inset-y-0 left-0 z-40 flex w-[280px] max-w-[85vw] lg:static lg:w-72 xl:w-80 shadow-2xl lg:shadow-none'
+            : 'fixed inset-y-0 left-0 z-40 flex w-[264px] max-w-[85vw] lg:static lg:w-64 xl:w-[264px] shadow-2xl lg:shadow-none'
         }`}
       >
         <div>
           {/* Brand Header */}
-          <div className="h-18 px-5 flex items-center gap-3.5 border-b border-slate-800/80">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 p-0.5 shrink-0 shadow-lg shadow-indigo-500/25">
+          <div className="h-16 px-4 flex items-center gap-3 border-b border-slate-800/80">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-600 p-0.5 shrink-0 shadow-lg shadow-indigo-500/25">
               <div className="w-full h-full bg-[#0A101F] rounded-[10px] flex items-center justify-center text-indigo-400">
-                <Shield className="w-5 h-5" />
+                <Shield className="w-4 h-4" />
               </div>
             </div>
             {!isSidebarCollapsed && (
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="font-black text-white text-base tracking-tight truncate">
+                <div className="flex items-center justify-between gap-1.5">
+                  <span className="font-extrabold text-white text-sm tracking-tight leading-tight truncate">
                     {agencyName || (isAdmin ? 'ServiceOS' : 'Dispatch Desk')}
                   </span>
                   <span
                     className={`px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider shrink-0 border ${
                       isAdmin
                         ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
-                        : 'bg-sky-500/20 text-sky-300 border-sky-500/30'
+                        : 'bg-violet-500/20 text-violet-300 border-violet-500/30'
                     }`}
                   >
                     {isAdmin ? 'ADMIN' : 'STAFF'}
                   </span>
                 </div>
-                <div className="text-[11px] text-slate-400 font-medium truncate">
+                <div className="text-[10.5px] text-slate-400 font-medium truncate">
                   {agencyTagline || (isAdmin ? 'Executive Control Portal' : 'Field Service Operations')}
                 </div>
               </div>

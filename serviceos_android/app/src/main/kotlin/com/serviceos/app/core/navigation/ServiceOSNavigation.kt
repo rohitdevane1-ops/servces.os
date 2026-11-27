@@ -16,6 +16,9 @@ import com.serviceos.app.data.repository.ServiceRepository
 import com.serviceos.app.ui.common.*
 import com.serviceos.app.ui.customer.*
 import com.serviceos.app.ui.technician.*
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 sealed class Screen(val route: String) {
     object Splash : Screen("splash")
@@ -53,45 +56,41 @@ fun ServiceOSNavHost(
     navController: NavHostController,
     onThemeToggle: () -> Unit = {}
 ) {
-    var sessionChecked by remember { mutableStateOf(false) }
-    var resolvedDestination by remember { mutableStateOf(Screen.Splash.route) }
-
     LaunchedEffect(Unit) {
-        ApiClient.fetchSystemConfig()
-        ServiceRepository.refreshFromBackend()
+        withTimeoutOrNull(4500L) {
+            coroutineScope {
+                launch { ApiClient.fetchSystemConfig() }
+                launch { ServiceRepository.refreshFromBackend() }
+            }
+        }
 
         if (!ApiClient.getAccessToken().isNullOrBlank()) {
-            val result = ApiClient.validateSession()
-            result.onSuccess { res ->
+            val result = withTimeoutOrNull(4000L) { ApiClient.validateSession() }
+            result?.onSuccess { res ->
                 val data = res.optJSONObject("data")
                 val user = data?.optJSONObject("user")
                 val role = user?.optString("role")?.uppercase()
                 BookingRepository.syncFromBackend()
-                resolvedDestination = when (role) {
+                val autoTarget = when (role) {
                     "TECHNICIAN" -> Screen.TechDashboard.route
                     "CUSTOMER" -> Screen.CustomerHome.route
                     else -> {
                         ApiClient.clearTokens()
-                        Screen.Login.route
+                        null
                     }
                 }
-            }.onFailure {
-                resolvedDestination = Screen.Login.route
+                if (autoTarget != null && navController.currentDestination?.route == Screen.Splash.route) {
+                    navController.navigate(autoTarget) {
+                        popUpTo(Screen.Splash.route) { inclusive = true }
+                    }
+                }
             }
-        } else {
-            resolvedDestination = Screen.Splash.route
         }
-        sessionChecked = true
-    }
-
-    if (!sessionChecked) {
-        SplashScreen(onGetStarted = {})
-        return
     }
 
     NavHost(
         navController = navController,
-        startDestination = resolvedDestination,
+        startDestination = Screen.Splash.route,
         enterTransition = {
             fadeIn(animationSpec = tween(240)) +
                 slideInHorizontally(animationSpec = tween(260, easing = FastOutSlowInEasing)) { it / 12 }

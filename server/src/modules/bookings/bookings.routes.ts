@@ -614,13 +614,14 @@ export async function bookingRoutes(fastify: FastifyInstance) {
 
     let queryText = `
       SELECT b.id, b.booking_reference, b.status, b.priority, b.scheduled_start,
-             s.name as service_name, s.base_price_cents,
+             s.name as service_name, s.base_price_cents, sc.name as category_name,
              cp.full_name as customer_name, u_cust.phone as customer_phone,
              ca.address_line1 as customer_address, ca.city as customer_city,
              pp.full_name as technician_name, b.assigned_provider_id,
              i.total_amount_cents, i.status as payment_status
       FROM bookings b
       JOIN services s ON s.id = b.service_id
+      LEFT JOIN service_categories sc ON sc.id = s.category_id
       JOIN customer_profiles cp ON cp.user_id = b.customer_id
       JOIN users u_cust ON u_cust.id = cp.user_id
       JOIN customer_addresses ca ON ca.id = b.address_id

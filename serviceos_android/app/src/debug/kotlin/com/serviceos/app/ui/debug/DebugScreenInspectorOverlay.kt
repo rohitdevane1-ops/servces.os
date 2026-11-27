@@ -88,39 +88,29 @@ fun DebugScreenInspectorOverlay(
     val currentRoute = backStackEntry?.destination?.route
     var showSheet by remember { mutableStateOf(false) }
 
-    if (backStackEntry == null) {
+    if (backStackEntry == null || currentRoute == Screen.Splash.route) {
         return
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // Floating Edge Pill positioned away from top-bar icons and bottom tabs
+        // Compact translucent circular button tucked safely above bottom navigation
         Surface(
-            color = MaterialTheme.colorScheme.primary,
-            shape = RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp, topEnd = 6.dp, bottomEnd = 6.dp),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+            shape = CircleShape,
             shadowElevation = 6.dp,
             modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 4.dp)
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .padding(end = 14.dp, bottom = 86.dp)
+                .size(40.dp)
                 .clickable { showSheet = true }
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.Default.Apps,
                     contentDescription = "Browse All 22 Screens",
                     tint = Color.White,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "22 Screens",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 11.sp
-                    )
+                    modifier = Modifier.size(19.dp)
                 )
             }
         }

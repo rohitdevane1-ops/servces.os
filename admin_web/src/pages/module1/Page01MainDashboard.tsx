@@ -2,32 +2,64 @@ import React, { useState, useEffect } from 'react';
 import { useAdmin } from '../../context/adminContextCore';
 import { downloadCSV } from '../../utils/exportUtils';
 import { apiClient } from '../../services/apiClient';
-import { RevealSection, StaggerCard, AnimatedNumber } from '../../components/common/MotionPrimitives';
-import { 
-  ResponsiveContainer, 
-  AreaChart, 
-  Area, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  PieChart, 
-  Pie, 
-  Cell 
+import { RevealSection, StaggerCard } from '../../components/common/MotionPrimitives';
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  PieChart,
+  Pie,
+  Cell,
 } from 'recharts';
-import { 
-  Briefcase, 
-  CheckCircle2, 
-  Clock, 
-  Calendar, 
+import {
+  Briefcase,
+  CheckCircle2,
+  Clock,
+  Calendar,
   TrendingUp,
   Plus,
   RefreshCw,
-  ShieldCheck
+  ShieldCheck,
+  Radio,
+  Landmark,
+  Smartphone,
+  ArrowUpRight,
+  Download,
+  Layers,
 } from 'lucide-react';
 
+function resolveBookingDate(b: any): Date | null {
+  const candidates = [b.scheduledStartIso, b.scheduledStart, b.createdAt, b.scheduleDate];
+  for (const raw of candidates) {
+    if (!raw || typeof raw !== 'string') continue;
+    const d = new Date(raw);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
 export const Page01MainDashboard: React.FC = () => {
-  const { bookings, technicians, categories, auditLogs, navigateToPage, addToast, pricingConfig, setIsCreateJobModalOpen, tenantConfig, formatCurrency } = useAdmin();
+  const {
+    isAuthenticated,
+    bookings,
+    technicians,
+    categories,
+    services,
+    auditLogs,
+    navigateToPage,
+    addToast,
+    pricingConfig,
+    setIsCreateJobModalOpen,
+    setIsMobileSimulatorOpen,
+    isDemoMode,
+    agencyName,
+    tenantConfig,
+    formatCurrency,
+  } = useAdmin();
   const [performanceCycle, setPerformanceCycle] = useState<'weekly' | 'monthly'>('weekly');
   const [timeRange, setTimeRange] = useState<string>('Last 30 Days');
   const [refreshTick, setRefreshTick] = useState<number>(0);
@@ -36,9 +68,13 @@ export const Page01MainDashboard: React.FC = () => {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [anchorNow] = useState<number>(() => Date.now());
 
-  // Load authoritative financial metrics from Fastify backend (WEB-01) with date filtering
+  // Load authoritative financial metrics from Fastify backend with date filtering
   useEffect(() => {
+    if (!isAuthenticated) return;
     let isMounted = true;
+    Promise.resolve().then(() => {
+      if (isMounted) setMetricsLoading(true);
+    });
 
     const now = new Date();
     let startDate: Date;
@@ -50,12 +86,12 @@ export const Page01MainDashboard: React.FC = () => {
     } else if (timeRange === 'Year to Date') {
       startDate = new Date(now.getFullYear(), 0, 1);
     } else {
-      // Default: Last 30 Days
       startDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     }
 
-    apiClient.getFinancialOverview({ startDate: startDate.toISOString() })
-      .then(res => {
+    apiClient
+      .getFinancialOverview({ startDate: startDate.toISOString() })
+      .then((res) => {
         if (!isMounted) return;
         if (res.success && res.data) {
           setServerMetrics(res.data);
@@ -72,10 +108,12 @@ export const Page01MainDashboard: React.FC = () => {
         setMetricsError(err?.message || 'Failed to connect to financial metrics API');
         setMetricsLoading(false);
       });
-    return () => { isMounted = false; };
-  }, [timeRange, refreshTick]);
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, timeRange, refreshTick]);
 
-  // Filter bookings truthfully based on the selected date range
+  // Filter bookings truthfully based on the selected date range using ISO dates
   const filteredBookings = React.useMemo(() => {
     const now = new Date(anchorNow);
     let startDate: Date;
@@ -88,253 +126,415 @@ export const Page01MainDashboard: React.FC = () => {
     } else if (timeRange === 'Year to Date') {
       startDate = new Date(now.getFullYear(), 0, 1);
     } else {
-      // Default: Last 30 Days
       startDate = new Date(anchorNow - 30 * 24 * 60 * 60 * 1000);
     }
 
-    return bookings.filter(b => {
-      const dateStr = b.scheduleDate || (b as any).scheduledStart || (b as any).createdAt;
-      if (!dateStr) return true;
-      const d = new Date(dateStr);
-      return isNaN(d.getTime()) || d >= startDate;
+    return bookings.filter((b) => {
+      const d = resolveBookingDate(b);
+      return d === null || d >= startDate;
     });
   }, [bookings, timeRange, anchorNow]);
 
-  const totalJobs = serverMetrics?.totalInvoicesCount != null
-    ? Number(serverMetrics.totalInvoicesCount) 
-    : (metricsError ? 0 : filteredBookings.length);
-  const completedJobs = serverMetrics?.paidInvoicesCount != null
-    ? Number(serverMetrics.paidInvoicesCount) 
-    : (metricsError ? 0 : filteredBookings.filter(b => b.status === 'Completed').length);
-  const inProgressJobs = metricsError ? 0 : filteredBookings.filter(b => b.status === 'In Progress').length;
-  const scheduledJobs = metricsError ? 0 : filteredBookings.filter(b => b.status === 'Scheduled').length;
-  const grossRevenue = serverMetrics?.grossVolumeCents != null
-    ? (Number(serverMetrics.grossVolumeCents) / 100) 
-    : 0;
-  const settledRevenue = serverMetrics?.settledVolumeCents != null
-    ? (Number(serverMetrics.settledVolumeCents) / 100)
-    : 0;
-  const commission = pricingConfig?.commissionRate || 15;
-  const netCommission = (grossRevenue * (commission / 100));
+  const totalJobs =
+    serverMetrics?.totalInvoicesCount != null
+      ? Number(serverMetrics.totalInvoicesCount)
+      : filteredBookings.length;
+  const completedJobs =
+    serverMetrics?.paidInvoicesCount != null
+      ? Number(serverMetrics.paidInvoicesCount)
+      : filteredBookings.filter((b) => b.status === 'Completed').length;
+  const inProgressJobs = filteredBookings.filter((b) => b.status === 'In Progress').length;
+  const scheduledOrPendingJobs = filteredBookings.filter(
+    (b) => b.status === 'Scheduled' || b.status === 'Pending'
+  ).length;
+  const pendingQueueCount = filteredBookings.filter((b) => b.status === 'Pending').length;
+  const activeTechCount = technicians.filter((t) => t.status === 'Available' || t.status === 'On Job').length;
 
-  // Generate truthful daily aggregates from filtered live bookings
+  const grossRevenue =
+    serverMetrics?.grossVolumeCents != null ? Number(serverMetrics.grossVolumeCents) / 100 : 0;
+  const settledRevenue =
+    serverMetrics?.settledVolumeCents != null ? Number(serverMetrics.settledVolumeCents) / 100 : 0;
+  const commission = pricingConfig?.commissionRate || 15;
+  const netCommission = grossRevenue * (commission / 100);
+
+  // Weekly / Monthly performance curve derived from ISO booking timestamps
   const currentPerformanceData = React.useMemo(() => {
-    if (filteredBookings.length === 0) return [];
+    const source = filteredBookings.length > 0 ? filteredBookings : bookings;
+    if (source.length === 0) return [];
+
+    if (performanceCycle === 'monthly') {
+      const weeks = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
+      const counts = [0, 0, 0, 0];
+      const revenues = [0, 0, 0, 0];
+
+      for (const b of source) {
+        const d = resolveBookingDate(b);
+        if (d) {
+          const wk = Math.min(3, Math.floor((d.getDate() - 1) / 8));
+          counts[wk] += 1;
+          if (b.paymentStatus === 'Paid' || b.status === 'Completed') {
+            revenues[wk] += b.estimate || 0;
+          }
+        }
+      }
+
+      return weeks.map((label, idx) => ({
+        name: label,
+        thisPeriod: counts[idx],
+        revenue: revenues[idx],
+      }));
+    }
 
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const counts = [0, 0, 0, 0, 0, 0, 0];
     const revenues = [0, 0, 0, 0, 0, 0, 0];
 
-    for (const b of filteredBookings) {
-      const dateStr = b.scheduleDate || (b as any).scheduledStart || (b as any).createdAt;
-      const d = dateStr ? new Date(dateStr) : null;
-      if (d && !isNaN(d.getTime())) {
+    for (const b of source) {
+      const d = resolveBookingDate(b);
+      if (d) {
         const dayIdx = d.getDay();
         counts[dayIdx] += 1;
-        if (b.paymentStatus === 'Paid') {
-          revenues[dayIdx] += (b.estimate || 0);
+        if (b.paymentStatus === 'Paid' || b.status === 'Completed') {
+          revenues[dayIdx] += b.estimate || 0;
         }
       }
     }
 
-    // Standard business ordering Mon through Sun
     const orderedIndices = [1, 2, 3, 4, 5, 6, 0];
-    return orderedIndices.map(idx => ({
+    return orderedIndices.map((idx) => ({
       name: days[idx],
       thisPeriod: counts[idx],
-      revenue: revenues[idx]
+      revenue: revenues[idx],
     }));
-  }, [filteredBookings]);
+  }, [filteredBookings, bookings, performanceCycle]);
 
-  // Service distribution derived from live categories
+  // Service distribution derived from live bookings + category lookup
   const serviceDistribution = React.useMemo(() => {
     if (categories.length === 0) return [];
-    const colors = ['#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4'];
+    const colors = ['#4F46E5', '#7C3AED', '#0EA5E9', '#10B981', '#F59E0B', '#EC4899'];
+    const total = Math.max(1, bookings.length);
+
     return categories.map((cat, idx) => {
-      const catBookings = bookings.filter(b => b.category?.toLowerCase() === cat.name?.toLowerCase());
-      const count = catBookings.length;
-      const pct = bookings.length > 0 ? Math.round((count / bookings.length) * 100) : 0;
+      const catLower = cat.name.toLowerCase();
+      const catServices = new Set(
+        services
+          .filter((s) => s.categoryId === cat.id || s.category.toLowerCase() === catLower)
+          .map((s) => s.name.toLowerCase())
+      );
+
+      const count = bookings.filter((b) => {
+        const directCat = (b.category || '').toLowerCase();
+        if (directCat && directCat !== 'general' && directCat === catLower) return true;
+        return catServices.has((b.serviceName || '').toLowerCase());
+      }).length;
+
+      const pct = bookings.length > 0 ? Math.round((count / total) * 100) : 0;
       return {
         name: cat.name,
         value: pct,
         jobs: count,
-        color: colors[idx % colors.length]
+        color: colors[idx % colors.length],
       };
     });
-  }, [categories, bookings]);
+  }, [categories, services, bookings]);
+
+  const sortedDistribution = React.useMemo(
+    () => [...serviceDistribution].sort((a, b) => b.jobs - a.jobs),
+    [serviceDistribution]
+  );
 
   return (
     <div className="space-y-6">
-      {/* 1. Header with Breadcrumb & Date Filter */}
-      <RevealSection className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Admin Dashboard</h1>
-          <p className="text-xs text-slate-500 mt-1">Complete overview of your service operations and performance</p>
-        </div>
+      {/* 1. Executive Command Center Hero Header */}
+      <RevealSection className="rounded-3xl bg-white border border-slate-200/90 p-5 sm:p-6 shadow-xs relative overflow-hidden">
+        <div className="absolute -right-16 -top-16 w-64 h-64 rounded-full bg-indigo-500/[0.06] blur-2xl pointer-events-none" />
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200/80">
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                {agencyName || 'ServiceOS Command'}
+              </span>
+              {metricsLoading ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  Syncing ledger...
+                </span>
+              ) : !metricsError && serverMetrics ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200/80">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Ledger Live • Gross {formatCurrency(grossRevenue, serverMetrics?.currency)} • Settled{' '}
+                  {formatCurrency(settledRevenue, serverMetrics?.currency)}
+                </span>
+              ) : (
+                <button
+                  onClick={() => setRefreshTick((t) => t + 1)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  Sync Ledger
+                </button>
+              )}
+            </div>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Executive Overview</h1>
+            <p className="text-xs text-slate-500 max-w-2xl">
+              Unified dispatch telemetry, double-entry escrow settlement, and workforce performance across{' '}
+              {categories.length || 0} service domains.
+            </p>
+          </div>
 
-        <div className="flex items-center gap-3">
-          <select 
-            value={timeRange}
-            onChange={(e) => {
-              setTimeRange(e.target.value);
-              addToast(`Dashboard metrics recalculated for ${e.target.value}`, 'info');
-            }}
-            className="bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-700 shadow-2xs focus:outline-none cursor-pointer"
-          >
-            <option>Last 30 Days</option>
-            <option>This Month</option>
-            <option>This Quarter</option>
-            <option>Year to Date</option>
-          </select>
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <select
+              value={timeRange}
+              onChange={(e) => {
+                setTimeRange(e.target.value);
+                addToast(`Dashboard metrics recalculated for ${e.target.value}`, 'info');
+              }}
+              className="bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-700 focus:outline-none focus:border-indigo-500 cursor-pointer"
+            >
+              <option>Last 30 Days</option>
+              <option>This Month</option>
+              <option>This Quarter</option>
+              <option>Year to Date</option>
+            </select>
 
-          <button
-            onClick={() => {
-              downloadCSV('executive_summary_report', ['Operational Metric', 'Performance Value'], [
-                ['Total Job Orders', String(totalJobs)],
-                ['Completed Jobs', String(completedJobs)],
-                ['Active In-Progress', String(inProgressJobs)],
-                ['Active On-Duty Technicians', String(technicians.filter(t => t.status === 'Available' || t.status === 'On Job').length)],
-                ['Gross Service Revenue', formatCurrency(grossRevenue, serverMetrics?.currency)],
-                [`Platform Net Margin (${commission}%)`, formatCurrency(netCommission, serverMetrics?.currency)]
-              ]);
-              addToast(`Executive Summary Report downloaded as CSV spreadsheet!`, 'success');
-            }}
-            className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-extrabold text-xs rounded-xl shadow-md shadow-indigo-500/20 transition-all cursor-pointer flex items-center gap-1.5"
-          >
-            Download CSV Report
-          </button>
+            <button
+              onClick={() => {
+                downloadCSV(
+                  'executive_summary_report',
+                  ['Operational Metric', 'Performance Value'],
+                  [
+                    ['Total Job Orders', String(totalJobs)],
+                    ['Completed Jobs', String(completedJobs)],
+                    ['Active In-Progress', String(inProgressJobs)],
+                    ['Active On-Duty Technicians', String(activeTechCount)],
+                    ['Gross Service Revenue', formatCurrency(grossRevenue, serverMetrics?.currency)],
+                    [`Platform Net Margin (${commission}%)`, formatCurrency(netCommission, serverMetrics?.currency)],
+                  ]
+                );
+                addToast('Executive Summary Report downloaded as CSV spreadsheet!', 'success');
+              }}
+              className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <Download className="w-3.5 h-3.5 text-slate-500" />
+              <span>Export CSV</span>
+            </button>
+
+            <button
+              onClick={() => setIsCreateJobModalOpen(true)}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-sm shadow-indigo-500/20 transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New Order</span>
+            </button>
+          </div>
         </div>
       </RevealSection>
 
-      {/* Financial Metrics Live Authority Banner */}
-      {metricsLoading && (
-        <div className="flex items-center gap-2 p-3 bg-indigo-50/80 border border-indigo-200/80 rounded-2xl text-xs text-indigo-700 font-medium">
-          <RefreshCw className="w-4 h-4 animate-spin text-indigo-600 shrink-0" />
-          <span>Synchronizing authoritative financial ledger and revenue metrics from Fastify API...</span>
-        </div>
-      )}
-
-      {metricsError && (
-        <div className="flex items-center justify-between p-3.5 bg-indigo-50/70 border border-indigo-200/80 rounded-2xl text-xs text-slate-700 shadow-2xs">
-          <div className="flex items-center gap-2.5">
-            <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0" />
-            <span>
-              <strong>Offline / Clean Ledger State:</strong> Displaying live session metrics. Connect Fastify PostgreSQL backend to stream historical double-entry ledger records.
-            </span>
-          </div>
-          <button
-            onClick={() => setRefreshTick(t => t + 1)}
-            className="px-3 py-1 bg-white hover:bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold rounded-xl transition-colors cursor-pointer text-[11px] shadow-2xs"
-          >
-            Sync API
-          </button>
-        </div>
-      )}
-
-      {!metricsLoading && !metricsError && serverMetrics && (
-        <div className="flex items-center justify-between p-3 bg-emerald-50/80 border border-emerald-200/80 rounded-2xl text-xs text-emerald-900 shadow-2xs">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>
-              <strong>Server Verified Metrics Active:</strong> Double-entry ledger verified Gross Volume: <strong>{formatCurrency(grossRevenue, serverMetrics?.currency)}</strong> | Settled: <strong>{formatCurrency(settledRevenue, serverMetrics?.currency)}</strong>
-            </span>
-          </div>
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800">
-            Authoritative Fastify
-          </span>
-        </div>
-      )}
-
-      {/* 2. 4-KPI Row */}
+      {/* 2. Cohesive 4-KPI Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Total Jobs */}
-        <StaggerCard index={0} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-indigo-500/20">
-            <Briefcase className="w-6 h-6" />
+        <StaggerCard
+          index={0}
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs serviceos-card-glow flex items-center justify-between gap-4"
+        >
+          <div className="space-y-1">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Orders</div>
+            <div className="text-2xl font-black text-slate-900 tabular-nums">{totalJobs.toLocaleString()}</div>
+            <div className="text-[11px] font-semibold text-indigo-600">
+              {totalJobs > 0 ? `${filteredBookings.length} in selected window` : 'No orders logged'}
+            </div>
           </div>
-          <div>
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Jobs</div>
-            <div className="text-2xl font-extrabold text-slate-900 mt-0.5">
-              <AnimatedNumber value={totalJobs} />
-            </div>
-            <div className="text-[10px] font-bold text-slate-500 mt-0.5">
-              {totalJobs > 0 ? `${totalJobs} total recorded` : 'No orders logged'}
-            </div>
+          <div className="w-11 h-11 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-200/70 flex items-center justify-center shrink-0">
+            <Briefcase className="w-5 h-5" />
           </div>
         </StaggerCard>
 
-        {/* Completed */}
-        <StaggerCard index={1} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-emerald-500/20">
-            <CheckCircle2 className="w-6 h-6" />
-          </div>
-          <div>
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Completed</div>
-            <div className="text-2xl font-extrabold text-slate-900 mt-0.5">
-              <AnimatedNumber value={completedJobs} />
-            </div>
-            <div className="text-[10px] font-bold text-emerald-600 mt-0.5">
+        <StaggerCard
+          index={1}
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs serviceos-card-glow flex items-center justify-between gap-4"
+        >
+          <div className="space-y-1">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Completed &amp; Paid</div>
+            <div className="text-2xl font-black text-slate-900 tabular-nums">{completedJobs.toLocaleString()}</div>
+            <div className="text-[11px] font-semibold text-emerald-600">
               {totalJobs > 0 ? `${Math.round((completedJobs / totalJobs) * 100)}% completion rate` : '0 verified jobs'}
             </div>
           </div>
+          <div className="w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200/70 flex items-center justify-center shrink-0">
+            <CheckCircle2 className="w-5 h-5" />
+          </div>
         </StaggerCard>
 
-        {/* In Progress */}
-        <StaggerCard index={2} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 text-white flex items-center justify-center shrink-0 shadow-sm shadow-amber-500/20">
-            <Clock className="w-6 h-6" />
-          </div>
-          <div>
+        <StaggerCard
+          index={2}
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs serviceos-card-glow flex items-center justify-between gap-4"
+        >
+          <div className="space-y-1">
             <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">In Progress</div>
-            <div className="text-2xl font-extrabold text-slate-900 mt-0.5">
-              <AnimatedNumber value={inProgressJobs} />
-            </div>
-            <div className="text-[10px] font-bold text-amber-600 mt-0.5">
+            <div className="text-2xl font-black text-slate-900 tabular-nums">{inProgressJobs.toLocaleString()}</div>
+            <div className="text-[11px] font-semibold text-amber-600">
               {inProgressJobs > 0 ? `${inProgressJobs} active on site` : 'No active field work'}
             </div>
           </div>
+          <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-600 border border-amber-200/70 flex items-center justify-center shrink-0">
+            <Clock className="w-5 h-5" />
+          </div>
         </StaggerCard>
 
-        {/* Scheduled */}
-        <StaggerCard index={3} className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-xs serviceos-card-glow flex items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-violet-500/20">
-            <Calendar className="w-6 h-6" />
+        <StaggerCard
+          index={3}
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs serviceos-card-glow flex items-center justify-between gap-4"
+        >
+          <div className="space-y-1">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Queued &amp; Scheduled</div>
+            <div className="text-2xl font-black text-slate-900 tabular-nums">
+              {scheduledOrPendingJobs.toLocaleString()}
+            </div>
+            <div className="text-[11px] font-semibold text-violet-600">
+              {pendingQueueCount > 0 ? `${pendingQueueCount} awaiting dispatch` : 'Dispatch queue clear'}
+            </div>
           </div>
-          <div>
-            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Scheduled</div>
-            <div className="text-2xl font-extrabold text-slate-900 mt-0.5">
-              <AnimatedNumber value={scheduledJobs} />
-            </div>
-            <div className="text-[10px] font-bold text-purple-600 mt-0.5">
-              {scheduledJobs > 0 ? `${scheduledJobs} upcoming slots` : '0 upcoming bookings'}
-            </div>
+          <div className="w-11 h-11 rounded-xl bg-violet-50 text-violet-600 border border-violet-200/70 flex items-center justify-center shrink-0">
+            <Calendar className="w-5 h-5" />
           </div>
         </StaggerCard>
       </div>
 
-      {/* 3. Middle Section: Business Performance Chart + Service Distribution Donut */}
+      {/* 3. Structured 3-Column Quick-Action CTA Cards */}
+      <RevealSection delay={0.04} className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <button
+          type="button"
+          onClick={() => navigateToPage(2)}
+          className="group text-left bg-white rounded-2xl p-5 border border-slate-200/90 hover:border-indigo-300 shadow-2xs serviceos-card-glow flex flex-col justify-between gap-4 cursor-pointer"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-200/70 flex items-center justify-center shrink-0">
+              <Radio className="w-5 h-5" />
+            </div>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/70">
+              {activeTechCount} Pros Online
+            </span>
+          </div>
+          <div>
+            <h3 className="text-sm font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors">
+              Live Dispatch Radar
+            </h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Track PostGIS technician routes, geofence arrivals, and broadcast pending orders.
+            </p>
+          </div>
+          <div className="flex items-center justify-between pt-3 border-t border-slate-100 text-xs font-bold text-indigo-600">
+            <span>Open Radar Console</span>
+            <ArrowUpRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => navigateToPage(25)}
+          className="group text-left bg-white rounded-2xl p-5 border border-slate-200/90 hover:border-indigo-300 shadow-2xs serviceos-card-glow flex flex-col justify-between gap-4 cursor-pointer"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200/70 flex items-center justify-center shrink-0">
+              <Landmark className="w-5 h-5" />
+            </div>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200/70">
+              {commission}% Margin
+            </span>
+          </div>
+          <div>
+            <h3 className="text-sm font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors">
+              Escrow &amp; Double-Entry Ledger
+            </h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Net commission {formatCurrency(netCommission, serverMetrics?.currency)} earned across verified settlements.
+            </p>
+          </div>
+          <div className="flex items-center justify-between pt-3 border-t border-slate-100 text-xs font-bold text-indigo-600">
+            <span>Inspect Finance Suite</span>
+            <ArrowUpRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+          </div>
+        </button>
+
+        {isDemoMode ? (
+          <button
+            type="button"
+            onClick={() => setIsMobileSimulatorOpen(true)}
+            className="group text-left bg-gradient-to-br from-[#0F172A] via-[#1E1B4B] to-[#312E81] text-white rounded-2xl p-5 border border-indigo-500/30 shadow-md serviceos-card-glow flex flex-col justify-between gap-4 cursor-pointer"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="w-10 h-10 rounded-xl bg-white/10 text-indigo-300 border border-white/15 flex items-center justify-center shrink-0">
+                <Smartphone className="w-5 h-5" />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-indigo-200 border border-white/15">
+                22 Screens
+              </span>
+            </div>
+            <div>
+              <h3 className="text-sm font-extrabold text-white">Interactive Mobile Suite Preview</h3>
+              <p className="text-xs text-slate-300 mt-1">
+                Test both Customer Discovery and Technician Pro workflows live inside the browser.
+              </p>
+            </div>
+            <div className="flex items-center justify-between pt-3 border-t border-white/10 text-xs font-bold text-indigo-300">
+              <span>Launch Mobile Simulator</span>
+              <ArrowUpRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+            </div>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => navigateToPage(14)}
+            className="group text-left bg-white rounded-2xl p-5 border border-slate-200/90 hover:border-indigo-300 shadow-2xs serviceos-card-glow flex flex-col justify-between gap-4 cursor-pointer"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="w-10 h-10 rounded-xl bg-violet-50 text-violet-600 border border-violet-200/70 flex items-center justify-center shrink-0">
+                <Layers className="w-5 h-5" />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-violet-50 text-violet-700 border border-violet-200/70">
+                {services.length} Services
+              </span>
+            </div>
+            <div>
+              <h3 className="text-sm font-extrabold text-slate-900 group-hover:text-indigo-600 transition-colors">
+                Service Catalog &amp; Pricing
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                Configure categories, regional base rates, tax rules, and surge pricing controls.
+              </p>
+            </div>
+            <div className="flex items-center justify-between pt-3 border-t border-slate-100 text-xs font-bold text-indigo-600">
+              <span>Manage Catalog</span>
+              <ArrowUpRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+            </div>
+          </button>
+        )}
+      </RevealSection>
+
+      {/* 4. Business Performance Chart + Service Distribution Donut */}
       <RevealSection delay={0.08} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left 8 Cols: Real Interactive Business Performance Chart */}
-        <div className="lg:col-span-8 bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs serviceos-card-glow space-y-4">
+        <div className="lg:col-span-8 bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/90 shadow-2xs serviceos-card-glow space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-extrabold text-slate-900 tracking-tight">Business Performance</h2>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200/70">
                   Real-Time Analytics
                 </span>
               </div>
-              <p className="text-xs text-slate-500 mt-0.5">Total job orders &amp; gross escrow volume compared across cycles</p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Order volume and escrow settlements aggregated across{' '}
+                {performanceCycle === 'weekly' ? 'weekdays' : 'monthly weeks'}
+              </p>
             </div>
-            
+
             <div className="flex items-center gap-3">
-              {/* Period Cycle Switcher */}
               <div className="flex items-center p-0.5 bg-slate-100 rounded-xl">
                 <button
                   onClick={() => setPerformanceCycle('weekly')}
                   className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                    performanceCycle === 'weekly' 
-                      ? 'bg-white text-indigo-700 shadow-2xs' 
+                    performanceCycle === 'weekly'
+                      ? 'bg-white text-indigo-700 shadow-2xs'
                       : 'text-slate-500 hover:text-slate-800'
                   }`}
                 >
@@ -343,95 +543,84 @@ export const Page01MainDashboard: React.FC = () => {
                 <button
                   onClick={() => setPerformanceCycle('monthly')}
                   className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                    performanceCycle === 'monthly' 
-                      ? 'bg-white text-indigo-700 shadow-2xs' 
+                    performanceCycle === 'monthly'
+                      ? 'bg-white text-indigo-700 shadow-2xs'
                       : 'text-slate-500 hover:text-slate-800'
                   }`}
                 >
                   Monthly
                 </button>
               </div>
-
-              <div className="flex items-center gap-3 text-xs font-semibold">
-                <span className="flex items-center gap-1.5 text-indigo-700 font-bold">
-                  <span className="w-2.5 h-2.5 rounded-full bg-indigo-600 inline-block shadow-xs"></span>
-                  Active Orders
-                </span>
-              </div>
             </div>
           </div>
 
-          {/* Real Recharts Interactive Area Chart */}
           <div className="h-64 w-full pt-2">
-            {bookings.length === 0 ? (
-              <div className="h-full w-full flex flex-col items-center justify-center p-6 text-center border-2 border-dashed border-slate-100 rounded-2xl bg-slate-50/50">
+            {currentPerformanceData.length === 0 ? (
+              <div className="h-full w-full flex flex-col items-center justify-center p-6 text-center border-2 border-dashed border-slate-200/80 rounded-2xl bg-slate-50/50">
                 <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-2.5">
                   <TrendingUp className="w-6 h-6" />
                 </div>
                 <h3 className="text-sm font-extrabold text-slate-800">No Performance Data Recorded</h3>
-                <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                  Analytics and revenue curves will calculate automatically as customer service orders are scheduled and completed.
+                <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                  Analytics and revenue curves populate automatically as customer orders are scheduled and completed.
                 </p>
                 <button
                   onClick={() => setIsCreateJobModalOpen(true)}
-                  className="mt-3.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all inline-flex items-center gap-1.5 cursor-pointer"
+                  className="mt-3.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all inline-flex items-center gap-1.5 cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>+ Create First Order</span>
+                  <span>Create First Order</span>
                 </button>
               </div>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart
-                  data={currentPerformanceData}
-                  margin={{ top: 15, right: 15, left: -15, bottom: 0 }}
-                >
+                <AreaChart data={currentPerformanceData} margin={{ top: 15, right: 15, left: -15, bottom: 0 }}>
                   <defs>
                     <linearGradient id="realThisPeriodGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#6366F1" stopOpacity={0.38} />
-                      <stop offset="95%" stopColor="#7C3AED" stopOpacity={0.0} />
+                      <stop offset="5%" stopColor="#4F46E5" stopOpacity={0.32} />
+                      <stop offset="95%" stopColor="#7C3AED" stopOpacity={0.02} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-                  <XAxis 
-                    dataKey="name" 
-                    stroke="#94A3B8" 
-                    fontSize={11} 
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" strokeOpacity={0.6} />
+                  <XAxis
+                    dataKey="name"
+                    stroke="#94A3B8"
+                    fontSize={11}
                     fontWeight={600}
-                    tickLine={false} 
-                    axisLine={{ stroke: '#E2E8F0' }} 
+                    tickLine={false}
+                    axisLine={{ stroke: '#E2E8F0' }}
                   />
-                  <YAxis 
-                    stroke="#94A3B8" 
-                    fontSize={11} 
+                  <YAxis
+                    stroke="#94A3B8"
+                    fontSize={11}
                     fontWeight={600}
-                    tickLine={false} 
+                    tickLine={false}
                     axisLine={false}
-                    tickFormatter={(val) => `${val >= 1000 ? (val/1000).toFixed(1) + 'k' : val}`}
+                    allowDecimals={false}
                   />
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (active && payload && payload.length) {
-                        const current = payload.find((p: any) => p.dataKey === 'thisPeriod')?.value as number || 0;
+                        const current = (payload.find((p: any) => p.dataKey === 'thisPeriod')?.value as number) || 0;
                         const rev = payload[0]?.payload?.revenue || 0;
 
                         return (
                           <div className="bg-slate-900/95 backdrop-blur-md text-white p-3.5 rounded-2xl shadow-xl border border-slate-700/80 text-xs space-y-1.5 min-w-[200px]">
                             <div className="flex items-center justify-between border-b border-slate-700/60 pb-1.5">
                               <span className="font-extrabold text-slate-200">{label}</span>
-                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
-                                Live Work Orders
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300">
+                                Work Orders
                               </span>
                             </div>
                             <div className="flex items-center justify-between text-slate-200">
                               <span className="flex items-center gap-1.5">
                                 <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-                                Scheduled Orders:
+                                Total Orders:
                               </span>
                               <span className="font-extrabold text-white">{current.toLocaleString()} Jobs</span>
                             </div>
                             <div className="pt-1.5 border-t border-slate-800 text-[11px] text-emerald-400 font-bold flex items-center justify-between">
-                              <span>Escrow Volume:</span>
+                              <span>Settled Volume:</span>
                               <span>{formatCurrency(rev, serverMetrics?.currency || tenantConfig.currencyCode)}</span>
                             </div>
                           </div>
@@ -443,10 +632,10 @@ export const Page01MainDashboard: React.FC = () => {
                   <Area
                     type="monotone"
                     dataKey="thisPeriod"
-                    stroke="#6366F1"
+                    stroke="#4F46E5"
                     strokeWidth={3}
                     fill="url(#realThisPeriodGradient)"
-                    activeDot={{ r: 6, fill: '#6366F1', stroke: '#FFFFFF', strokeWidth: 3 }}
+                    activeDot={{ r: 6, fill: '#4F46E5', stroke: '#FFFFFF', strokeWidth: 3 }}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -454,27 +643,28 @@ export const Page01MainDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Right 4 Cols: Real Interactive Service Distribution Donut */}
-        <div className="lg:col-span-4 bg-white rounded-2xl p-5 border border-slate-200/90 shadow-2xs serviceos-card-glow space-y-4">
+        <div className="lg:col-span-4 bg-white rounded-2xl p-5 sm:p-6 border border-slate-200/90 shadow-2xs serviceos-card-glow space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <div>
               <h2 className="text-base font-extrabold text-slate-900 tracking-tight">Service Distribution</h2>
-              <p className="text-xs text-slate-500 mt-0.5">Catalogue volume split across domains</p>
+              <p className="text-xs text-slate-500 mt-0.5">Volume share by category</p>
             </div>
-            <span className="text-[11px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-lg">
-              {totalJobs} Jobs
+            <span className="text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200/70 px-2.5 py-0.5 rounded-lg">
+              {bookings.length} Orders
             </span>
           </div>
 
           <div className="h-44 w-full relative flex items-center justify-center">
-            {serviceDistribution.length === 0 ? (
-              <div className="h-full w-full flex flex-col items-center justify-center p-4 text-center border-2 border-dashed border-slate-100 rounded-2xl bg-slate-50/50">
+            {sortedDistribution.length === 0 ? (
+              <div className="h-full w-full flex flex-col items-center justify-center p-4 text-center border-2 border-dashed border-slate-200/80 rounded-2xl bg-slate-50/50">
                 <Briefcase className="w-8 h-8 text-slate-300 mb-1.5" />
                 <h4 className="text-xs font-bold text-slate-700">No Categories Found</h4>
-                <p className="text-[11px] text-slate-400 mt-0.5 max-w-[200px]">Create service categories in Service Management</p>
+                <p className="text-[11px] text-slate-500 mt-0.5 max-w-[200px]">
+                  Create service categories in Service Management
+                </p>
                 <button
                   onClick={() => navigateToPage(14)}
-                  className="mt-2.5 px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] rounded-lg border border-slate-200 cursor-pointer"
+                  className="mt-2.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] rounded-lg cursor-pointer"
                 >
                   Configure Services
                 </button>
@@ -484,16 +674,16 @@ export const Page01MainDashboard: React.FC = () => {
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
-                      data={serviceDistribution}
+                      data={sortedDistribution}
                       cx="50%"
                       cy="50%"
-                      innerRadius={50}
-                      outerRadius={74}
+                      innerRadius={52}
+                      outerRadius={76}
                       paddingAngle={3}
                       dataKey="value"
                     >
-                      {serviceDistribution.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} stroke="#FFFFFF" strokeWidth={2} />
+                      {sortedDistribution.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} stroke="var(--so-surface)" strokeWidth={2} />
                       ))}
                     </Pie>
                     <Tooltip
@@ -503,8 +693,8 @@ export const Page01MainDashboard: React.FC = () => {
                           return (
                             <div className="bg-slate-900/95 backdrop-blur-md text-white p-2.5 rounded-xl shadow-lg border border-slate-700 text-xs">
                               <div className="font-bold text-slate-200">{data.name}</div>
-                              <div className="text-emerald-400 font-extrabold mt-0.5">
-                                {data.value}% • {data.jobs} Active Bookings
+                              <div className="text-indigo-300 font-extrabold mt-0.5">
+                                {data.value}% • {data.jobs} Bookings
                               </div>
                             </div>
                           );
@@ -514,14 +704,13 @@ export const Page01MainDashboard: React.FC = () => {
                     />
                   </PieChart>
                 </ResponsiveContainer>
-                
-                {/* Center Stat Badge */}
-                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-8 text-center">
                   <span className="text-2xl font-black text-slate-900 leading-tight">
-                    {serviceDistribution[0]?.value || 0}%
+                    {sortedDistribution[0]?.value || 0}%
                   </span>
-                  <span className="text-[9px] font-extrabold text-indigo-600 uppercase tracking-wider truncate max-w-[80px]">
-                    {serviceDistribution[0]?.name || 'Primary'}
+                  <span className="text-[9.5px] font-bold text-indigo-600 uppercase tracking-wider truncate max-w-[84px]">
+                    {sortedDistribution[0]?.name || 'Primary'}
                   </span>
                 </div>
               </>
@@ -529,20 +718,18 @@ export const Page01MainDashboard: React.FC = () => {
           </div>
 
           <div className="space-y-2 pt-2 border-t border-slate-100 text-xs">
-            {serviceDistribution.length === 0 ? (
-              <div className="text-center py-2 text-slate-400 text-[11px]">
-                No category breakdown available.
-              </div>
+            {sortedDistribution.length === 0 ? (
+              <div className="text-center py-2 text-slate-400 text-[11px]">No category breakdown available.</div>
             ) : (
-              serviceDistribution.map((item, idx) => (
-                <div key={idx} className="flex items-center justify-between">
+              sortedDistribution.map((item, idx) => (
+                <div key={idx} className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-2 text-slate-600 font-medium truncate">
                     <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: item.color }}></span>
                     <span className="truncate">{item.name}</span>
                   </span>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0 tabular-nums">
                     <span className="text-[11px] text-slate-400">{item.jobs} jobs</span>
-                    <span className="font-extrabold text-slate-900">{item.value}%</span>
+                    <span className="font-extrabold text-slate-900 w-8 text-right">{item.value}%</span>
                   </div>
                 </div>
               ))
@@ -551,88 +738,93 @@ export const Page01MainDashboard: React.FC = () => {
         </div>
       </RevealSection>
 
-      {/* 4. Bottom Row: Recent Activities + Top Technicians */}
+      {/* 5. Recent Activities + Top Technicians */}
       <RevealSection delay={0.14} className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Recent Activities */}
-        <div className="lg:col-span-7 bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs serviceos-card-glow space-y-4">
+        <div className="lg:col-span-7 bg-white rounded-2xl p-6 border border-slate-200/90 shadow-2xs serviceos-card-glow space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <h2 className="text-base font-bold text-slate-900">Recent Activities</h2>
-            <button 
-              onClick={() => navigateToPage(3)} 
-              className="text-xs font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
+            <button
+              onClick={() => navigateToPage(3)}
+              className="text-xs font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
             >
               View All →
             </button>
           </div>
 
-          <div className="divide-y divide-slate-100 space-y-2">
+          <div className="divide-y divide-slate-100">
             {auditLogs.length === 0 && bookings.length === 0 ? (
               <div className="py-8 text-center text-xs text-slate-400">
                 No recent activity logged yet. Operational events, dispatches, and job status updates will appear here.
               </div>
             ) : (
-              (auditLogs.length > 0 ? auditLogs : bookings.map(b => ({
-                id: b.id,
-                action: b.status === 'Completed' ? 'Completed' : 'Booking Scheduled',
-                details: `${b.serviceName} for ${b.customerName}`,
-                timestamp: b.scheduleDate || 'Today'
-              }))).slice(0, 4).map((log: any) => (
-                <div key={log.id} className="py-2.5 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center border border-emerald-100 shrink-0">
-                      <CheckCircle2 className="w-4 h-4" />
+              (auditLogs.length > 0
+                ? auditLogs
+                : bookings.map((b) => ({
+                    id: b.id,
+                    action: b.status === 'Completed' ? 'Completed Order' : `${b.status} • ${b.jobNo}`,
+                    details: `${b.serviceName} for ${b.customerName}`,
+                    timestamp: b.scheduleDate || 'Today',
+                  }))
+              )
+                .slice(0, 4)
+                .map((log: any) => (
+                  <div key={log.id} className="py-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center border border-indigo-200/60 shrink-0">
+                        <CheckCircle2 className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-900 truncate">{log.action || 'Activity'}</div>
+                        <div className="text-[11px] text-slate-500 truncate">{log.details || log.module}</div>
+                      </div>
                     </div>
-                    <div>
-                      <div className="text-xs font-bold text-slate-900">{log.action || 'Activity'}</div>
-                      <div className="text-[11px] text-slate-400">{log.details || log.module}</div>
-                    </div>
+                    <span className="text-[11px] text-slate-400 font-medium shrink-0">{log.timestamp}</span>
                   </div>
-                  <span className="text-[11px] text-slate-400 font-medium">{log.timestamp}</span>
-                </div>
-              ))
+                ))
             )}
           </div>
         </div>
 
-        {/* Top Technicians Leaderboard */}
-        <div className="lg:col-span-5 bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs serviceos-card-glow space-y-4">
+        <div className="lg:col-span-5 bg-white rounded-2xl p-6 border border-slate-200/90 shadow-2xs serviceos-card-glow space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <h2 className="text-base font-bold text-slate-900">Top Technicians</h2>
-            <button 
-              onClick={() => navigateToPage(22)} 
-              className="text-xs font-bold text-emerald-600 hover:text-emerald-700 cursor-pointer"
+            <button
+              onClick={() => navigateToPage(22)}
+              className="text-xs font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
             >
               View All →
             </button>
           </div>
 
-          <div className="divide-y divide-slate-100 space-y-2">
+          <div className="divide-y divide-slate-100">
             {technicians.length === 0 ? (
               <div className="py-8 text-center text-xs text-slate-400">
                 No technicians registered. Onboard technicians in Fleet Management to track performance.
               </div>
             ) : (
-              technicians.slice(0, 3).map((tech) => (
-                <div key={tech.id} className="py-2.5 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
+              technicians.slice(0, 4).map((tech) => (
+                <div key={tech.id} className="py-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
                     {tech.photo ? (
                       <img
                         src={tech.photo}
                         alt={tech.name}
-                        className="w-10 h-10 rounded-full object-cover border-2 border-white shadow-2xs"
+                        className="w-10 h-10 rounded-xl object-cover border border-slate-200"
                       />
                     ) : (
-                      <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center justify-center text-xs">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200/70 font-bold flex items-center justify-center text-xs shrink-0">
                         {tech.name.charAt(0)}
                       </div>
                     )}
-                    <div>
-                      <div className="text-xs font-bold text-slate-900">{tech.name}</div>
-                      <div className="text-[11px] text-slate-400">{tech.jobsCompleted} Jobs Completed</div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-slate-900 truncate">{tech.name}</div>
+                      <div className="text-[11px] text-slate-500 truncate">
+                        {tech.specialization} • {tech.jobsCompleted} Jobs
+                      </div>
                     </div>
                   </div>
 
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <div className="text-xs font-bold text-emerald-600">↑ {tech.onTimeRate}%</div>
                     <div className="text-[10px] text-slate-400">On-Time SLA</div>
                   </div>

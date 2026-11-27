@@ -96,12 +96,13 @@ const AppContent: React.FC = () => {
   const demoBanner = isDemoMode ? (
     <div
       dir={dir}
-      className="w-full bg-gradient-to-r from-indigo-600 via-violet-600 to-indigo-700 text-white text-xs font-medium py-1.5 px-4 flex items-center justify-center gap-2 shrink-0 z-50 shadow-sm"
+      className="w-full h-8 bg-[#090F1E] text-slate-300 border-b border-slate-800/90 text-[11px] font-medium px-4 flex items-center justify-center gap-2.5 shrink-0 z-50"
     >
-      <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold tracking-wider uppercase">
+      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold tracking-wider uppercase">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
         {t('demoBadge')}
       </span>
-      <span>{t('demoBanner')}</span>
+      <span className="truncate">{t('demoBanner')}</span>
     </div>
   ) : null;
 
@@ -127,7 +128,7 @@ const AppContent: React.FC = () => {
     <div dir={dir} className="flex flex-col h-screen w-screen overflow-hidden bg-[var(--so-canvas)] text-[var(--so-text)] font-sans antialiased transition-colors duration-300">
       {demoBanner}
       <div className="flex flex-1 min-h-0 w-full overflow-hidden">
-        <Suspense fallback={<div className="w-20 bg-[#0C3832] shrink-0" />}>
+        <Suspense fallback={<div className="w-20 bg-[#090E1A] shrink-0" />}>
           <NavigationSidebar />
         </Suspense>
 
@@ -138,7 +139,7 @@ const AppContent: React.FC = () => {
 
           <ScrollProgressBar containerRef={mainScrollRef} />
 
-          <div className="px-4 sm:px-6 lg:px-8 pt-4 pb-0 bg-[var(--so-canvas)] transition-colors duration-300">
+          <div className="px-4 sm:px-6 lg:px-8 pt-3 pb-1 bg-[var(--so-canvas)] transition-colors duration-300">
             <Suspense fallback={null}>
               <ModuleSubnav />
             </Suspense>

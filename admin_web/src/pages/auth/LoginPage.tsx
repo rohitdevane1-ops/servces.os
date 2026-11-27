@@ -496,10 +496,26 @@ export const LoginPage: React.FC = () => {
             Orchestrate on-demand customer bookings, real-time spatial field technician dispatch, automated 4-digit Safety PIN arrival verification, and double-entry general ledger accounting.
           </p>
 
-          {/* 3 Core Architecture Cards */}
-          <div className="grid grid-cols-1 gap-3.5 pt-2">
-            <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-md flex items-start gap-3.5 hover:border-indigo-500/40 transition-all">
-              <div className="p-2.5 rounded-xl bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 shrink-0">
+          {/* 3 Compact Metrics Pill Row */}
+          <div className="grid grid-cols-3 gap-2.5 pt-1">
+            <div className="px-3.5 py-2.5 rounded-2xl bg-white/[0.04] border border-white/10">
+              <div className="text-base font-black text-white">&lt; 60s</div>
+              <div className="text-[10px] text-slate-400 font-medium">Spatial Radar Lock</div>
+            </div>
+            <div className="px-3.5 py-2.5 rounded-2xl bg-white/[0.04] border border-white/10">
+              <div className="text-base font-black text-indigo-300">Double-Entry</div>
+              <div className="text-[10px] text-slate-400 font-medium">Escrow &amp; Tax Ledger</div>
+            </div>
+            <div className="px-3.5 py-2.5 rounded-2xl bg-white/[0.04] border border-white/10">
+              <div className="text-base font-black text-emerald-400">iOS + Android</div>
+              <div className="text-[10px] text-slate-400 font-medium">Customer &amp; Pro Apps</div>
+            </div>
+          </div>
+
+          {/* 3 Core Architecture Cards (Unified Cohesive Styling) */}
+          <div className="grid grid-cols-1 gap-3 pt-1">
+            <div className="p-4 rounded-2xl bg-white/[0.03] border border-indigo-400/20 backdrop-blur-md flex items-start gap-3.5 hover:border-indigo-400/45 transition-all">
+              <div className="p-2.5 rounded-xl bg-indigo-500/15 text-indigo-300 border border-indigo-400/25 shrink-0">
                 <Radio className="w-4 h-4" />
               </div>
               <div>
@@ -510,8 +526,8 @@ export const LoginPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-md flex items-start gap-3.5 hover:border-violet-500/40 transition-all">
-              <div className="p-2.5 rounded-xl bg-violet-600/20 text-violet-400 border border-violet-500/30 shrink-0">
+            <div className="p-4 rounded-2xl bg-white/[0.03] border border-indigo-400/20 backdrop-blur-md flex items-start gap-3.5 hover:border-violet-400/45 transition-all">
+              <div className="p-2.5 rounded-xl bg-violet-500/15 text-violet-300 border border-violet-400/25 shrink-0">
                 <FileText className="w-4 h-4" />
               </div>
               <div>
@@ -522,8 +538,8 @@ export const LoginPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="p-4 rounded-2xl bg-white/[0.03] border border-white/10 backdrop-blur-md flex items-start gap-3.5 hover:border-emerald-500/40 transition-all">
-              <div className="p-2.5 rounded-xl bg-emerald-600/20 text-emerald-400 border border-emerald-500/30 shrink-0">
+            <div className="p-4 rounded-2xl bg-white/[0.03] border border-indigo-400/20 backdrop-blur-md flex items-start gap-3.5 hover:border-indigo-400/45 transition-all">
+              <div className="p-2.5 rounded-xl bg-indigo-500/15 text-indigo-300 border border-indigo-400/25 shrink-0">
                 <Smartphone className="w-4 h-4" />
               </div>
               <div>
@@ -1032,7 +1048,7 @@ export const LoginPage: React.FC = () => {
                     }}
                     className={`flex-1 py-2.5 text-xs font-black rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer ${
                       selectedRole === 'STAFF'
-                        ? 'bg-gradient-to-r from-sky-600 to-cyan-600 text-white shadow-md shadow-sky-500/25'
+                        ? 'bg-slate-900 text-white shadow-md shadow-slate-900/20'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
@@ -1159,7 +1175,7 @@ export const LoginPage: React.FC = () => {
                     className={`w-full py-3.5 rounded-2xl font-black text-xs text-white shadow-xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98 disabled:opacity-50 ${
                       selectedRole === 'ADMIN'
                         ? 'bg-gradient-to-r from-indigo-600 via-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 shadow-indigo-500/25'
-                        : 'bg-gradient-to-r from-sky-600 to-cyan-600 hover:from-sky-700 hover:to-cyan-700 shadow-sky-500/25'
+                        : 'bg-slate-900 hover:bg-slate-800 shadow-slate-900/20'
                     }`}
                   >
                     {isLoading ? (
@@ -1173,8 +1189,8 @@ export const LoginPage: React.FC = () => {
                   </button>
                 </form>
 
-                {/* Language toggle & optional Interactive Demo Sandbox Access */}
-                <div className="pt-4 border-t border-slate-100 space-y-2.5">
+                {/* Language toggle & optional Interactive Demo Sandbox CTA Cards */}
+                <div className="pt-4 border-t border-slate-100 space-y-3">
                   <div className="flex items-center justify-between">
                     {isDemoMode ? (
                       <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-indigo-600">
@@ -1196,7 +1212,7 @@ export const LoginPage: React.FC = () => {
                   </div>
 
                   {isDemoMode && (
-                    <div className="grid grid-cols-2 gap-2.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       {(['ADMIN', 'STAFF'] as const).map((demoRole) => (
                         <button
                           key={demoRole}
@@ -1214,7 +1230,6 @@ export const LoginPage: React.FC = () => {
                                   fullName: res.data.user.fullName || res.data.user.email,
                                   tenantId: res.data.user.tenantId,
                                 });
-                                addToast(`Signed into Interactive Sandbox as ${demoRole}`, 'success');
                               } else {
                                 const msg = res.error?.message || 'Demo sandbox sign-in unavailable. Verify backend server & DEMO_MODE.';
                                 setError(msg);
@@ -1228,23 +1243,36 @@ export const LoginPage: React.FC = () => {
                               setIsLoading(false);
                             }
                           }}
-                          className={`py-2.5 px-3 rounded-xl border text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                          className={`group p-3 rounded-2xl border text-left transition-all flex items-center justify-between gap-2 cursor-pointer disabled:opacity-50 ${
                             demoRole === 'ADMIN'
-                              ? 'bg-indigo-50/80 hover:bg-indigo-100/90 border-indigo-200 text-indigo-800 shadow-2xs'
-                              : 'bg-sky-50/80 hover:bg-sky-100/90 border-sky-200 text-sky-800 shadow-2xs'
+                              ? 'bg-indigo-50/70 hover:bg-indigo-100/80 border-indigo-200/80 text-slate-900'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200/90 text-slate-900'
                           }`}
                         >
-                          {demoRole === 'ADMIN' ? (
-                            <>
-                              <Shield className="w-3.5 h-3.5 text-indigo-600" />
-                              <span>{t('demoAdmin')}</span>
-                            </>
-                          ) : (
-                            <>
-                              <UserCheck className="w-3.5 h-3.5 text-sky-600" />
-                              <span>{t('demoStaff')}</span>
-                            </>
-                          )}
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div
+                              className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                                demoRole === 'ADMIN'
+                                  ? 'bg-indigo-600 text-white'
+                                  : 'bg-slate-800 text-white'
+                              }`}
+                            >
+                              {demoRole === 'ADMIN' ? (
+                                <Shield className="w-4 h-4" />
+                              ) : (
+                                <UserCheck className="w-4 h-4" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-xs font-extrabold truncate">
+                                {demoRole === 'ADMIN' ? t('demoAdmin') : t('demoStaff')}
+                              </div>
+                              <div className="text-[10px] text-slate-500 font-medium truncate">
+                                {demoRole === 'ADMIN' ? 'Executive & Ledger' : 'Live Dispatch Desk'}
+                              </div>
+                            </div>
+                          </div>
+                          <ArrowRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-600 shrink-0 transition-colors" />
                         </button>
                       ))}
                     </div>
